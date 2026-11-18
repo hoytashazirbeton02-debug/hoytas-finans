@@ -1,0 +1,8 @@
+HOYTAŞ v83 GELİŞTİRME DURUMU (YAYINA HAZIR DEĞİL)
+- Fatura tarihleri GG.AA.YYYY veya ISO biçiminde doğrulanır.
+- Cari tahsilat tarihleri GG.AA.YYYY kabul eder.
+- Normal ve tevkifatlı fatura taslak açıklaması netleştirildi.
+- Fatura tahsilat koruması kaldırılmadı; çift tahsilat riski çözülmedi.
+- Eski cari kayıtları değiştirilmedi; veritabanı geçiş şeması değiştirilmedi.
+- Fatura/cari mutabakatı, yetki kontrolleri, arayüz ve Windows testleri eksiktir.
+- Bu dosya bir yayın onayı değildir.
