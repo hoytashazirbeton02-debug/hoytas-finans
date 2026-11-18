@@ -2566,7 +2566,13 @@ class HoytasApp(tk.Tk):
             return messagebox.showinfo("Cari seçin", "Önce tahsilat alınacak müşteriyi seçin.", parent=self)
         vals = self.cari_tree.item(sel[0], "values")
         cari_id, cari_unvan = int(vals[0]), str(vals[2])
+        with connect() as c:
+            open_invoices = c.execute("""SELECT id, COALESCE(belge_no,''), tahsil_edilecek-odenen
+                FROM fatura WHERE cari_id=? AND tahsil_edilecek-odenen>0.005
+                ORDER BY tarih,id""", (cari_id,)).fetchall()
+        invoice_options = ["Faturaya bağlama"] + [f"{fid} - {belge} (Kalan {kalan:.2f} TL)" for fid,belge,kalan in open_invoices]
         d = self.prompt(f"Cari Tahsilat - {cari_unvan}", [
+            ("fatura", "Tahsilatın bağlanacağı fatura (isteğe bağlı)", "combo", invoice_options),
             ("tarih", "Tahsilat tarihi (GG.AA.YYYY)", "entry", None),
             ("tutar", "Alınan tutar (TL)", "entry", None),
             ("yontem", "Ödeme şekli", "combo", ["Nakit", "Banka Havalesi / EFT", "Çek"]),
@@ -2585,7 +2591,15 @@ class HoytasApp(tk.Tk):
         except ValueError:
             return messagebox.showerror("Hatalı bilgi", "Tarih/vade GG.AA.YYYY biçiminde, tutar sıfırdan büyük olmalıdır.", parent=self)
         aciklama = (d["aciklama"] or f"{cari_unvan} cari tahsilatı")
+        fatura_id = int(d["fatura"].split(" - ", 1)[0]) if d.get("fatura", "").split(" - ", 1)[0].isdigit() else None
         with connect() as c:
+            if fatura_id is not None:
+                invoice = c.execute("SELECT tahsil_edilecek,odenen FROM fatura WHERE id=? AND cari_id=?", (fatura_id,cari_id)).fetchone()
+                if not invoice or tutar > round(safe_float(invoice[0])-safe_float(invoice[1]), 2)+0.005:
+                    return messagebox.showerror("Fatura tutarı", "Fatura bulunamadı veya tahsilat kalan fatura tutarını aşıyor.", parent=self)
+                c.execute("INSERT INTO fatura_tahsilat(fatura_id,tarih,tutar,yontem,aciklama) VALUES(?,?,?,?,?)",
+                          (fatura_id,tarih,tutar,d["yontem"],aciklama))
+                c.execute("UPDATE fatura SET odenen=odenen+? WHERE id=?", (tutar,fatura_id))
             # Tahsilat, cari borcunu yalnızca alınan tutar kadar azaltır.
             c.execute("INSERT INTO hareket(tarih,cari_id,tur,kategori,aciklama,tutar,odeme_yontemi) VALUES(?,?,?,?,?,?,?)",
                       (tarih, cari_id, "Alacak", "Tahsilat", aciklama, tutar, d["yontem"]))
