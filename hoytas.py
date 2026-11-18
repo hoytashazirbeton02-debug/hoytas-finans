@@ -22,8 +22,8 @@ from xml.sax.saxutils import escape
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
-TARGET_SCHEMA_VERSION = 49
-APP_VERSION = 80
+TARGET_SCHEMA_VERSION = 50
+APP_VERSION = 81
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 USER_DATA_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
 os.makedirs(USER_DATA_DIR, exist_ok=True)
@@ -299,6 +299,7 @@ def connect():
         "beton_satis": [("santiye_id", "INTEGER"), ("beton_cinsi", "TEXT NOT NULL DEFAULT ''"), ("pompa_ucreti", "REAL NOT NULL DEFAULT 0")],
         "kullanici": [("kurtarma_hash", "TEXT"), ("kurtarma_salt", "TEXT")],
         "maas_odeme": [("islem_turu", "TEXT NOT NULL DEFAULT 'Maaş'")],
+        "fatura": [("fatura_turu", "TEXT NOT NULL DEFAULT 'Normal'"), ("tevkifat_oran", "REAL NOT NULL DEFAULT 0"), ("tevkifat_tutar", "REAL NOT NULL DEFAULT 0"), ("tahsil_edilecek", "REAL NOT NULL DEFAULT 0"), ("odenen", "REAL NOT NULL DEFAULT 0")],
     }
     for table, columns in migrations.items():
         existing = {row[1] for row in con.execute(f"PRAGMA table_info({table})")}
@@ -306,12 +307,14 @@ def connect():
             if col not in existing:
                 con.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
 
+    con.execute("""CREATE TABLE IF NOT EXISTS fatura_tahsilat (id INTEGER PRIMARY KEY AUTOINCREMENT, fatura_id INTEGER NOT NULL, tarih TEXT NOT NULL, tutar REAL NOT NULL CHECK(tutar > 0), yontem TEXT NOT NULL, aciklama TEXT, FOREIGN KEY(fatura_id) REFERENCES fatura(id) ON DELETE RESTRICT)""")
+    con.execute("UPDATE fatura SET tahsil_edilecek=genel_toplam WHERE tahsil_edilecek=0 AND tevkifat_oran=0 AND genel_toplam>0")
     # Eski sürümlerde tarihler GG.AA.YYYY / GG-AA-YYYY olarak kaydedilmiş
     # olabilir. Metin sıralaması bu biçimlerde kronolojik değildir; mevcut
     # kayıtları silmeden ISO YYYY-MM-DD biçimine dönüştür.
     date_columns = {
         "hareket": ("tarih",), "beton_satis": ("tarih",), "cek": ("vade",),
-        "fatura": ("tarih",), "gelen_fatura": ("tarih", "vade"),
+        "fatura": ("tarih",), "fatura_tahsilat": ("tarih",), "gelen_fatura": ("tarih", "vade"),
         "gelen_fatura_odeme": ("tarih",), "nakit_kasa": ("tarih",),
         "stok_hareket": ("tarih",), "maas_odeme": ("tarih",),
         "banka_hareket": ("tarih",),
@@ -919,8 +922,9 @@ class HoytasApp(tk.Tk):
         ttk.Label(bar,text="Fatura / Belge Taslakları",font=("Segoe UI",16,"bold")).pack(side="left")
         ttk.Button(bar,text="Yeni Fatura Taslağı",command=self.add_fatura).pack(side="right")
         ttk.Label(self.fatura_tab,text="Bu bölüm tutar ve KDV hesaplamalı yerel fatura taslağı oluşturur. EDM bağlantısı yapılana kadar resmi e-Fatura göndermez.",foreground="#7a4b00",wraplength=1000).pack(anchor="w",pady=(8,0))
-        self.fatura_tree=self._tree(self.fatura_tab,("id","tarih","cari","belge","miktar","ara","kdv","toplam","durum"),("ID","Tarih","Cari","Belge No","m³","Ara Toplam TL","KDV TL","Genel Toplam TL","Durum"),(45,100,220,120,70,130,100,140,100))
+        self.fatura_tree=self._tree(self.fatura_tab,("id","tarih","cari","belge","miktar","ara","kdv","toplam","tevkifat","net","odenen","kalan","durum"),("ID","Tarih","Cari","Belge No","m³","Ara Toplam TL","KDV TL","Genel Toplam TL","Tevkifat TL","Net TL","Tahsil TL","Kalan TL","Durum"),(45,100,200,120,70,120,100,120,110,110,110,110,125))
         row=ttk.Frame(self.fatura_tab); row.pack(fill="x",pady=8)
+        ttk.Button(row,text="Fatura Tahsilatı Al",command=self.tahsilat_fatura).pack(side="left",padx=(0,8))
         ttk.Button(row,text="Seçili Taslağı Düzenle",command=lambda:self.edit_selected(self.fatura_tree,"fatura")).pack(side="left")
         ttk.Button(row,text="Seçili Taslağı Sil",command=lambda:self.delete_selected(self.fatura_tree,"fatura")).pack(side="right")
 
@@ -972,6 +976,17 @@ class HoytasApp(tk.Tk):
         ]
         for frame, title in tab_items:
             self.tabs.add(frame, text=title)
+        # Her sekmenin kendine ait işlem rehberi; genel açıklama yerine bağlama özgü bilgi.
+        ttk.Label(self.cari_tab, text="Cari bakiyeleri ve faturalar ayrı izlenir. Bir carinin toplam borcunu ve fatura tahsilatını ilgili kayıt üzerinden kontrol edin.", foreground="#315B46", wraplength=1200).pack(anchor="w", pady=(0, 8))
+        ttk.Label(self.beton_tab, text="Beton cinsi, m³, şantiye, pompa bedeli ve tahsilat durumunu burada takip edin. Satış açıklamasına teslim/şantiye bilgisini yazın.", foreground="#315B46", wraplength=1200).pack(anchor="w", pady=(0, 8))
+        ttk.Label(self.fatura_tab, text="Normal ve tevkifatlı fatura taslaklarında m³, KDV, tevkifat ve net tahsilat ayrı hesaplanır. Resmî e-Fatura gönderimi EDM üzerinden yapılır.", foreground="#315B46", wraplength=1200).pack(anchor="w", pady=(0, 8))
+        ttk.Label(self.cek_tab, text="Alınan ve verilen çekleri banka, cari, vade ve durum bilgileriyle takip edin.", foreground="#315B46", wraplength=1200).pack(anchor="w", pady=(0, 8))
+        ttk.Label(self.stok_tab, text="Malzeme, stok miktarı ve birim maliyetlerini takip edin; stok hareketlerini ayrı sekmede kaydedin.", foreground="#315B46", wraplength=1200).pack(anchor="w", pady=(0, 8))
+        ttk.Label(self.personel_tab, text="Personel bilgileri bu alandadır. Maaş ve nakit avans hareketleri Maaş Ödemeleri sekmesinde izlenir.", foreground="#315B46", wraplength=1200).pack(anchor="w", pady=(0, 8))
+        ttk.Label(self.kasa_tab, text="Nakit giriş ve çıkışlarını kaynak ve işlem açıklamasıyla kaydedin.", foreground="#315B46", wraplength=1200).pack(anchor="w", pady=(0, 8))
+        ttk.Label(self.hareket_tab, text="Gelir, gider, cari borç ve alacak işlemlerini açıklamasıyla kaydedin; ilgili cariyi seçin.", foreground="#315B46", wraplength=1200).pack(anchor="w", pady=(0, 8))
+        ttk.Label(self.gelen_fatura_tab, text="Tedarikçi faturalarını, vade tarihlerini, yapılan ödemeleri ve kalan tutarları izleyin.", foreground="#315B46", wraplength=1200).pack(anchor="w", pady=(0, 8))
+        ttk.Label(self.banka_tab, text="Banka giriş/çıkışlarını hesap ve açıklama bilgileriyle takip edin.", foreground="#315B46", wraplength=1200).pack(anchor="w", pady=(0, 8))
         self._build_dashboard()
         self._build_cari()
         self._build_borc_takip()
@@ -2459,20 +2474,117 @@ class HoytasApp(tk.Tk):
         self.refresh_all()
 
     def add_fatura(self):
-        with connect() as c: cariler=c.execute("SELECT id,unvan FROM cari ORDER BY unvan").fetchall()
-        if not cariler: return messagebox.showinfo("Bilgi","Fatura taslağı için önce cari hesap ekleyin.")
-        names=[f"{i} - {n}" for i,n in cariler]
-        d=self.prompt("Yeni Fatura Taslağı",[("tarih","Tarih (GG.AA.YYYY)","entry",None),("cari","Cari hesap","combo",names),("belge","Belge / Fatura No","entry",None),("aciklama","Açıklama","entry",None),("miktar","Beton miktarı (m³; ör. 30,5)","entry",None),("fiyat","Birim fiyat (TL/m³)","entry",None),("kdv","KDV oranı (%)","combo",["0","1","10","20"])])
-        if not d:return
+        """Yerel taslak: m³, KDV ve seçilen tevkifat oranından net tahsilatı hesapla."""
+        with connect() as c:
+            cariler = c.execute("SELECT id,unvan FROM cari ORDER BY unvan").fetchall()
+        if not cariler:
+            return messagebox.showinfo("Cari gerekli", "Önce cari hesap ekleyin.", parent=self)
+        names = [f"{i} - {n}" for i,n in cariler]
+        d = self.prompt("Yeni Satış Faturası Taslağı", [
+            ("tarih", "Fatura tarihi (GG.AA.YYYY)", "entry", None),
+            ("cari", "Faturanın kesileceği cari", "combo_search", names),
+            ("belge", "Fatura / belge numarası", "entry", None),
+            ("aciklama", "Beton cinsi, şantiye ve teslim açıklaması", "entry", None),
+            ("miktar", "Teslim edilen beton (m³; ör. 30,5)", "entry", None),
+            ("fiyat", "KDV hariç birim fiyat (TL/m³)", "entry", None),
+            ("kdv", "KDV oranı (%)", "combo", ["20","10","1","0"]),
+            ("tur", "Fatura türü", "combo", ["Normal", "Tevkifatlı"]),
+            ("tevkifat", "KDV tevkifat oranı (ör. 4/10, 5/10; normalde 0)", "combo_edit", ["0","4/10","5/10","7/10","9/10"])
+        ])
+        if not d:
+            return
         try:
-            tarih=d["tarih"] or datetime.now().strftime("%Y-%m-%d"); datetime.strptime(tarih,"%Y-%m-%d")
-            miktar=int(d["miktar"]); fiyat=parse_amount(d["fiyat"]); kdv_oran=safe_float(d["kdv"])
-            if miktar<=0 or fiyat<0: raise ValueError
-            cari_id=int(d["cari"].split(" - ",1)[0]); ara=round(miktar*fiyat,2); kdv_tutar=round(ara*kdv_oran/100,2); toplam=round(ara+kdv_tutar,2)
-        except (ValueError,TypeError): return messagebox.showerror("Hatalı bilgi","Tarih GG.AA.YYYY, miktar tam sayı, fiyat geçerli sayı olmalıdır.")
-        with connect() as c: c.execute("INSERT INTO fatura(tarih,cari_id,belge_no,aciklama,miktar_m3,birim_fiyat,ara_toplam,kdv_oran,kdv_tutar,genel_toplam,durum) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(tarih,cari_id,d["belge"],d["aciklama"],miktar,fiyat,ara,kdv_oran,kdv_tutar,toplam,"Taslak"))
-        messagebox.showinfo("Fatura taslağı kaydedildi",f"Ara toplam: {ara:,.2f} TL\nKDV (%{kdv_oran:g}): {kdv_tutar:,.2f} TL\nGenel toplam: {toplam:,.2f} TL\n\nNot: EDM entegrasyonu yapılana kadar resmi e-Fatura gönderilmez.")
-        self.refresh_all()
+            tarih = d["tarih"] or date.today().isoformat()
+            datetime.strptime(tarih, "%Y-%m-%d")
+            miktar = parse_amount(d["miktar"])
+            fiyat = parse_amount(d["fiyat"])
+            kdv_oran = parse_amount(d["kdv"])
+            if miktar <= 0 or fiyat < 0 or not 0 <= kdv_oran <= 100:
+                raise ValueError("Miktar, fiyat veya KDV oranı geçersiz.")
+            tur = d["tur"]
+            oran_metin = d["tevkifat"].strip()
+            if tur == "Tevkifatlı":
+                if "/" not in oran_metin:
+                    raise ValueError("Tevkifat oranını 4/10 gibi girin.")
+                pay, payda = [int(x.strip()) for x in oran_metin.split("/", 1)]
+                if payda != 10 or not 0 < pay < payda:
+                    raise ValueError("Tevkifat oranı 1/10 ile 9/10 arasında olmalıdır.")
+                tevkifat_oran = pay / payda
+            else:
+                tevkifat_oran = 0.0
+            cari_id = int(d["cari"].split(" - ", 1)[0])
+            ara = round(miktar * fiyat, 2)
+            kdv_tutar = round(ara * kdv_oran / 100, 2)
+            toplam = round(ara + kdv_tutar, 2)
+            tevkifat_tutar = round(kdv_tutar * tevkifat_oran, 2)
+            net = round(toplam - tevkifat_tutar, 2)
+            if not d["belge"].strip():
+                raise ValueError("Belge numarası boş bırakılamaz.")
+            with connect() as c:
+                if c.execute("SELECT 1 FROM fatura WHERE cari_id=? AND belge_no=?",
+                             (cari_id, d["belge"].strip())).fetchone():
+                    raise ValueError("Bu cariye ait aynı belge numarası zaten kayıtlı.")
+                c.execute("""INSERT INTO fatura
+                    (tarih,cari_id,belge_no,aciklama,miktar_m3,birim_fiyat,ara_toplam,kdv_oran,kdv_tutar,
+                     genel_toplam,durum,fatura_turu,tevkifat_oran,tevkifat_tutar,tahsil_edilecek,odenen)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)""",
+                    (tarih,cari_id,d["belge"].strip(),d["aciklama"],miktar,fiyat,ara,kdv_oran,
+                     kdv_tutar,toplam,"Taslak",tur,tevkifat_oran,tevkifat_tutar,net))
+            self.refresh_all()
+            messagebox.showinfo("Fatura taslağı kaydedildi",
+                f"Ara toplam: {ara:,.2f} TL\nKDV: {kdv_tutar:,.2f} TL\n"
+                f"Genel toplam: {toplam:,.2f} TL\nTevkifat: {tevkifat_tutar:,.2f} TL\n"
+                f"Tahsil edilecek: {net:,.2f} TL\n\nBu kayıt resmî e-Fatura gönderimi değildir.",
+                parent=self)
+        except (ValueError, TypeError) as exc:
+            messagebox.showerror("Fatura kaydedilemedi", str(exc), parent=self)
+
+    def tahsilat_fatura(self):
+        selected = self.fatura_tree.selection()
+        if not selected:
+            return messagebox.showinfo("Fatura seçin", "Önce bir fatura seçin.", parent=self)
+        fid = int(self.fatura_tree.item(selected[0], "values")[0])
+        with connect() as c:
+            row = c.execute("""SELECT f.cari_id,f.belge_no,f.tahsil_edilecek,f.odenen,
+                               COALESCE(c.unvan,'') FROM fatura f LEFT JOIN cari c ON c.id=f.cari_id
+                               WHERE f.id=?""", (fid,)).fetchone()
+        if not row:
+            return
+        kalan = round(row[2] - row[3], 2)
+        if kalan <= 0:
+            return messagebox.showinfo("Tahsil edildi", "Bu faturanın kalan tutarı bulunmuyor.", parent=self)
+        d = self.prompt(f"Fatura Tahsilatı - {row[1]}", [
+            ("tarih", "Tahsilat tarihi (GG.AA.YYYY)", "entry", None),
+            ("tutar", f"Alınan tutar (kalan {kalan:,.2f} TL)", "entry", None),
+            ("yontem", "Tahsilat yöntemi", "combo", ["Nakit","Banka","Çek","Diğer"]),
+            ("aciklama", "Tahsilat açıklaması", "entry", None)
+        ])
+        if not d:
+            return
+        try:
+            tarih = d["tarih"] or date.today().isoformat()
+            datetime.strptime(tarih, "%Y-%m-%d")
+            tutar = parse_amount(d["tutar"])
+            if not 0 < tutar <= kalan:
+                raise ValueError("Tahsilat tutarı sıfırdan büyük ve kalan borçtan fazla olmamalıdır.")
+            with connect() as c:
+                c.execute("INSERT INTO fatura_tahsilat(fatura_id,tarih,tutar,yontem,aciklama) VALUES(?,?,?,?,?)",
+                          (fid,tarih,tutar,d["yontem"],d["aciklama"]))
+                c.execute("UPDATE fatura SET odenen=odenen+? WHERE id=?", (tutar,fid))
+                # Fatura taslakları cari borcu ikinci kez artırmaz; cari tahsilat tek defa işlenir.
+                c.execute("""INSERT INTO hareket(tarih,cari_id,tur,kategori,aciklama,tutar,odeme_yontemi)
+                             VALUES(?,?,?,?,?,?,?)""",
+                          (tarih,row[0],"Alacak","Fatura Tahsilatı",f"Fatura #{fid} / {row[1]} - {d['aciklama']}",tutar,d["yontem"]))
+                if d["yontem"] == "Nakit":
+                    c.execute("""INSERT INTO nakit_kasa(tarih,yon,kaynak,aciklama,tutar,kullanici)
+                                 VALUES(?,?,?,?,?,?)""",
+                              (tarih,"Para Girişi","Fatura Tahsilatı",f"Fatura #{fid} - {row[4]}",tutar,
+                               getattr(self,"current_user",{}).get("username","")))
+            self.refresh_all()
+            messagebox.showinfo("Tahsilat kaydedildi",
+                f"Tahsil edilen: {tutar:,.2f} TL\nKalan: {kalan-tutar:,.2f} TL",parent=self)
+        except (ValueError,TypeError) as exc:
+            messagebox.showerror("Tahsilat kaydedilemedi",str(exc),parent=self)
 
     def cari_tahsilat(self):
         """Seçili müşteriden alınan kısmi/tam ödemeyi cari ve para hareketlerine işler."""
@@ -2804,7 +2916,13 @@ class HoytasApp(tk.Tk):
                         self.fill_tree(self.santiye_tree,c.execute("SELECT id,ad,COALESCE(adres,''),COALESCE(yetkili,''),COALESCE(telefon,''),COALESCE(notlar,'') FROM santiye ORDER BY ad").fetchall())
                 except tk.TclError:
                     pass
-            self.fill_tree(self.fatura_tree,c.execute("SELECT f.id,f.tarih,COALESCE(c.unvan,''),COALESCE(f.belge_no,''),f.miktar_m3,printf('%.2f',f.ara_toplam),printf('%.2f',f.kdv_tutar),printf('%.2f',f.genel_toplam),f.durum FROM fatura f LEFT JOIN cari c ON c.id=f.cari_id ORDER BY f.tarih ASC,f.id ASC").fetchall())
+            self.fill_tree(self.fatura_tree,c.execute("""SELECT f.id,f.tarih,COALESCE(c.unvan,''),COALESCE(f.belge_no,''),f.miktar_m3,
+                printf('%.2f',f.ara_toplam),printf('%.2f',f.kdv_tutar),printf('%.2f',f.genel_toplam),
+                printf('%.2f',f.tevkifat_tutar),printf('%.2f',f.tahsil_edilecek),
+                printf('%.2f',f.odenen),printf('%.2f',f.tahsil_edilecek-f.odenen),
+                CASE WHEN f.tahsil_edilecek-f.odenen<=0.005 THEN 'Tahsil edildi'
+                     WHEN f.odenen>0 THEN 'Kısmi tahsilat' ELSE 'Tahsil edilmedi' END
+                FROM fatura f LEFT JOIN cari c ON c.id=f.cari_id ORDER BY f.tarih ASC,f.id ASC""").fetchall())
             if hasattr(self,"gelen_fatura_tree"):
                 self.fill_tree(self.gelen_fatura_tree,c.execute("SELECT gf.id,gf.tarih,COALESCE(gf.vade,''),COALESCE(c.unvan,''),gf.belge_no,printf('%.2f',gf.ara_toplam),printf('%.2f',gf.kdv_tutar),printf('%.2f',gf.genel_toplam),printf('%.2f',gf.odenen),printf('%.2f',gf.genel_toplam-gf.odenen),gf.durum FROM gelen_fatura gf LEFT JOIN cari c ON c.id=gf.cari_id ORDER BY CASE WHEN gf.vade IS NULL OR gf.vade='' THEN gf.tarih ELSE gf.vade END ASC,gf.id ASC").fetchall())
             if hasattr(self, "kasa_tree"):
