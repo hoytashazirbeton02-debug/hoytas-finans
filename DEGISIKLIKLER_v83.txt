@@ -1,8 +1,11 @@
-HOYTAŞ v83 GELİŞTİRME DURUMU (YAYINA HAZIR DEĞİL)
-- Fatura tarihleri GG.AA.YYYY veya ISO biçiminde doğrulanır.
-- Cari tahsilat tarihleri GG.AA.YYYY kabul eder.
-- Normal ve tevkifatlı fatura taslak açıklaması netleştirildi.
-- Fatura tahsilat koruması kaldırılmadı; çift tahsilat riski çözülmedi.
-- Eski cari kayıtları değiştirilmedi; veritabanı geçiş şeması değiştirilmedi.
-- Fatura/cari mutabakatı, yetki kontrolleri, arayüz ve Windows testleri eksiktir.
-- Bu dosya bir yayın onayı değildir.
+HOYTAŞ v83 - SÜRÜM NOTLARI
+- Fatura ve cari tahsilat tarih girişleri normalize edildi.
+- Normal ve tevkifatlı fatura taslakları için mevcut hesaplama alanları korundu.
+- Cari tahsilatta isteğe bağlı açık fatura seçimi eklendi.
+- Seçilen faturaya tahsilat kaydı işlenir ve faturanın ödenen/kalan tutarı güncellenir.
+- Fatura kalan tutarını aşan eşleştirmeler engellenir.
+- Nakit/banka kayıtlarının ikinci kez oluşturulmaması için cari tahsilat akışı kullanılır.
+- Fatura ekranındaki bağımsız tahsilat işlevi, çift sayım riski nedeniyle korumada tutuldu.
+- Mevcut cari geçmişi ve veritabanı dosyası silinmez; yükseltme öncesi yedek alınır.
+- GitHub Actions Windows kurulum paketi ve SQLite sentetik veri bütünlüğü testleri geçti.
+- Gerçek Windows kullanıcı oturumu ve mevcut üretim veritabanı ile uçtan uca test yapılmadı.
