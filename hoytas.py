@@ -1095,6 +1095,20 @@ class HoytasApp(tk.Tk):
             except OSError:
                 pass
 
+    def _fetch_release_with_retry(self, request):
+        """Geçici bağlantı kopmalarında sınırlı yeniden deneme."""
+        import time
+        last_error = None
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(request, timeout=20) as response:
+                    return json.loads(response.read(2 * 1024 * 1024).decode("utf-8"))
+            except (urllib.error.URLError, ConnectionError, TimeoutError, OSError) as exc:
+                last_error = exc
+                if attempt < 2:
+                    time.sleep(attempt + 1)
+        raise last_error
+
     def check_for_updates(self, silent=False):
         """Önce bağımsız HTTPS manifestini, gerekirse eski GitHub kaynağını denetle."""
         try:
@@ -1118,8 +1132,7 @@ class HoytasApp(tk.Tk):
                 return
             api = f"https://api.github.com/repos/{repo}/releases/latest"
             request = urllib.request.Request(api, headers={"Accept": "application/vnd.github+json", "User-Agent": "HOYTAS-Updater/1.0"})
-            with urllib.request.urlopen(request, timeout=15) as response:
-                release = json.loads(response.read(2 * 1024 * 1024).decode("utf-8"))
+            release = self._fetch_release_with_retry(request)
             tag = str(release.get("tag_name", ""))
             match = re.search(r"(\d+)", tag)
             if not match:
@@ -1272,7 +1285,7 @@ class HoytasApp(tk.Tk):
             self._log_update_error(exc)
         messagebox.showinfo(
             "HOYTAŞ sürümü hazır",
-            f"v{version} zaten kurulu. Mevcut dosyalar korunarak aktif sürüm bağlantısı yenilendi.\\n"
+            f"v{version} zaten kurulu. Mevcut dosyalar korunarak aktif sürüm bağlantısı yenilendi.\n"
             "Programı kapatıp masaüstü kısayolundan tekrar açın.",
             parent=self
         )
