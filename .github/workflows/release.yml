@@ -4,11 +4,15 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/release.yml'
-      - 'packages/**'
+      - 'hoytas.py'
+      - 'DEGISIKLIKLER_v*.txt'
+      - 'Baslat.vbs'
+      - 'Baslat.bat'
+      - 'kurulum.bat'
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (e.g. v79)'
+        description: 'Release version (e.g. v80)'
         required: true
         type: string
 permissions:
@@ -18,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Validate version and existing package
+      - name: Build and validate HOYTAS release package
         id: package
         shell: bash
         env:
@@ -27,15 +31,36 @@ jobs:
           set -euo pipefail
           if [[ -z "$VERSION" ]]; then VERSION="v$(sed -n 's/^APP_VERSION = //p' hoytas.py | head -1)"; fi
           [[ "$VERSION" =~ ^v[0-9]+$ ]] || { echo "Invalid version"; exit 1; }
-          ZIP="packages/HOYTAS_${VERSION}_BUTUN_MENU_DUGME_DUZELTME.zip"
-          if [[ "$VERSION" == "v79" ]]; then
-            ZIP="packages/HOYTAS_v79_BUTUN_MENU_DUGME_DUZELTME.zip"
-          fi
-          test -f "$ZIP" || { echo "Missing release ZIP: $ZIP"; exit 1; }
-          unzip -t "$ZIP" >/dev/null
+          test -f "DEGISIKLIKLER_${VERSION}.txt"
+          test -f hoytas.py
+          test -f Baslat.vbs
           python -m py_compile hoytas.py
           mkdir -p dist
-          cp "$ZIP" "dist/HOYTAS_${VERSION}.zip"
+          VERSION="$VERSION" python - <<'PY'
+          import os, pathlib, subprocess, zipfile
+          version = os.environ["VERSION"]
+          names = subprocess.check_output(["git", "ls-files", "-z"]).decode().split("\0")
+          excluded = (".github/", "packages/", "dist/")
+          files = []
+          for name in names:
+              if not name or name.startswith(excluded) or "/__pycache__/" in name:
+                  continue
+              if name.lower().endswith((".db", ".sqlite", ".sqlite3", ".zip", ".pyc")):
+                  continue
+              path = pathlib.Path(name)
+              if path.is_file():
+                  files.append(name)
+          required = {"hoytas.py", "Baslat.vbs", f"DEGISIKLIKLER_{version}.txt"}
+          assert required.issubset(files), f"Missing required files: {required - set(files)}"
+          output = pathlib.Path("dist") / f"HOYTAS_{version}.zip"
+          with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as z:
+              for name in files:
+                  z.write(name)
+          with zipfile.ZipFile(output) as z:
+              assert z.testzip() is None
+              assert required.issubset(z.namelist())
+          print(f"Validated {output} ({len(files)} files)")
+          PY
           cd dist
           sha256sum "HOYTAS_${VERSION}.zip" > SHA256SUMS.txt
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -47,6 +72,6 @@ jobs:
           set -euo pipefail
           if gh release view "$VERSION" >/dev/null 2>&1; then
             echo "Release already exists: $VERSION"
-            exit 1
+            exit 0
           fi
           gh release create "$VERSION" "dist/HOYTAS_${VERSION}.zip" dist/SHA256SUMS.txt --title "HOYTAS $VERSION" --generate-notes --latest --target "${GITHUB_SHA}"
