@@ -35,6 +35,7 @@ jobs:
           test -f hoytas.py
           test -f Baslat.vbs
           python -m py_compile hoytas.py
+          python test_v82_integrity.py
           python - <<'PY'
           import ast, pathlib, re
           source = pathlib.Path("hoytas.py").read_text(encoding="utf-8")
