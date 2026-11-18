@@ -23,7 +23,7 @@ from xml.sax.saxutils import escape
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
 TARGET_SCHEMA_VERSION = 50
-APP_VERSION = 81
+APP_VERSION = 82
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 USER_DATA_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
 os.makedirs(USER_DATA_DIR, exist_ok=True)
@@ -233,7 +233,7 @@ def _install_audit_triggers(con):
     con.execute("CREATE INDEX IF NOT EXISTS idx_audit_log_table ON audit_log(table_name, record_id)")
     tracked = (
         "cari", "hareket", "cek", "stok", "personel", "beton_satis", "santiye",
-        "fatura", "gelen_fatura", "gelen_fatura_odeme", "nakit_kasa",
+        "fatura", "fatura_tahsilat", "gelen_fatura", "gelen_fatura_odeme", "nakit_kasa",
         "stok_hareket", "maas_odeme", "banka_hareket"
     )
     for table in tracked:
@@ -924,7 +924,7 @@ class HoytasApp(tk.Tk):
         ttk.Label(self.fatura_tab,text="Bu bölüm tutar ve KDV hesaplamalı yerel fatura taslağı oluşturur. EDM bağlantısı yapılana kadar resmi e-Fatura göndermez.",foreground="#7a4b00",wraplength=1000).pack(anchor="w",pady=(8,0))
         self.fatura_tree=self._tree(self.fatura_tab,("id","tarih","cari","belge","miktar","ara","kdv","toplam","tevkifat","net","odenen","kalan","durum"),("ID","Tarih","Cari","Belge No","m³","Ara Toplam TL","KDV TL","Genel Toplam TL","Tevkifat TL","Net TL","Tahsil TL","Kalan TL","Durum"),(45,100,200,120,70,120,100,120,110,110,110,110,125))
         row=ttk.Frame(self.fatura_tab); row.pack(fill="x",pady=8)
-        ttk.Button(row,text="Fatura Tahsilatı Al",command=self.tahsilat_fatura).pack(side="left",padx=(0,8))
+        ttk.Button(row,text="Fatura Tahsilatı (Koruma)",command=self.tahsilat_fatura).pack(side="left",padx=(0,8))
         ttk.Button(row,text="Seçili Taslağı Düzenle",command=lambda:self.edit_selected(self.fatura_tree,"fatura")).pack(side="left")
         ttk.Button(row,text="Seçili Taslağı Sil",command=lambda:self.delete_selected(self.fatura_tree,"fatura")).pack(side="right")
 
@@ -2549,51 +2549,15 @@ class HoytasApp(tk.Tk):
             messagebox.showerror("Fatura kaydedilemedi", str(exc), parent=self)
 
     def tahsilat_fatura(self):
-        selected = self.fatura_tree.selection()
-        if not selected:
-            return messagebox.showinfo("Fatura seçin", "Önce bir fatura seçin.", parent=self)
-        fid = int(self.fatura_tree.item(selected[0], "values")[0])
-        with connect() as c:
-            row = c.execute("""SELECT f.cari_id,f.belge_no,f.tahsil_edilecek,f.odenen,
-                               COALESCE(c.unvan,'') FROM fatura f LEFT JOIN cari c ON c.id=f.cari_id
-                               WHERE f.id=?""", (fid,)).fetchone()
-        if not row:
-            return
-        kalan = round(row[2] - row[3], 2)
-        if kalan <= 0:
-            return messagebox.showinfo("Tahsil edildi", "Bu faturanın kalan tutarı bulunmuyor.", parent=self)
-        d = self.prompt(f"Fatura Tahsilatı - {row[1]}", [
-            ("tarih", "Tahsilat tarihi (GG.AA.YYYY)", "entry", None),
-            ("tutar", f"Alınan tutar (kalan {kalan:,.2f} TL)", "entry", None),
-            ("yontem", "Tahsilat yöntemi", "combo", ["Nakit","Banka","Çek","Diğer"]),
-            ("aciklama", "Tahsilat açıklaması", "entry", None)
-        ])
-        if not d:
-            return
-        try:
-            tarih = d["tarih"] or date.today().isoformat()
-            datetime.strptime(tarih, "%Y-%m-%d")
-            tutar = parse_amount(d["tutar"])
-            if not 0 < tutar <= kalan:
-                raise ValueError("Tahsilat tutarı sıfırdan büyük ve kalan borçtan fazla olmamalıdır.")
-            with connect() as c:
-                c.execute("INSERT INTO fatura_tahsilat(fatura_id,tarih,tutar,yontem,aciklama) VALUES(?,?,?,?,?)",
-                          (fid,tarih,tutar,d["yontem"],d["aciklama"]))
-                c.execute("UPDATE fatura SET odenen=odenen+? WHERE id=?", (tutar,fid))
-                # Cari borç, beton satışından zaten doğmuş olabilir.
-                # Taslak fatura tahsilatı yalnızca fatura alt defterinde izlenir;
-                # aynı tahsilatı cari hareketlere otomatik yazmak borcu yanlış düşürebilir.
-                # Cari borcunu azaltmak için Cari Tahsilat ekranı kullanılır.
-                if d["yontem"] == "Nakit":
-                    c.execute("""INSERT INTO nakit_kasa(tarih,yon,kaynak,aciklama,tutar,kullanici)
-                                 VALUES(?,?,?,?,?,?)""",
-                              (tarih,"Para Girişi","Fatura Tahsilatı",f"Fatura #{fid} - {row[4]}",tutar,
-                               getattr(self,"current_user",{}).get("username","")))
-            self.refresh_all()
-            messagebox.showinfo("Tahsilat kaydedildi",
-                f"Tahsil edilen: {tutar:,.2f} TL\nKalan: {kalan-tutar:,.2f} TL\nCari borç bakiyesi ayrıca izlenir.",parent=self)
-        except (ValueError,TypeError) as exc:
-            messagebox.showerror("Tahsilat kaydedilemedi",str(exc),parent=self)
+        """Çift tahsilat ve cari-banka uyuşmazlığı çözülene kadar yeni kayıtları kilitle."""
+        return messagebox.showwarning(
+            "Tahsilat koruması",
+            "Fatura tahsilatının cari borcu ve kasa/banka ile tek işlemde eşleşmesi "
+            "henüz doğrulanmadı. Aynı paranın iki kez kaydedilmesini önlemek için "
+            "bu ekrandan yeni tahsilat geçici olarak durduruldu. "
+            "Gerçek tahsilatı Cari Hesaplar > Tahsilat Al üzerinden kaydedin. "
+            "Önceden kaydedilmiş fatura tahsilatları silinmez.",
+            parent=self)
 
     def cari_tahsilat(self):
         """Seçili müşteriden alınan kısmi/tam ödemeyi cari ve para hareketlerine işler."""
