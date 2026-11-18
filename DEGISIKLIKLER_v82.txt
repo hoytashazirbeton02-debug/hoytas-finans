@@ -1,0 +1,10 @@
+HOYTAŞ v82 - Fatura veri bütünlüğü güvenlik düzeltmesi
+
+- Fatura tahsilatının cari, kasa ve banka hesaplarında çifte/eksik işlenme riski nedeniyle fatura ekranından YENİ tahsilat girişi geçici olarak kilitlendi.
+- Gerçek tahsilatlar Cari Hesaplar > Tahsilat Al ekranından kaydedilmelidir.
+- Eski fatura tahsilat kayıtları silinmez; yeni fatura_tahsilat kayıtları işlem denetim günlüğüne dahil edildi.
+- Tahsilatlı fatura ve bağlı cari silme korumaları korunur.
+- Normal ve tevkifatlı taslak fatura hesapları ve eski veritabanını koruyan geçiş sürer.
+- Fatura alt defteri ile cari hareketler otomatik eşleşmiş sayılmaz. Eski faturalar ayrıca mutabakat gerektirir.
+- Resmi e-Fatura düzenleme/gönderimi için EDM kullanılır.
+- GitHub Actions kaynak kontrolü gerçek Windows kullanım testi yerine geçmez.
