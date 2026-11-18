@@ -23,7 +23,7 @@ from xml.sax.saxutils import escape
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
 TARGET_SCHEMA_VERSION = 49
-APP_VERSION = 79
+APP_VERSION = 80
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 USER_DATA_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
 os.makedirs(USER_DATA_DIR, exist_ok=True)
@@ -1259,6 +1259,24 @@ class HoytasApp(tk.Tk):
         except OSError:
             pass
 
+    def _activate_installed_version(self, destination, version):
+        """Doğrulanmış kurulu sürümü veri kaybı olmadan etkinleştir."""
+        pointer = os.path.join(USER_DATA_DIR, "aktif_program_yolu.txt")
+        pointer_tmp = pointer + ".tmp"
+        with open(pointer_tmp, "w", encoding="utf-16") as f:
+            f.write(destination)
+        os.replace(pointer_tmp, pointer)
+        try:
+            _restore_desktop_shortcut_after_update(destination)
+        except Exception as exc:
+            self._log_update_error(exc)
+        messagebox.showinfo(
+            "HOYTAŞ sürümü hazır",
+            f"v{version} zaten kurulu. Mevcut dosyalar korunarak aktif sürüm bağlantısı yenilendi.\\n"
+            "Programı kapatıp masaüstü kısayolundan tekrar açın.",
+            parent=self
+        )
+
     def install_update_package(self, package=None, source="manual"):
         """ZIP güncellemesini ayrı sürüm klasörüne güvenli biçimde kur; mevcut sürüme dokunma."""
         if not package:
@@ -1310,7 +1328,21 @@ class HoytasApp(tk.Tk):
                 os.makedirs(versions_dir, exist_ok=True)
                 destination = os.path.join(versions_dir, f"v{version}")
                 if os.path.exists(destination):
-                    raise RuntimeError(f"v{version} klasörü zaten var. Mevcut sürümün üzerine yazılmadı.")
+                    # Önceki kurulum tamamlanmışsa aynı paketi yeniden açma.
+                    existing_main = os.path.join(destination, "hoytas.py")
+                    existing_launcher = os.path.join(destination, "Baslat.vbs")
+                    if not (os.path.isfile(existing_main) and os.path.isfile(existing_launcher)):
+                        raise RuntimeError(
+                            f"v{version} klasörü eksik veya yarım kurulmuş görünüyor. "
+                            "Kayıpları önlemek için üzerine yazılmadı; klasörü silmeyin."
+                        )
+                    with open(existing_main, "r", encoding="utf-8") as installed_file:
+                        installed_source = installed_file.read(4096)
+                    if not re.search(r"^APP_VERSION\s*=\s*" + str(version) + r"\s*$",
+                                     installed_source, re.MULTILINE):
+                        raise RuntimeError(f"v{version} klasörünün içeriği sürümle uyuşmuyor; üzerine yazılmadı.")
+                    self._activate_installed_version(destination, version)
+                    return
                 temp_dir = tempfile.mkdtemp(prefix=f"hoytas_v{version}_", dir=versions_dir)
                 try:
                     zf.extractall(temp_dir)
