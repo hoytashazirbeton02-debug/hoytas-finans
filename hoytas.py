@@ -2576,13 +2576,12 @@ class HoytasApp(tk.Tk):
             ("aciklama", "Açıklama", "entry", None)])
         if not d: return
         try:
-            tarih = d["tarih"] or datetime.now().strftime("%Y-%m-%d")
-            datetime.strptime(tarih, "%Y-%m-%d")
+            tarih = normalize_fatura_tarihi(d["tarih"])
             tutar = parse_amount(d["tutar"])
             if tutar <= 0: raise ValueError("Tutar sıfırdan büyük olmalı.")
             if d["yontem"] == "Çek":
                 vade = d["vade"] or tarih
-                datetime.strptime(vade, "%Y-%m-%d")
+                vade = normalize_fatura_tarihi(vade)
         except ValueError:
             return messagebox.showerror("Hatalı bilgi", "Tarih/vade GG.AA.YYYY biçiminde, tutar sıfırdan büyük olmalıdır.", parent=self)
         aciklama = (d["aciklama"] or f"{cari_unvan} cari tahsilatı")
@@ -2602,7 +2601,7 @@ class HoytasApp(tk.Tk):
             else:
                 cek_no = d["cek_no"] or f"TAH-{datetime.now().strftime('%Y%m%d%H%M%S')}"
                 c.execute("INSERT INTO cek(yon,banka,banka_kodu,cari_id,cek_no,kesideci_lehtar,vade,tutar,durum,notlar) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                          ("Alınan", d["banka"] or "", "", cari_id, cek_no, cari_unvan, d["vade"] or tarih, tutar, "Bekliyor", aciklama))
+                          ("Alınan", d["banka"] or "", "", cari_id, cek_no, cari_unvan, vade, tutar, "Bekliyor", aciklama))
         self.refresh_all()
         messagebox.showinfo("Tahsilat kaydedildi", f"{tutar:,.2f} TL tahsilat kaydedildi. Cari bakiye alınan tutar kadar düşürüldü.", parent=self)
 
@@ -3398,6 +3397,21 @@ class HoytasApp(tk.Tk):
     def show_db_path(self):
         messagebox.showinfo("Veritabanı",f"Veriler burada saklanıyor:\n{DB_PATH}\n\nEski veriler ilk açılışta bu konuma kopyalanır; yedekleri düzenli alın.")
 
+
+
+def normalize_fatura_tarihi(value):
+    """Accept Turkish dotted date or ISO; store ISO consistently."""
+    value = (value or "").strip()
+    if not value:
+        return date.today().isoformat()
+    for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(value, fmt).date().isoformat()
+        except ValueError:
+            pass
+    raise ValueError("Fatura tarihi GG.AA.YYYY biçiminde olmalıdır.")
+
+
 if __name__ == "__main__":
     app = None
     try:
@@ -3436,16 +3450,3 @@ if __name__ == "__main__":
         except Exception:
             pass
 
-
-
-def normalize_fatura_tarihi(value):
-    """Accept Turkish dotted date or ISO; store ISO consistently."""
-    value = (value or "").strip()
-    if not value:
-        return date.today().isoformat()
-    for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
-        try:
-            return datetime.strptime(value, fmt).date().isoformat()
-        except ValueError:
-            pass
-    raise ValueError("Fatura tarihi GG.AA.YYYY biçiminde olmalıdır.")
