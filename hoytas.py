@@ -23,7 +23,7 @@ from xml.sax.saxutils import escape
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
 TARGET_SCHEMA_VERSION = 50
-APP_VERSION = 82
+APP_VERSION = 83
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 USER_DATA_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
 os.makedirs(USER_DATA_DIR, exist_ok=True)
@@ -921,7 +921,7 @@ class HoytasApp(tk.Tk):
         bar=ttk.Frame(self.fatura_tab); bar.pack(fill="x")
         ttk.Label(bar,text="Fatura / Belge Taslakları",font=("Segoe UI",16,"bold")).pack(side="left")
         ttk.Button(bar,text="Yeni Fatura Taslağı",command=self.add_fatura).pack(side="right")
-        ttk.Label(self.fatura_tab,text="Bu bölüm tutar ve KDV hesaplamalı yerel fatura taslağı oluşturur. EDM bağlantısı yapılana kadar resmi e-Fatura göndermez.",foreground="#7a4b00",wraplength=1000).pack(anchor="w",pady=(8,0))
+        ttk.Label(self.fatura_tab,text="Normal ve tevkifatlı fatura taslaklarında m³, KDV, tevkifat ve tahsil edilecek tutar hesaplanır. EDM üzerinden resmî gönderim yapılmadıkça bu kayıt taslaktır.",foreground="#7a4b00",wraplength=1000).pack(anchor="w",pady=(8,0))
         self.fatura_tree=self._tree(self.fatura_tab,("id","tarih","cari","belge","miktar","ara","kdv","toplam","tevkifat","net","odenen","kalan","durum"),("ID","Tarih","Cari","Belge No","m³","Ara Toplam TL","KDV TL","Genel Toplam TL","Tevkifat TL","Net TL","Tahsil TL","Kalan TL","Durum"),(45,100,200,120,70,120,100,120,110,110,110,110,125))
         row=ttk.Frame(self.fatura_tab); row.pack(fill="x",pady=8)
         ttk.Button(row,text="Fatura Tahsilatı (Koruma)",command=self.tahsilat_fatura).pack(side="left",padx=(0,8))
@@ -2504,7 +2504,7 @@ class HoytasApp(tk.Tk):
             return
         try:
             tarih = d["tarih"] or date.today().isoformat()
-            datetime.strptime(tarih, "%Y-%m-%d")
+            tarih = normalize_fatura_tarihi(tarih)
             miktar = parse_amount(d["miktar"])
             fiyat = parse_amount(d["fiyat"])
             kdv_oran = parse_amount(d["kdv"])
@@ -3436,3 +3436,16 @@ if __name__ == "__main__":
         except Exception:
             pass
 
+
+
+def normalize_fatura_tarihi(value):
+    """Accept Turkish dotted date or ISO; store ISO consistently."""
+    value = (value or "").strip()
+    if not value:
+        return date.today().isoformat()
+    for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(value, fmt).date().isoformat()
+        except ValueError:
+            pass
+    raise ValueError("Fatura tarihi GG.AA.YYYY biçiminde olmalıdır.")
