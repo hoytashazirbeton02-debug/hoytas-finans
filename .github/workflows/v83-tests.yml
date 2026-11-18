@@ -25,3 +25,36 @@ jobs:
             echo "Database file tracked in repository"
             exit 1
           fi
+
+  windows-install-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies using shipped requirements
+        run: python -m pip install -r requirements.txt
+      - name: Compile application and run regression tests on Windows
+        run: |
+          python -m py_compile hoytas.py
+          python test_v82_integrity.py
+          python test_v83_source.py
+      - name: Verify launch files and create candidate install archive
+        shell: pwsh
+        run: |
+          foreach ($file in @("hoytas.py","Baslat.vbs","Baslat.bat","kurulum.bat","requirements.txt")) {
+            if (!(Test-Path $file)) { throw "Missing installer file: $file" }
+          }
+          $files = @("hoytas.py","Baslat.vbs","Baslat.bat","kurulum.bat","requirements.txt","DEGISIKLIKLER_v83.txt")
+          Compress-Archive -Path $files -DestinationPath "$env:RUNNER_TEMP/HOYTAS_v83_windows_candidate.zip"
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [IO.Compression.ZipFile]::OpenRead("$env:RUNNER_TEMP/HOYTAS_v83_windows_candidate.zip")
+          try {
+            if ($zip.Entries.Count -ne $files.Count) { throw "Incomplete installer archive" }
+          } finally { $zip.Dispose() }
+      - name: Upload Windows candidate for inspection only
+        uses: actions/upload-artifact@v4
+        with:
+          name: HOYTAS-v83-Windows-test-only
+          path: ${{ runner.temp }}/HOYTAS_v83_windows_candidate.zip
