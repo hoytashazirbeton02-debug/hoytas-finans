@@ -23,7 +23,7 @@ from xml.sax.saxutils import escape
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
 TARGET_SCHEMA_VERSION = 50
-APP_VERSION = 82
+APP_VERSION = 83
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 USER_DATA_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
 os.makedirs(USER_DATA_DIR, exist_ok=True)
@@ -921,7 +921,7 @@ class HoytasApp(tk.Tk):
         bar=ttk.Frame(self.fatura_tab); bar.pack(fill="x")
         ttk.Label(bar,text="Fatura / Belge Taslakları",font=("Segoe UI",16,"bold")).pack(side="left")
         ttk.Button(bar,text="Yeni Fatura Taslağı",command=self.add_fatura).pack(side="right")
-        ttk.Label(self.fatura_tab,text="Bu bölüm tutar ve KDV hesaplamalı yerel fatura taslağı oluşturur. EDM bağlantısı yapılana kadar resmi e-Fatura göndermez.",foreground="#7a4b00",wraplength=1000).pack(anchor="w",pady=(8,0))
+        ttk.Label(self.fatura_tab,text="Normal ve tevkifatlı fatura taslaklarında m³, KDV, tevkifat ve tahsil edilecek tutar hesaplanır. EDM üzerinden resmî gönderim yapılmadıkça bu kayıt taslaktır.",foreground="#7a4b00",wraplength=1000).pack(anchor="w",pady=(8,0))
         self.fatura_tree=self._tree(self.fatura_tab,("id","tarih","cari","belge","miktar","ara","kdv","toplam","tevkifat","net","odenen","kalan","durum"),("ID","Tarih","Cari","Belge No","m³","Ara Toplam TL","KDV TL","Genel Toplam TL","Tevkifat TL","Net TL","Tahsil TL","Kalan TL","Durum"),(45,100,200,120,70,120,100,120,110,110,110,110,125))
         row=ttk.Frame(self.fatura_tab); row.pack(fill="x",pady=8)
         ttk.Button(row,text="Fatura Tahsilatı (Koruma)",command=self.tahsilat_fatura).pack(side="left",padx=(0,8))
@@ -2504,7 +2504,7 @@ class HoytasApp(tk.Tk):
             return
         try:
             tarih = d["tarih"] or date.today().isoformat()
-            datetime.strptime(tarih, "%Y-%m-%d")
+            tarih = normalize_fatura_tarihi(tarih)
             miktar = parse_amount(d["miktar"])
             fiyat = parse_amount(d["fiyat"])
             kdv_oran = parse_amount(d["kdv"])
@@ -2566,7 +2566,13 @@ class HoytasApp(tk.Tk):
             return messagebox.showinfo("Cari seçin", "Önce tahsilat alınacak müşteriyi seçin.", parent=self)
         vals = self.cari_tree.item(sel[0], "values")
         cari_id, cari_unvan = int(vals[0]), str(vals[2])
+        with connect() as c:
+            open_invoices = c.execute("""SELECT id, COALESCE(belge_no,''), tahsil_edilecek-odenen
+                FROM fatura WHERE cari_id=? AND tahsil_edilecek-odenen>0.005
+                ORDER BY tarih,id""", (cari_id,)).fetchall()
+        invoice_options = ["Faturaya bağlama"] + [f"{fid} - {belge} (Kalan {kalan:.2f} TL)" for fid,belge,kalan in open_invoices]
         d = self.prompt(f"Cari Tahsilat - {cari_unvan}", [
+            ("fatura", "Tahsilatın bağlanacağı fatura (isteğe bağlı)", "combo", invoice_options),
             ("tarih", "Tahsilat tarihi (GG.AA.YYYY)", "entry", None),
             ("tutar", "Alınan tutar (TL)", "entry", None),
             ("yontem", "Ödeme şekli", "combo", ["Nakit", "Banka Havalesi / EFT", "Çek"]),
@@ -2576,17 +2582,24 @@ class HoytasApp(tk.Tk):
             ("aciklama", "Açıklama", "entry", None)])
         if not d: return
         try:
-            tarih = d["tarih"] or datetime.now().strftime("%Y-%m-%d")
-            datetime.strptime(tarih, "%Y-%m-%d")
+            tarih = normalize_fatura_tarihi(d["tarih"])
             tutar = parse_amount(d["tutar"])
             if tutar <= 0: raise ValueError("Tutar sıfırdan büyük olmalı.")
             if d["yontem"] == "Çek":
                 vade = d["vade"] or tarih
-                datetime.strptime(vade, "%Y-%m-%d")
+                vade = normalize_fatura_tarihi(vade)
         except ValueError:
             return messagebox.showerror("Hatalı bilgi", "Tarih/vade GG.AA.YYYY biçiminde, tutar sıfırdan büyük olmalıdır.", parent=self)
         aciklama = (d["aciklama"] or f"{cari_unvan} cari tahsilatı")
+        fatura_id = int(d["fatura"].split(" - ", 1)[0]) if d.get("fatura", "").split(" - ", 1)[0].isdigit() else None
         with connect() as c:
+            if fatura_id is not None:
+                invoice = c.execute("SELECT tahsil_edilecek,odenen FROM fatura WHERE id=? AND cari_id=?", (fatura_id,cari_id)).fetchone()
+                if not invoice or tutar > round(safe_float(invoice[0])-safe_float(invoice[1]), 2)+0.005:
+                    return messagebox.showerror("Fatura tutarı", "Fatura bulunamadı veya tahsilat kalan fatura tutarını aşıyor.", parent=self)
+                c.execute("INSERT INTO fatura_tahsilat(fatura_id,tarih,tutar,yontem,aciklama) VALUES(?,?,?,?,?)",
+                          (fatura_id,tarih,tutar,d["yontem"],aciklama))
+                c.execute("UPDATE fatura SET odenen=odenen+? WHERE id=?", (tutar,fatura_id))
             # Tahsilat, cari borcunu yalnızca alınan tutar kadar azaltır.
             c.execute("INSERT INTO hareket(tarih,cari_id,tur,kategori,aciklama,tutar,odeme_yontemi) VALUES(?,?,?,?,?,?,?)",
                       (tarih, cari_id, "Alacak", "Tahsilat", aciklama, tutar, d["yontem"]))
@@ -2602,7 +2615,7 @@ class HoytasApp(tk.Tk):
             else:
                 cek_no = d["cek_no"] or f"TAH-{datetime.now().strftime('%Y%m%d%H%M%S')}"
                 c.execute("INSERT INTO cek(yon,banka,banka_kodu,cari_id,cek_no,kesideci_lehtar,vade,tutar,durum,notlar) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                          ("Alınan", d["banka"] or "", "", cari_id, cek_no, cari_unvan, d["vade"] or tarih, tutar, "Bekliyor", aciklama))
+                          ("Alınan", d["banka"] or "", "", cari_id, cek_no, cari_unvan, vade, tutar, "Bekliyor", aciklama))
         self.refresh_all()
         messagebox.showinfo("Tahsilat kaydedildi", f"{tutar:,.2f} TL tahsilat kaydedildi. Cari bakiye alınan tutar kadar düşürüldü.", parent=self)
 
@@ -3397,6 +3410,21 @@ class HoytasApp(tk.Tk):
 
     def show_db_path(self):
         messagebox.showinfo("Veritabanı",f"Veriler burada saklanıyor:\n{DB_PATH}\n\nEski veriler ilk açılışta bu konuma kopyalanır; yedekleri düzenli alın.")
+
+
+
+def normalize_fatura_tarihi(value):
+    """Accept Turkish dotted date or ISO; store ISO consistently."""
+    value = (value or "").strip()
+    if not value:
+        return date.today().isoformat()
+    for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(value, fmt).date().isoformat()
+        except ValueError:
+            pass
+    raise ValueError("Fatura tarihi GG.AA.YYYY biçiminde olmalıdır.")
+
 
 if __name__ == "__main__":
     app = None
