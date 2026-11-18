@@ -22,3 +22,5 @@ for invalid in ("31.02.2026", "2026/11/18"):
         raise AssertionError("Invalid date accepted: " + invalid)
 assert "INSERT INTO fatura_tahsilat" not in source.split("    def tahsilat_fatura(self):", 1)[1].split("    def cari_tahsilat(self):", 1)[0]
 print("v83 static date and receipt guard checks passed")
+
+# Trigger PR validation on v83 candidate branch.
