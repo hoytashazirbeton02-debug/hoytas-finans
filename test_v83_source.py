@@ -24,3 +24,11 @@ assert "INSERT INTO fatura_tahsilat" not in source.split("    def tahsilat_fatur
 print("v83 static date and receipt guard checks passed")
 
 # Trigger PR validation on v83 candidate branch.
+
+# Invoice allocation must use one receipt and one invoice ledger entry, with a balance cap.
+section = source.split("    def cari_tahsilat(self):", 1)[1].split("    def refresh_cari(self):", 1)[0]
+assert "fatura_tahsilat(fatura_id,tarih,tutar,yontem,aciklama)" in section
+assert "UPDATE fatura SET odenen=odenen+?" in section
+assert "tutar > round(safe_float(invoice[0])-safe_float(invoice[1]), 2)+0.005" in section
+assert section.count('INSERT INTO nakit_kasa(') == 1
+assert section.count('INSERT INTO banka_hareket(') == 1
