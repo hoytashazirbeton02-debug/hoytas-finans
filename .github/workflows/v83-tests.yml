@@ -1,0 +1,27 @@
+name: HOYTAS v83 Candidate Tests
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  source-and-database:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare Python and Tkinter
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk
+      - name: Compile and run isolated integrity tests
+        run: |
+          python -m py_compile hoytas.py
+          python test_v82_integrity.py
+          python test_v83_source.py
+      - name: Check no customer database is included
+        run: |
+          if git ls-files | grep -Ei '\.(db|sqlite|sqlite3)$'; then
+            echo "Database file tracked in repository"
+            exit 1
+          fi
