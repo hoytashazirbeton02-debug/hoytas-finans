@@ -1,0 +1,6 @@
+HOYTAŞ Finans v80
+
+- Önceden kurulmuş sürüm klasörü doğrulanır; doğru sürüm mevcutsa aktif kısayol yeniden bağlanır.
+- Eksik/uyuşmayan kurulumun üzerine yazılmaz; mevcut veriler korunur.
+- GitHub sürüm kontrolünde geçici bağlantı kopmalarına karşı sınırlı yeniden deneme eklenmiştir.
+- Veritabanı yerel kullanıcı klasöründe korunur; yeni sürüm ayrı klasöre kurulur.
