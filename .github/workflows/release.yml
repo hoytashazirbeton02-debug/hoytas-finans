@@ -44,11 +44,12 @@ jobs:
           test -f Baslat.vbs
           python -m py_compile hoytas.py
           python test_v82_integrity.py
+          python test_v83_source.py
           python - <<'PY'
           import ast, pathlib, re
           source = pathlib.Path("hoytas.py").read_text(encoding="utf-8")
           tree = ast.parse(source)
-          assert re.search(r"^APP_VERSION = 82$", source, re.M)
+          assert re.search(r"^APP_VERSION = 83$", source, re.M)
           assert re.search(r"^TARGET_SCHEMA_VERSION = 50$", source, re.M)
           for required in ("fatura_tahsilat", "tevkifat_tutar", "tahsil_edilecek", "def tahsilat_fatura", "def add_fatura"):
               assert required in source, required
@@ -57,7 +58,7 @@ jobs:
           guard = source.split('    def tahsilat_fatura(self):',1)[1].split('    def cari_tahsilat(self):',1)[0]
           assert 'INSERT INTO fatura_tahsilat' not in guard, "Unreconciled receipts must be disabled"
           assert '"fatura_tahsilat", "gelen_fatura"' in source, "Receipt audit trail missing"
-          print("v82 source and migration checks passed")
+          print("v83 source and migration checks passed")
           PY
           mkdir -p dist
           VERSION="$VERSION" python - <<'PY'
