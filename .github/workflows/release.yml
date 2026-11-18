@@ -22,6 +22,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install Tkinter for Linux validation
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk
       - name: Build and validate HOYTAS release package
         id: package
         shell: bash
