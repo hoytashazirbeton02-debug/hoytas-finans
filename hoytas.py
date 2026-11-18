@@ -2224,6 +2224,13 @@ class HoytasApp(tk.Tk):
         sel=tree.selection()
         if not sel: return messagebox.showinfo("Kayıt seçin","Düzenlemek için önce bir satır seçin.",parent=self)
         rid=int(tree.item(sel[0],"values")[0])
+        if table == "fatura":
+            with connect() as check_c:
+                invoice = check_c.execute("SELECT odenen,tevkifat_oran FROM fatura WHERE id=?", (rid,)).fetchone()
+            if invoice and (invoice[0] > 0.005 or invoice[1] > 0.005):
+                return messagebox.showinfo("Fatura koruması",
+                    "Tahsilat yapılmış veya tevkifatlı faturalar bu genel düzenleme ekranından değiştirilemez. "
+                    "Finansal hesapları korumak için düzeltme işlemi ayrı bir fatura revizyonuyla yapılmalıdır.",parent=self)
         if table == "hareket":
             with connect() as c:
                 linked = c.execute("SELECT aciklama FROM hareket WHERE id=?", (rid,)).fetchone()
@@ -2287,7 +2294,7 @@ class HoytasApp(tk.Tk):
                         if not check_c.execute("SELECT 1 FROM cari WHERE id=?",(data["cari_id"],)).fetchone(): raise ValueError("Seçilen cari hesap bulunamadı.")
                 data["toplam"]=round(data["miktar_m3"]*data["birim_fiyat"]+data.get("pompa_ucreti",0),2)
             if table=="fatura":
-                data["miktar_m3"]=int(data["miktar_m3"] or 0); data["ara_toplam"]=round(data["miktar_m3"]*data["birim_fiyat"],2); data["kdv_tutar"]=round(data["ara_toplam"]*data["kdv_oran"]/100,2); data["genel_toplam"]=data["ara_toplam"]+data["kdv_tutar"]
+                data["miktar_m3"]=parse_amount(data["miktar_m3"]); data["ara_toplam"]=round(data["miktar_m3"]*data["birim_fiyat"],2); data["kdv_tutar"]=round(data["ara_toplam"]*data["kdv_oran"]/100,2); data["genel_toplam"]=round(data["ara_toplam"]+data["kdv_tutar"],2); data["tahsil_edilecek"]=data["genel_toplam"]
             if table in ("stok","personel") and any(v is None for v in vals): raise ValueError("Zorunlu alanları kontrol edin.")
             for key in ("tutar","miktar","miktar_m3","birim_fiyat","maas"):
                 if key in data and data[key] is not None and data[key] < 0: raise ValueError("Tutar, miktar ve fiyat negatif olamaz.")
@@ -2304,6 +2311,8 @@ class HoytasApp(tk.Tk):
                     c.execute("UPDATE stok SET miktar=miktar+? WHERE id=?",(new_delta,data["stok_id"]))
                 assignments=",".join(f"{col}=?" for col in cols)
                 c.execute(f"UPDATE {table} SET {assignments} WHERE id=?",tuple(vals)+(rid,))
+                if table=="fatura":
+                    c.execute("UPDATE fatura SET ara_toplam=?,kdv_tutar=?,genel_toplam=?,tahsil_edilecek=? WHERE id=?", (data["ara_toplam"],data["kdv_tutar"],data["genel_toplam"],data["tahsil_edilecek"],rid))
                 if table=="beton_satis":
                     c.execute("UPDATE beton_satis SET toplam=? WHERE id=?",(data["toplam"],rid))
                     # Cari borç satırını satışın değişmez ID'sine göre tekilleştirip senkronla.
@@ -2784,6 +2793,12 @@ class HoytasApp(tk.Tk):
         sel = tree.selection()
         if not sel: return messagebox.showinfo("Kayıt seçin","Önce silmek istediğiniz satırı seçin.", parent=self)
         row_id = int(tree.item(sel[0],"values")[0])
+        if table == "fatura":
+            with connect() as check_c:
+                paid = check_c.execute("SELECT COUNT(*) FROM fatura_tahsilat WHERE fatura_id=?", (row_id,)).fetchone()[0]
+            if paid:
+                return messagebox.showerror("Tahsilatlı fatura korunuyor",
+                    "Bu faturaya ait tahsilat kaydı var. Muhasebe geçmişini korumak için silme engellendi.",parent=self)
         if table == "hareket":
             with connect() as c:
                 linked = c.execute("SELECT aciklama FROM hareket WHERE id=?", (row_id,)).fetchone()
