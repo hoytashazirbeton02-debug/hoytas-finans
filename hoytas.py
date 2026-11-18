@@ -2571,10 +2571,10 @@ class HoytasApp(tk.Tk):
                 c.execute("INSERT INTO fatura_tahsilat(fatura_id,tarih,tutar,yontem,aciklama) VALUES(?,?,?,?,?)",
                           (fid,tarih,tutar,d["yontem"],d["aciklama"]))
                 c.execute("UPDATE fatura SET odenen=odenen+? WHERE id=?", (tutar,fid))
-                # Fatura taslakları cari borcu ikinci kez artırmaz; cari tahsilat tek defa işlenir.
-                c.execute("""INSERT INTO hareket(tarih,cari_id,tur,kategori,aciklama,tutar,odeme_yontemi)
-                             VALUES(?,?,?,?,?,?,?)""",
-                          (tarih,row[0],"Alacak","Fatura Tahsilatı",f"Fatura #{fid} / {row[1]} - {d['aciklama']}",tutar,d["yontem"]))
+                # Cari borç, beton satışından zaten doğmuş olabilir.
+                # Taslak fatura tahsilatı yalnızca fatura alt defterinde izlenir;
+                # aynı tahsilatı cari hareketlere otomatik yazmak borcu yanlış düşürebilir.
+                # Cari borcunu azaltmak için Cari Tahsilat ekranı kullanılır.
                 if d["yontem"] == "Nakit":
                     c.execute("""INSERT INTO nakit_kasa(tarih,yon,kaynak,aciklama,tutar,kullanici)
                                  VALUES(?,?,?,?,?,?)""",
@@ -2582,7 +2582,7 @@ class HoytasApp(tk.Tk):
                                getattr(self,"current_user",{}).get("username","")))
             self.refresh_all()
             messagebox.showinfo("Tahsilat kaydedildi",
-                f"Tahsil edilen: {tutar:,.2f} TL\nKalan: {kalan-tutar:,.2f} TL",parent=self)
+                f"Tahsil edilen: {tutar:,.2f} TL\nKalan: {kalan-tutar:,.2f} TL\nCari borç bakiyesi ayrıca izlenir.",parent=self)
         except (ValueError,TypeError) as exc:
             messagebox.showerror("Tahsilat kaydedilemedi",str(exc),parent=self)
 
