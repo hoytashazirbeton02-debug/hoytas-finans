@@ -1,0 +1,9 @@
+HOYTAŞ Finans v81 - Fatura ve arayüz geliştirmeleri
+
+- Normal ve tevkifatlı fatura taslakları; m³ ve birim fiyattan otomatik KDV, tevkifat ve net tutar hesabı.
+- Fatura bazında tahsilat, kalan tutar ve durum sütunları.
+- Tahsilat yapılmış faturaların silinmesi; tahsilatlı veya tevkifatlı faturaların genel düzenleme ekranından değiştirilmesi engellendi.
+- Eski faturalar için geriye uyumlu veritabanı alanları ve ayrı tahsilat tablosu.
+- Sekmelere özel işlem açıklamaları.
+- UYARI: Fatura taslağı EDM üzerinden resmi e-fatura gönderimi değildir. Cari tahsilatı ile fatura tahsilatı henüz otomatik mutabakatlı değildir; aynı ödeme iki ekrandan tekrar girilmemelidir.
+- Windows gerçek kullanıcı testi ve mevzuat/tevkifat oranı doğrulaması ayrıca gereklidir.
