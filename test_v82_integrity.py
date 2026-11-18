@@ -7,7 +7,7 @@ with tempfile.TemporaryDirectory(prefix="hoytas_test_") as td:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     with module.connect() as db:
-        db.execute("INSERT INTO cari(unvan,tur) VALUES(?,?)", ("TEST CARİ", "Müşteri"))
+        db.execute("INSERT INTO cari(unvan,tur,created_at) VALUES(?,?,?)", ("TEST CARİ", "Müşteri", "2026-11-18 09:00:00"))
         cid = db.execute("SELECT id FROM cari WHERE unvan='TEST CARİ'").fetchone()[0]
         db.execute("INSERT INTO fatura(tarih,cari_id,belge_no,miktar_m3,birim_fiyat,ara_toplam,kdv_tutar,genel_toplam,tahsil_edilecek) VALUES(?,?,?,?,?,?,?,?,?)",
                    ("2026-11-18", cid, "TEST-001", 30.5, 100, 3050, 610, 3660, 3660))
