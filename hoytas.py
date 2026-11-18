@@ -2810,6 +2810,14 @@ class HoytasApp(tk.Tk):
                     "Bağlantının bozulmaması için buradan silinemez. Satışı Beton Satış sayfasından silin.", parent=self)
         if table == "cari":
             with connect() as c:
+                receipt_count = c.execute("""SELECT COUNT(*) FROM fatura_tahsilat ft
+                    JOIN fatura f ON f.id=ft.fatura_id WHERE f.cari_id=?""", (row_id,)).fetchone()[0]
+            if receipt_count:
+                return messagebox.showerror("Finansal kayıt koruması",
+                    "Bu cariye bağlı fatura tahsilatları var. İşlem geçmişini ve tahsilat kayıtlarını "
+                    "korumak için cari silinemez. Önce kayıtları muhasebe yetkilisiyle mutabık hâle getirin.",
+                    parent=self)
+            with connect() as c:
                 cari = c.execute("SELECT unvan FROM cari WHERE id=?", (row_id,)).fetchone()
                 if not cari: return messagebox.showinfo("Bulunamadı", "Cari hesap zaten silinmiş.", parent=self)
                 counts = {t:c.execute(f"SELECT COUNT(*) FROM {t} WHERE cari_id=?",(row_id,)).fetchone()[0] for t in ("hareket","cek","beton_satis","fatura","gelen_fatura")}
