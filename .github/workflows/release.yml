@@ -1,5 +1,10 @@
 name: HOYTAS Release
 on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/release.yml'
+      - 'packages/**'
   workflow_dispatch:
     inputs:
       version:
@@ -20,6 +25,7 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
+          if [[ -z "$VERSION" ]]; then VERSION="v$(sed -n 's/^APP_VERSION = //p' hoytas.py | head -1)"; fi
           [[ "$VERSION" =~ ^v[0-9]+$ ]] || { echo "Invalid version"; exit 1; }
           ZIP="packages/HOYTAS_${VERSION}_BUTUN_MENU_DUGME_DUZELTME.zip"
           if [[ "$VERSION" == "v79" ]]; then
