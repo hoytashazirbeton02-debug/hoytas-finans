@@ -1,0 +1,7 @@
+HOYTAŞ v87
+- Borç takip listesi ortak arama ve yenileme altyapısına bağlandı.
+- Cari adı araması Türkçe karakter normalizasyonu ile çalışır.
+- Filtrelenen borç toplamı ve cari sayısı güncellenir.
+- Mevcut satır etiketleri ve yenileme optimizasyonu korunur.
+- Veritabanı şema sürümü değiştirilmedi.
+- Windows ön testleri ve otomatik bütünlük testleri başarılı; gerçek kullanım doğrulaması gereklidir.
