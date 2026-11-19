@@ -45,11 +45,12 @@ jobs:
           python -m py_compile hoytas.py
           python test_v82_integrity.py
           python test_v83_source.py
+          export VERSION
           python - <<'PY'
-          import ast, pathlib, re
+          import ast, pathlib, re, os
           source = pathlib.Path("hoytas.py").read_text(encoding="utf-8")
           tree = ast.parse(source)
-          assert re.search(r"^APP_VERSION = 83$", source, re.M)
+          assert re.search(r"^APP_VERSION = " + re.escape(os.environ["VERSION"].lstrip("v")) + r"$", source, re.M)
           assert re.search(r"^TARGET_SCHEMA_VERSION = 50$", source, re.M)
           for required in ("fatura_tahsilat", "tevkifat_tutar", "tahsil_edilecek", "def tahsilat_fatura", "def add_fatura"):
               assert required in source, required
