@@ -1,0 +1,2 @@
+HOYTAS v86
+Degismeyen tablo gorunumleri tekrar cizilmez. Yavas genel yenilemeler performans.log dosyasina kaydedilir. Finansal hesaplama ve veritabani semasi degistirilmedi.

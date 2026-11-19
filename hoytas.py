@@ -20,12 +20,13 @@ import secrets
 import traceback
 import threading
 import queue
+import time
 from xml.sax.saxutils import escape
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
 TARGET_SCHEMA_VERSION = 50
-APP_VERSION = 85
+APP_VERSION = 86
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 USER_DATA_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
 os.makedirs(USER_DATA_DIR, exist_ok=True)
@@ -2907,13 +2908,18 @@ class HoytasApp(tk.Tk):
         rows = getattr(tree, "_all_rows", [])
         term = tree._search_var.get().strip().casefold() if hasattr(tree, "_search_var") else ""
         shown = [r for r in rows if term in " ".join(str(v or "") for v in r).casefold()] if term else rows
-        tree.delete(*tree.get_children())
         row_tags = getattr(tree, "_row_tags", {})
+        signature = (tuple(tuple(r) for r in shown), tuple(sorted(row_tags.items())))
+        children = tree.get_children()
+        if getattr(tree, "_render_signature", None) == signature and len(children) == len(shown):
+            return
+        tree.delete(*children)
         for idx, row in enumerate(shown):
             tag = row_tags.get(str(row[0]))
             if not tag:
                 tag = "even" if idx % 2 == 0 else "odd"
             tree.insert("", "end", values=row, tags=(tag,))
+        tree._render_signature = signature
 
     def fill_tree(self, tree, rows):
         tree._all_rows = list(rows)
@@ -2939,6 +2945,7 @@ class HoytasApp(tk.Tk):
             self.debt_alert_label.config(text=f"⚠ ÖDEME BEKLEYEN CARİ: {odemesiz} hesapta hiç tahsilat yok. Toplam açık cari bakiyesi: {acik_borc:,.2f} TL. Cari Hesaplar sekmesinde kırmızı/turuncu uyarılarla işaretlenir.")
 
     def refresh_all(self):
+        started = time.monotonic()
         with connect() as c:
 
             self.fill_tree(self.hareket_tree, c.execute("""SELECT h.id,h.tarih,h.tur,h.kategori,COALESCE(c.unvan,''),h.aciklama,printf('%.2f',h.tutar),h.odeme_yontemi FROM hareket h LEFT JOIN cari c ON c.id=h.cari_id ORDER BY h.tarih ASC,h.id ASC""").fetchall())
@@ -2987,6 +2994,13 @@ class HoytasApp(tk.Tk):
 
         if hasattr(self, 'alisveris_tree'):
             self.refresh_alisveris_cari()
+        elapsed = time.monotonic() - started
+        if elapsed > 1.0:
+            try:
+                with open(os.path.join(USER_DATA_DIR, "performans.log"), "a", encoding="utf-8") as log:
+                    log.write(f"{datetime.now().isoformat(timespec='seconds')} | refresh_all | {elapsed:.3f}s\n")
+            except OSError:
+                pass
 
     def pdf_menu(self):
         with connect() as c: cariler=c.execute("SELECT id,unvan FROM cari ORDER BY unvan").fetchall()

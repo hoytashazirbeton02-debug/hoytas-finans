@@ -5,7 +5,7 @@ from pathlib import Path
 
 source = Path("hoytas.py").read_text(encoding="utf-8")
 tree = ast.parse(source)
-assert "APP_VERSION = 85" in source
+assert "APP_VERSION = 86" in source
 assert source.index("def normalize_fatura_tarihi") < source.index('if __name__ == "__main__":')
 node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "normalize_fatura_tarihi")
 namespace = {"date": datetime.date, "datetime": datetime.datetime}
