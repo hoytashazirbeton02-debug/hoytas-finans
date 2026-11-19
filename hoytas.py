@@ -3412,17 +3412,27 @@ class HoytasApp(tk.Tk):
             messagebox.showerror("Yedekleme hatası", str(e))
 
     def automatic_backup(self):
-        """İlk açılışta ve günde bir kez otomatik veritabanı yedeği al."""
-        try:
-            os.makedirs(BACKUP_DIR, exist_ok=True)
-            today = datetime.now().strftime("%Y%m%d")
-            exists_today = any(name.startswith("hoytas_" + today) and name.endswith(".db") for name in os.listdir(BACKUP_DIR))
-            if not exists_today:
-                self._create_backup_file()
-        except Exception as e:
-            # Yedekleme başarısızlığı sessizce gizlenmesin; uygulama açılmaya devam eder.
-            try: messagebox.showwarning("Otomatik yedekleme", f"Otomatik yedek alınamadı. Lütfen 'Şimdi Yedekle' seçeneğini kullanın.\n\n{e}", parent=self)
-            except tk.TclError: pass
+        """Run daily verified backup outside the Tk event loop."""
+        results = queue.Queue()
+        def worker():
+            try:
+                os.makedirs(BACKUP_DIR, exist_ok=True)
+                today = datetime.now().strftime("%Y%m%d")
+                if not any(name.startswith("hoytas_" + today) and name.endswith(".db") for name in os.listdir(BACKUP_DIR)):
+                    self._create_backup_file()
+                results.put(None)
+            except Exception as exc:
+                results.put(str(exc))
+        def poll():
+            try:
+                error = results.get_nowait()
+            except queue.Empty:
+                self.after(250, poll)
+                return
+            if error:
+                messagebox.showwarning("Otomatik yedekleme", "Otomatik yedek alınamadı. Lütfen Şimdi Yedekle seçeneğini kullanın.\n\n" + error, parent=self)
+        threading.Thread(target=worker, daemon=True).start()
+        self.after(250, poll)
 
     def database_health_check(self):
         """Run non-destructive SQLite and FK checks, then create a verified snapshot."""
