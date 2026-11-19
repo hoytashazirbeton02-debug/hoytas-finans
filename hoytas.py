@@ -26,7 +26,7 @@ from xml.sax.saxutils import escape
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
 TARGET_SCHEMA_VERSION = 50
-APP_VERSION = 86
+APP_VERSION = 87
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 USER_DATA_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
 os.makedirs(USER_DATA_DIR, exist_ok=True)
@@ -1909,7 +1909,7 @@ class HoytasApp(tk.Tk):
         ttk.Label(bar, text="Cari ara:").pack(side="left", padx=(18, 4))
         search = ttk.Entry(bar, textvariable=self.borc_search, width=28)
         search.pack(side="left")
-        self.borc_search.trace_add("write", lambda *_: self.refresh_borc_takip())
+        self.borc_search.trace_add("write", lambda *_: self._apply_tree_search(self.borc_tree) if hasattr(self, "borc_tree") else None)
         ttk.Button(bar, text="Listeyi Yenile", command=self.refresh_all).pack(side="right", padx=(6, 0))
         ttk.Label(self.borc_takip_tab,
                   text="Yalnızca kalan borcu bulunan cariler listelenir. Ödeme kaydı girildiğinde kalan tutar otomatik güncellenir.",
@@ -1939,20 +1939,16 @@ class HoytasApp(tk.Tk):
     def refresh_borc_takip(self):
         if not hasattr(self, "borc_tree"):
             return
-        term = normalize_search_text(self.borc_search.get()) if hasattr(self, "borc_search") else ""
         rows = self._debt_rows()
         visible = []
+        tags = {}
         for cid, name, debt, paid, remaining in rows:
-            if term and term not in normalize_search_text(name):
-                continue
-            status = "Kısmi ödeme" if safe_float(paid or 0) > 0.005 else "Ödeme bekliyor"
-            tag = "debt_partial" if safe_float(paid or 0) > 0.005 else "debt_unpaid"
-            visible.append(((cid, name, f"{debt:,.2f}", f"{paid:,.2f}", f"{remaining:,.2f}", status), tag))
-        self.borc_tree.delete(*self.borc_tree.get_children())
-        for values, tag in visible:
-            self.borc_tree.insert("", "end", values=values, tags=(tag,))
-        visible_total = sum(safe_float(item[0][4]) for item in visible)
-        self.borc_total_label.config(text=f"Toplam kalan borç: {visible_total:,.2f} TL   |   Borçlu cari: {len(visible)}")
+            partial = safe_float(paid or 0) > 0.005
+            status = "Kısmi ödeme" if partial else "Ödeme bekliyor"
+            tags[str(cid)] = "debt_partial" if partial else "debt_unpaid"
+            visible.append((cid, name, f"{debt:,.2f}", f"{paid:,.2f}", f"{remaining:,.2f}", status))
+        self.borc_tree._row_tags = tags
+        self.fill_tree(self.borc_tree, visible)
 
     def _open_selected_debt_cari(self):
         sel = self.borc_tree.selection()
@@ -2906,8 +2902,13 @@ class HoytasApp(tk.Tk):
 
     def _apply_tree_search(self, tree):
         rows = getattr(tree, "_all_rows", [])
-        term = tree._search_var.get().strip().casefold() if hasattr(tree, "_search_var") else ""
-        shown = [r for r in rows if term in " ".join(str(v or "") for v in r).casefold()] if term else rows
+        term = normalize_search_text(tree._search_var.get()) if hasattr(tree, "_search_var") else ""
+        shown = [r for r in rows if term in normalize_search_text(" ".join(str(v or "") for v in r))] if term else rows
+        if tree is getattr(self, "borc_tree", None):
+            name_term = normalize_search_text(self.borc_search.get())
+            shown = [r for r in shown if name_term in normalize_search_text(r[1])]
+            total = sum(safe_float(r[4]) for r in shown)
+            self.borc_total_label.config(text=f"Toplam kalan borç: {total:,.2f} TL   |   Borçlu cari: {len(shown)}")
         row_tags = getattr(tree, "_row_tags", {})
         signature = (tuple(tuple(r) for r in shown), tuple(sorted(row_tags.items())))
         children = tree.get_children()
