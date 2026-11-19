@@ -1,0 +1,4 @@
+HOYTAS v84
+Acilista ag kontrolu ve gunluk yedekleme arka planda calisir.
+Ilk sekme olayinda gereksiz yenileme engellendi.
+Veritabani semasi korunur.

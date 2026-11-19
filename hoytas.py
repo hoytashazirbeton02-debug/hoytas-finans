@@ -18,12 +18,14 @@ import urllib.error
 import hmac
 import secrets
 import traceback
+import threading
+import queue
 from xml.sax.saxutils import escape
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
 TARGET_SCHEMA_VERSION = 50
-APP_VERSION = 83
+APP_VERSION = 84
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 USER_DATA_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
 os.makedirs(USER_DATA_DIR, exist_ok=True)
@@ -661,6 +663,9 @@ class HoytasApp(tk.Tk):
         self.style.configure("Metric.TLabelframe", background="#FFFFFF", bordercolor="#D8E0DB", relief="solid")
         self.style.configure("Metric.TLabel", background="#FFFFFF", foreground="#1F3028", font=("Segoe UI", 18, "bold"))
         self._build()
+        # Initial refresh and write operations already synchronize all modules.
+        # Avoid a duplicate full refresh on the initial notebook event.
+        self._last_selected_tab = self.tabs.select()
         self.tabs.bind("<<NotebookTabChanged>>", self._refresh_on_tab_change, add="+")
         # Klavye kısayolları: sekmeler, cari arama ve kayıt formları.
         self.bind_all("<Control-f>", self._shortcut_cari_search)
@@ -676,6 +681,10 @@ class HoytasApp(tk.Tk):
 
     def _refresh_on_tab_change(self, event=None):
         """Sekme değişiminde bütün modülleri aynı veritabanı görüntüsüne getir."""
+        selected = self.tabs.select()
+        if selected == self._last_selected_tab:
+            return
+        self._last_selected_tab = selected
         if getattr(self, "_refreshing_tab_change", False):
             return
         self._refreshing_tab_change = True
@@ -1100,15 +1109,44 @@ class HoytasApp(tk.Tk):
         return None
 
     def check_for_updates_silent(self):
-        """Açılışta ağ hatalarını kullanıcıyı rahatsız etmeden ele al."""
-        try:
-            self.check_for_updates(silent=True)
-        except Exception as exc:
+        """Only fetch version metadata in a worker; never invoke Tk or install there."""
+        results = queue.Queue()
+        def worker():
             try:
-                with open(os.path.join(USER_DATA_DIR, "guncelleme.log"), "a", encoding="utf-8") as log:
-                    log.write(f"{datetime.now().isoformat(timespec='seconds')} | {exc}\n")
-            except OSError:
-                pass
+                repo = self._update_config()
+                with open(UPDATE_CONFIG_PATH, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+                url = str(config.get("manifest_url", "")).strip() or DEFAULT_UPDATE_MANIFEST_URL
+                if url:
+                    url = normalize_dropbox_download_url(url)
+                    if urllib.parse.urlparse(url).scheme != "https":
+                        raise ValueError("Manifest HTTPS olmalıdır.")
+                elif repo:
+                    url = f"https://api.github.com/repos/{repo}/releases/latest"
+                else:
+                    results.put(None)
+                    return
+                req = urllib.request.Request(url, headers={"User-Agent": "HOYTAS-Updater/1.0"})
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    raw = response.read(2 * 1024 * 1024 + 1)
+                if len(raw) > 2 * 1024 * 1024:
+                    raise ValueError("Güncelleme bilgisi çok büyük.")
+                data = json.loads(raw.decode("utf-8"))
+                version = int(data["version"]) if config.get("manifest_url") or DEFAULT_UPDATE_MANIFEST_URL else int(re.fullmatch(r"v?(\d+)", str(data["tag_name"])).group(1))
+                results.put(version)
+            except Exception as exc:
+                self._log_update_error(exc)
+                results.put(None)
+        def poll():
+            try:
+                version = results.get_nowait()
+            except queue.Empty:
+                self.after(200, poll)
+                return
+            if version is not None and version > APP_VERSION:
+                messagebox.showinfo("HOYTAŞ güncellemesi", f"Yeni sürüm v{version} mevcut. Güncellemeleri Denetle düğmesinden kurabilirsiniz.", parent=self)
+        threading.Thread(target=worker, daemon=True).start()
+        self.after(200, poll)
 
     def _fetch_release_with_retry(self, request):
         """Geçici bağlantı kopmalarında sınırlı yeniden deneme."""
@@ -1175,7 +1213,7 @@ class HoytasApp(tk.Tk):
                             break
             if not digest.startswith("sha256:") or not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest):
                 raise RuntimeError("Yayın paketi SHA-256 doğrulama bilgisi taşımıyor; güvenlik için indirme durduruldu.")
-            if not silent and not messagebox.askyesno("HOYTAŞ güncellemesi bulundu", f"Yeni sürüm v{version} bulundu.\n\nŞimdi indirip güvenli şekilde kurayım mı?", parent=self):
+            if not messagebox.askyesno("HOYTAŞ güncellemesi bulundu", f"Yeni sürüm v{version} bulundu.\n\nŞimdi indirip güvenli şekilde kurayım mı?", parent=self):
                 return
             fd, package_path = tempfile.mkstemp(prefix=f"hoytas_v{version}_", suffix=".zip", dir=USER_DATA_DIR)
             os.close(fd)
@@ -3374,17 +3412,27 @@ class HoytasApp(tk.Tk):
             messagebox.showerror("Yedekleme hatası", str(e))
 
     def automatic_backup(self):
-        """İlk açılışta ve günde bir kez otomatik veritabanı yedeği al."""
-        try:
-            os.makedirs(BACKUP_DIR, exist_ok=True)
-            today = datetime.now().strftime("%Y%m%d")
-            exists_today = any(name.startswith("hoytas_" + today) and name.endswith(".db") for name in os.listdir(BACKUP_DIR))
-            if not exists_today:
-                self._create_backup_file()
-        except Exception as e:
-            # Yedekleme başarısızlığı sessizce gizlenmesin; uygulama açılmaya devam eder.
-            try: messagebox.showwarning("Otomatik yedekleme", f"Otomatik yedek alınamadı. Lütfen 'Şimdi Yedekle' seçeneğini kullanın.\n\n{e}", parent=self)
-            except tk.TclError: pass
+        """Run daily verified backup outside the Tk event loop."""
+        results = queue.Queue()
+        def worker():
+            try:
+                os.makedirs(BACKUP_DIR, exist_ok=True)
+                today = datetime.now().strftime("%Y%m%d")
+                if not any(name.startswith("hoytas_" + today) and name.endswith(".db") for name in os.listdir(BACKUP_DIR)):
+                    self._create_backup_file()
+                results.put(None)
+            except Exception as exc:
+                results.put(str(exc))
+        def poll():
+            try:
+                error = results.get_nowait()
+            except queue.Empty:
+                self.after(250, poll)
+                return
+            if error:
+                messagebox.showwarning("Otomatik yedekleme", "Otomatik yedek alınamadı. Lütfen Şimdi Yedekle seçeneğini kullanın.\n\n" + error, parent=self)
+        threading.Thread(target=worker, daemon=True).start()
+        self.after(250, poll)
 
     def database_health_check(self):
         """Run non-destructive SQLite and FK checks, then create a verified snapshot."""
