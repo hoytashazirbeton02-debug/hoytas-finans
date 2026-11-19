@@ -1,4 +1,4 @@
-﻿Option Explicit
+Option Explicit
 Dim sh, fso, root, pointer, folder, script, pyw, pyexe, f, ownFolder
 Set sh = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")

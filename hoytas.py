@@ -25,7 +25,7 @@ from xml.sax.saxutils import escape
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
 TARGET_SCHEMA_VERSION = 50
-APP_VERSION = 84
+APP_VERSION = 85
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 USER_DATA_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
 os.makedirs(USER_DATA_DIR, exist_ok=True)
@@ -270,10 +270,10 @@ class ClosingSQLiteConnection(sqlite3.Connection):
 
 def connect():
     existed = os.path.isfile(DB_PATH) and os.path.getsize(DB_PATH) > 0
-    con = sqlite3.connect(DB_PATH, timeout=30, factory=ClosingSQLiteConnection)
+    con = sqlite3.connect(DB_PATH, timeout=3, factory=ClosingSQLiteConnection)
     con.row_factory = None
     con.create_function("hoytas_actor", 0, lambda: APP_CURRENT_USER)
-    con.execute("PRAGMA busy_timeout = 30000")
+    con.execute("PRAGMA busy_timeout = 3000")
     con.execute("PRAGMA foreign_keys = ON")
     con.execute("PRAGMA synchronous = FULL")
     journal_mode = con.execute("PRAGMA journal_mode = WAL").fetchone()[0]
@@ -284,6 +284,11 @@ def connect():
         con.close()
         raise RuntimeError("Veritabanı ilişki kontrolleri etkinleştirilemedi.")
     current_version = con.execute("PRAGMA user_version").fetchone()[0]
+    if existed and current_version == TARGET_SCHEMA_VERSION:
+        return con
+    if current_version > TARGET_SCHEMA_VERSION:
+        con.close()
+        raise RuntimeError("Veritabanı daha yeni bir sürüme ait.")
     # Her yapısal yükseltmeden önce doğrulanmış ve ayrı isimli yedek alınır.
     if existed and current_version < TARGET_SCHEMA_VERSION:
         _verified_sqlite_backup(con, f"hoytas_v{current_version}_v{TARGET_SCHEMA_VERSION}_oncesi")
@@ -3487,11 +3492,21 @@ if __name__ == "__main__":
                     log.write(f"{datetime.now().isoformat(timespec='seconds')} | Kısayol: {shortcut_exc}\n")
             except OSError:
                 pass
+        import faulthandler
+        _hang_log = open(os.path.join(USER_DATA_DIR, "donma_teshis.log"), "a", encoding="utf-8")
+        faulthandler.enable(file=_hang_log)
+        faulthandler.dump_traceback_later(20, repeat=True, file=_hang_log)
         app = HoytasApp()
         # HoytasApp.__init__ already performs the initial refresh; avoid a duplicate startup pass.
         app.after(500, app.automatic_backup)
         app.after(900, app.check_due_cheques)
+        def heartbeat():
+            faulthandler.cancel_dump_traceback_later()
+            faulthandler.dump_traceback_later(20, repeat=True, file=_hang_log)
+            app.after(1000, heartbeat)
+        app.after(1000, heartbeat)
         app.mainloop()
+        faulthandler.cancel_dump_traceback_later()
     except SystemExit:
         raise
     except Exception:

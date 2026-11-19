@@ -1,0 +1,2 @@
+HOYTAS v85
+Gereksiz sema ve butunluk islemleri normal baglantilardan kaldirildi. Kilit bekleme suresi 3 saniye. Donma teshis gunlugu eklendi. VBS baslatici ASCII olarak duzeltildi.
