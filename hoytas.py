@@ -26,7 +26,7 @@ from xml.sax.saxutils import escape
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
 TARGET_SCHEMA_VERSION = 50
-APP_VERSION = 88
+APP_VERSION = 89
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 USER_DATA_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
 os.makedirs(USER_DATA_DIR, exist_ok=True)
@@ -569,6 +569,22 @@ def find_missing_beton_movements(db, cari_id):
     """Return unlinked sales; avoid creating a duplicate for plausible legacy entries."""
     missing, _, ambiguous = audit_beton_cari_amounts(db, cari_id)
     return missing, [row[:3] for row in ambiguous]
+
+
+def audit_all_cari(db):
+    """Read-only bulk audit, including closed and credit-balance accounts."""
+    results = []
+    for cid, name in db.execute("SELECT id,unvan FROM cari ORDER BY unvan,id").fetchall():
+        missing, wrong, ambiguous = audit_beton_cari_amounts(db, cid)
+        debt, credit = db.execute("""SELECT COALESCE(SUM(CASE WHEN tur='Borç' THEN tutar ELSE 0 END),0),
+            COALESCE(SUM(CASE WHEN tur='Alacak' THEN tutar ELSE 0 END),0)
+            FROM hareket WHERE cari_id=?""", (cid,)).fetchone()
+        view = db.execute("SELECT toplam_borc,toplam_alacak,bakiye FROM cari_bakiye WHERE cari_id=?", (cid,)).fetchone()
+        balance_error = not view or any(abs(safe_float(a)-safe_float(b)) > .009
+            for a,b in zip(view or (), (debt,credit,debt-credit)))
+        results.append((cid,name,missing,wrong,ambiguous,balance_error,
+                        round(sum(x[2] for x in missing)+sum(x[2]-x[4] for x in wrong),2)))
+    return results
 
 
 def normalize_date(value):
@@ -1859,10 +1875,67 @@ class HoytasApp(tk.Tk):
                     self.edit_selected(self.hareket_tree,"hareket"); self.refresh_all(); return
         return messagebox.showinfo("Hareket bulunamadı","Bu cari hareketi ana hareket listesinde bulunamadı.",parent=self)
 
+    def bulk_cari_audit(self):
+        try:
+            with connect() as db:
+                db.execute("BEGIN")
+                rows = audit_all_cari(db)
+                db.rollback()
+            issues = [r for r in rows if r[2] or r[3] or r[4] or r[5]]
+            if not issues:
+                return messagebox.showinfo("Toplu cari kontrol", f"{len(rows)} cari kontrol edildi. Beton bağlantısı veya bakiye hesap hatası bulunmadı.", parent=self)
+            win = tk.Toplevel(self)
+            win.title("Toplu cari kontrol")
+            win.geometry("920x480")
+            ttk.Label(win,text=f"{len(rows)} cari kontrol edildi; {len(issues)} inceleme gerekli.").pack(anchor="w",padx=12,pady=8)
+            frame=ttk.Frame(win); frame.pack(fill="both",expand=True,padx=12)
+            cols=("name","missing","wrong","ambiguous","balance","delta")
+            tree=ttk.Treeview(frame,columns=cols,show="headings")
+            for col,label,width in zip(cols,("Cari","Eksik","Tutar hatası","Belirsiz","Bakiye hatası","Olası fark TL"),(260,80,100,85,100,130)):
+                tree.heading(col,text=label); tree.column(col,width=width)
+            scroll=ttk.Scrollbar(frame,orient="vertical",command=tree.yview)
+            tree.configure(yscrollcommand=scroll.set)
+            scroll.pack(side="right",fill="y"); tree.pack(fill="both",expand=True)
+            for cid,name,missing,wrong,ambiguous,err,delta in issues:
+                tree.insert("","end",values=(name,len(missing),len(wrong),len(ambiguous),"Var" if err else "Yok",f"{delta:,.2f}"))
+            ttk.Label(win,text="Yalnızca tekil, aynı cariye bağlı tutar hataları toplu onarılır. Eksik, belirsiz ve diğer hatalar elle incelenir.").pack(anchor="w",padx=12,pady=8)
+            def eligible(data):
+                return [(r[0],x) for r in data if not r[5] for x in r[3] if x[5]==r[0]]
+            planned=eligible(rows)
+            def repair():
+                if not planned:
+                    return messagebox.showinfo("Onarım","Kesin tutar hatası yok; diğer kayıtları ayrı inceleyin.",parent=win)
+                if not messagebox.askyesno("Yedekli onarım",f"{len(planned)} bağlı hareket düzeltilecek. Net borç farkı: {sum(x[2]-x[4] for _,x in planned):,.2f} TL. Onaylıyor musunuz?",parent=win):
+                    return
+                try:
+                    with connect() as db:
+                        backup=_verified_sqlite_backup(db,"toplu_cari_v89")
+                        db.execute("BEGIN IMMEDIATE")
+                        try:
+                            if eligible(audit_all_cari(db)) != planned:
+                                raise RuntimeError("Kayıtlar değişti. Kontrolü yeniden çalıştırın.")
+                            for cid,x in planned:
+                                db.execute("UPDATE hareket SET tutar=?,tarih=? WHERE id=? AND cari_id=?",(x[2],x[1],x[3],cid))
+                            db.commit()
+                        except Exception:
+                            db.rollback()
+                            raise
+                    win.destroy()
+                    self.refresh_all()
+                    messagebox.showinfo("Onarım",f"{len(planned)} hareket düzeltildi. Yedek: {backup}",parent=self)
+                    self.bulk_cari_audit()
+                except Exception as exc:
+                    messagebox.showerror("Onarım hatası",str(exc),parent=self)
+            ttk.Button(win,text="Kesin tutar hatalarını onar",command=repair).pack(side="left",padx=12,pady=8)
+            ttk.Button(win,text="Kapat",command=win.destroy).pack(side="right",padx=12,pady=8)
+        except Exception as exc:
+            messagebox.showerror("Cari kontrol hatası",str(exc),parent=self)
+
     def _build_cari(self):
         bar = ttk.Frame(self.cari_tab); bar.pack(fill="x")
         ttk.Label(bar, text="Cari Hesaplar", font=("Segoe UI", 16, "bold")).pack(side="left")
         ttk.Button(bar, text="Yeni Cari Ekle", command=self.add_cari).pack(side="right")
+        ttk.Button(bar,text="Tüm Cari Borçları Kontrol Et",command=self.bulk_cari_audit).pack(side="right",padx=6)
         self.cari_search=tk.StringVar()
         ttk.Label(bar,text="Ara:").pack(side="left",padx=(18,4))
         search=ttk.Entry(bar,textvariable=self.cari_search,width=28); search.pack(side="left"); self.cari_search_entry=search

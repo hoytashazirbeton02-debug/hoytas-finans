@@ -1,0 +1,1 @@
+Tüm cari hesaplar için toplu beton bağlantısı ve bakiye hesap kontrolü. Yalnızca kesin, aynı cariye bağlı tutar hataları yedek ve onay ile düzeltilir. Belirsiz, eksik ve diğer kayıtlar incelemeye bırakılır.

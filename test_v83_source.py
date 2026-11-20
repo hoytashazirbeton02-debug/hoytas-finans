@@ -5,7 +5,7 @@ from pathlib import Path
 
 source = Path("hoytas.py").read_text(encoding="utf-8")
 tree = ast.parse(source)
-assert "APP_VERSION = 88" in source
+assert "APP_VERSION = 89" in source
 assert source.index("def normalize_fatura_tarihi") < source.index('if __name__ == "__main__":')
 node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "normalize_fatura_tarihi")
 namespace = {"date": datetime.date, "datetime": datetime.datetime}
@@ -57,3 +57,15 @@ assert db.execute("SELECT tutar FROM hareket ORDER BY id").fetchall() == [(12260
 db.execute("UPDATE hareket SET aciklama='Eski kayit',tutar=111200 WHERE id=1")
 assert audit(db,1)[0] == [] and len(audit(db,1)[2]) == 1
 print("v88 reconciliation checks passed")
+
+fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "audit_all_cari")
+exec(compile(ast.Module(body=[fn],type_ignores=[]),"v89","exec"),ns)
+db.executescript("""
+CREATE TABLE cari(id INTEGER,unvan TEXT);
+INSERT INTO cari VALUES(1,'A'),(2,'B');
+CREATE VIEW cari_bakiye AS SELECT c.id cari_id, 0 toplam_borc, 0 toplam_alacak, 0 bakiye FROM cari c;
+""")
+rows=ns["audit_all_cari"](db)
+assert len(rows)==2 and rows[0][4] and rows[0][5]
+assert db.execute("SELECT COUNT(*) FROM hareket").fetchone()[0]==3
+print("v89 bulk read-only audit checks passed")
