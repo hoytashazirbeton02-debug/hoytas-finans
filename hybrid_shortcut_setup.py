@@ -22,7 +22,7 @@ def install_shortcut():
 
 def install_after_update(profile, token):
     folder = Path(profile)
-    completed = folder / "masaustu-kisayolu-v93.ok"
+    completed = folder / "masaustu-kisayolu-v94.ok"
     if completed.is_file():
         return
     if token:

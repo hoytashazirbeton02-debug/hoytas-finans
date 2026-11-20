@@ -26,7 +26,7 @@ from xml.sax.saxutils import escape
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
 TARGET_SCHEMA_VERSION = 50
-APP_VERSION = 93
+APP_VERSION = 94
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 ISOLATED_PROFILE_DIR = os.environ.get("HOYTAS_PROFILE_DIR", "").strip()
 USER_DATA_DIR = ISOLATED_PROFILE_DIR or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
@@ -676,7 +676,13 @@ def _restore_desktop_shortcut_after_update(program_dir):
 class HoytasApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("HOYTAŞ Hazır Beton | Finans ve İşletme Yönetimi")
+        self.title(f"HOYTAŞ Hazır Beton | Finans ve İşletme Yönetimi v{APP_VERSION}")
+        icon = os.path.join(APP_DIR, "HOYTAS.ico")
+        if os.name == "nt" and os.path.isfile(icon):
+            try:
+                self.iconbitmap(default=icon)
+            except tk.TclError:
+                pass
         self.geometry(f"{min(1440,self.winfo_screenwidth()-32)}x{min(900,self.winfo_screenheight()-80)}")
         self.minsize(800, 550)
         self.configure(bg="#F3F5F4")
@@ -3711,7 +3717,7 @@ if __name__ == "__main__":
                 install_after_update(ISOLATED_PROFILE_DIR, os.environ.get("HOYTAS_SYNC_TOKEN", ""))
             except Exception as shortcut_exc:
                 app._log_update_error(shortcut_exc)
-                messagebox.showwarning("HOYTAŞ kısayolu", "v93 açıldı, ancak masaüstü simgesi yenilenemedi. Ayrıntı güncelleme kaydına yazıldı.", parent=app)
+                messagebox.showwarning("HOYTAŞ kısayolu", f"v{APP_VERSION} açıldı, ancak masaüstü simgesi yenilenemedi. Ayrıntı güncelleme kaydına yazıldı.", parent=app)
         if os.environ.get("HOYTAS_SYNC_URL", "").strip():
             from hybrid_runtime import start_background_sync
 

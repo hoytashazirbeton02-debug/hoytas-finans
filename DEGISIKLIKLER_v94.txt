@@ -1,0 +1,4 @@
+HOYTAŞ v94
+
+Eski HOYTAŞ başlatıcılarına bağlı masaüstü kısayolları yeniden bağlanır ve hedefleri doğrulanır.
+Pencere ve masaüstü simgesi HOYTAŞ ikonunu kullanır. Sürüm numarası pencere başlığında görünür.
