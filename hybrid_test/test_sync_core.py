@@ -2,7 +2,6 @@ import os
 import unittest
 import tempfile
 from pathlib import Path
-import psycopg
 from offline_queue import OfflineQueue
 from sync_core import apply_event, flush, Conflict
 
@@ -20,6 +19,8 @@ class SyncTests(unittest.TestCase):
             self.assertEqual(q.pending(), [])
     @unittest.skipUnless(os.environ.get("DATABASE_URL"), "URL required")
     def test_conflict_and_replay(self):
+        import psycopg
+
         with psycopg.connect(os.environ["DATABASE_URL"], connect_timeout=10) as conn:
             with conn.cursor() as cur:
                 cur.execute("CREATE TEMP TABLE sync_events(id text PRIMARY KEY,digest text NOT NULL) ON COMMIT DROP")
