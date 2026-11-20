@@ -269,6 +269,18 @@ class ClosingSQLiteConnection(sqlite3.Connection):
             self.close()
 
 
+def _enable_hybrid_capture(con):
+    if os.environ.get("HOYTAS_HYBRID_CAPTURE") == "1":
+        try:
+            from hybrid_audit_bridge import install_capture
+
+            install_capture(con)
+        except Exception:
+            con.close()
+            raise
+    return con
+
+
 def connect():
     existed = os.path.isfile(DB_PATH) and os.path.getsize(DB_PATH) > 0
     con = sqlite3.connect(DB_PATH, timeout=3, factory=ClosingSQLiteConnection)
@@ -286,7 +298,7 @@ def connect():
         raise RuntimeError("Veritabanı ilişki kontrolleri etkinleştirilemedi.")
     current_version = con.execute("PRAGMA user_version").fetchone()[0]
     if existed and current_version == TARGET_SCHEMA_VERSION:
-        return con
+        return _enable_hybrid_capture(con)
     if current_version > TARGET_SCHEMA_VERSION:
         con.close()
         raise RuntimeError("Veritabanı daha yeni bir sürüme ait.")
@@ -352,7 +364,7 @@ def connect():
         raise RuntimeError(f"HOYTAŞ veritabanı bütünlük kontrolünden geçemedi: {integrity}")
     # Sürüm numarası ancak bütün yükseltmeler ve bütünlük kontrolü başarıyla tamamlandıktan sonra yazılır.
     con.execute(f"PRAGMA user_version = {TARGET_SCHEMA_VERSION}")
-    return con
+    return _enable_hybrid_capture(con)
 
 def parse_amount(value):
     """Read Turkish/international numeric formats without losing financial precision."""
