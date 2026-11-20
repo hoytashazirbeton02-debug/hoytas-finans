@@ -40,7 +40,7 @@ def validate_batch(request):
     return batch_id, events
 
 
-def handler_for(relay, token):
+def handler_for(relay, token, membership=None):
     if len(token) < 32 or any(not 33 <= ord(char) <= 126 for char in token):
         raise ValueError("Invalid replica token")
     expected = f"Bearer {token}".encode()
@@ -55,6 +55,13 @@ def handler_for(relay, token):
         def handle_exchange(self, writing):
             self.connection.settimeout(10)
             uri = urlsplit(self.path)
+            if membership is not None and uri.path.startswith("/membership/"):
+                try:
+                    status, result = membership.dispatch(self, uri.path, writing)
+                except Exception:
+                    status, result = 503, {"code": "unavailable"}
+                self.reply(status, result)
+                return
             if uri.path != "/batches":
                 self.reply(404, {})
                 return
@@ -103,9 +110,20 @@ def main():
 
     dsn = os.environ["DATABASE_URL"]
     token = os.environ["HOYTAS_REPLICA_TOKEN"]
-    relay = PostgresRelay(lambda: psycopg.connect(dsn, connect_timeout=5,
-                                                  options="-c statement_timeout=10000"))
-    handler = handler_for(relay, token)
+    def connect():
+        return psycopg.connect(dsn, connect_timeout=5, options="-c statement_timeout=10000")
+
+    relay = PostgresRelay(connect)
+    invitation = os.environ.get("HOYTAS_MEMBERSHIP_INVITATION")
+    membership = None
+    if invitation:
+        from hybrid_membership import Memberships
+        from hybrid_membership_http import MembershipHTTP
+
+        members = Memberships(connect)
+        members.initialize()
+        membership = MembershipHTTP(members, invitation)
+    handler = handler_for(relay, token, membership)
     relay.initialize()
     with ThreadingHTTPServer(("0.0.0.0", int(os.environ.get("PORT", "10000"))), handler) as server:
         server.serve_forever()
