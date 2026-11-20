@@ -54,4 +54,7 @@ if __name__ == "__main__":
     from test_safe_backup import BackupTests
     backup_result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(BackupTests))
     print("HOYTAS_BACKUP_SMOKE:", "PASS" if backup_result.wasSuccessful() and not backup_result.skipped else "NOT_VERIFIED", flush=True)
+    from test_backup_schedule import ScheduleTests
+    schedule_result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(ScheduleTests))
+    print("HOYTAS_SCHEDULE_SMOKE:", "PASS" if schedule_result.wasSuccessful() and not schedule_result.skipped else "NOT_VERIFIED", flush=True)
     ThreadingHTTPServer(("0.0.0.0", int(os.environ.get("PORT", "10000"))), Handler).serve_forever()
