@@ -3,7 +3,9 @@ import hashlib
 import json
 
 
-TRACKED_TABLES = frozenset({"cari", "hareket", "beton_satis", "santiye"})
+from hybrid_identity import TABLES
+
+TRACKED_TABLES = frozenset(TABLES)
 
 
 class ReplicaConflict(RuntimeError):

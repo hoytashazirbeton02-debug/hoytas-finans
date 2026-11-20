@@ -213,6 +213,21 @@ class DesktopCaptureTests(unittest.TestCase):
                 (tarih,cari_id,miktar_m3,birim_fiyat,pompa_ucreti,toplam,odeme_durumu)
                 VALUES ('2026-11-20',1,30.5,100,500,3550,'Vadeli')""").lastrowid
             self.app.sync_beton_sale_cari_movement(db, sale_id)
+            invoice = db.insert_shared("""INSERT INTO fatura
+                (tarih,cari_id,belge_no,genel_toplam,tahsil_edilecek)
+                VALUES ('2026-11-20',1,'TEST-1',3550,3550)""", ()).lastrowid
+            db.insert_shared("""INSERT INTO fatura_tahsilat(fatura_id,tarih,tutar,yontem)
+                VALUES (?,'2026-11-20',500,'Banka')""", (invoice,))
+            db.execute("UPDATE fatura SET odenen=500 WHERE id=?", (invoice,))
+            db.insert_shared("""INSERT INTO hareket(tarih,cari_id,tur,kategori,tutar)
+                VALUES ('2026-11-20',1,'Alacak','Tahsilat',500)""", ())
+            db.insert_shared("""INSERT INTO banka_hareket(tarih,banka,yon,tutar)
+                VALUES ('2026-11-20','Deneme Bankası','Para Girişi',500)""", ())
+            db.insert_shared("""INSERT INTO nakit_kasa(tarih,yon,kaynak,tutar)
+                VALUES ('2026-11-20','Para Girişi','Deneme',100)""", ())
+            cheque = db.insert_shared("""INSERT INTO cek(yon,cari_id,vade,tutar,durum)
+                VALUES ('Alınan',1,'2026-12-01',750,'Bekliyor')""", ()).lastrowid
+            db.execute("UPDATE cek SET durum='Tahsil Edildi' WHERE id=?", (cheque,))
 
         with self.assertRaises(ConnectionError):
             exchange_once(self.app.connect, LostAcknowledgement())
@@ -229,7 +244,12 @@ class DesktopCaptureTests(unittest.TestCase):
         self.assertEqual(exchange_once(self.app.connect, relay), (0, 0))
         with self.app.connect() as db:
             self.assertEqual(db.execute("SELECT miktar_m3,pompa_ucreti FROM beton_satis").fetchone(), (30.5, 500))
-            self.assertEqual(db.execute("SELECT bakiye FROM cari_bakiye").fetchone(), (3550,))
+            self.assertEqual(db.execute("SELECT bakiye FROM cari_bakiye").fetchone(), (3050,))
+            self.assertEqual(db.execute("SELECT odenen FROM fatura").fetchone(), (500,))
+            self.assertEqual(db.execute("SELECT tutar FROM fatura_tahsilat").fetchall(), [(500,)])
+            self.assertEqual(db.execute("SELECT tutar FROM banka_hareket").fetchall(), [(500,)])
+            self.assertEqual(db.execute("SELECT tutar FROM nakit_kasa").fetchall(), [(100,)])
+            self.assertEqual(db.execute("SELECT durum,tutar FROM cek").fetchall(), [("Tahsil Edildi", 750)])
 
 
 if __name__ == "__main__":

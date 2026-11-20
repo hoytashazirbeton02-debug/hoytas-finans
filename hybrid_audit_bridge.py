@@ -3,6 +3,8 @@
 
 from collections import defaultdict
 
+from hybrid_identity import TABLES
+
 
 def install_capture(db, batch_id=None):
     db.execute("""CREATE TABLE IF NOT EXISTS hybrid_audit_queue (
@@ -24,10 +26,11 @@ def install_capture(db, batch_id=None):
         INSERT INTO hybrid_capture_batch(audit_id, batch_id)
         VALUES (NEW.id, hoytas_capture_batch());
     """
+    tracked = ", ".join(f"'{table}'" for table in TABLES)
     # A temporary trigger keeps capture scoped to explicitly enabled connections.
     db.execute(f"""CREATE TEMP TRIGGER IF NOT EXISTS hybrid_capture
         AFTER INSERT ON main.audit_log
-        WHEN NEW.table_name IN ('cari', 'hareket', 'beton_satis', 'santiye')
+        WHEN NEW.table_name IN ({tracked})
         BEGIN
             INSERT INTO hybrid_audit_queue
                 (event_id, audit_id, table_name, record_id, action, old_values, new_values)

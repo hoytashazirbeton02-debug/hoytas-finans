@@ -1,10 +1,14 @@
 """Allocate distinct local identifiers to offline replicas of a shared baseline."""
 import re
 
-TABLES = ("cari", "beton_satis", "hareket", "santiye")
+TABLES = (
+    "cari", "beton_satis", "hareket", "santiye",
+    "fatura", "fatura_tahsilat", "gelen_fatura", "gelen_fatura_odeme",
+    "cek", "nakit_kasa", "banka_hareket",
+)
 BLOCK = 1 << 40
 MAX_SLOT = 4095
-INSERT = re.compile(r"INSERT INTO (cari|beton_satis|hareket|santiye)\s*\(", re.I)
+INSERT = re.compile(r"INSERT INTO (" + "|".join(TABLES) + r")\s*\(", re.I)
 VALUES = re.compile(r"\bVALUES\s*\(", re.I)
 
 

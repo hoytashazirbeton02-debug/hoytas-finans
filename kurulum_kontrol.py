@@ -7,7 +7,7 @@ import sqlite3
 import sys
 from tempfile import mkstemp
 
-TABLES = ("cari", "beton_satis", "hareket", "santiye")
+from hybrid_identity import TABLES
 
 
 def verified_backup(source, folder):
