@@ -51,4 +51,7 @@ if __name__ == "__main__":
     from test_api_auth import AuthTests
     auth_result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(AuthTests))
     print("HOYTAS_AUTH_SMOKE:", "PASS" if auth_result.wasSuccessful() and not auth_result.skipped else "NOT_VERIFIED", flush=True)
+    from test_safe_backup import BackupTests
+    backup_result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(BackupTests))
+    print("HOYTAS_BACKUP_SMOKE:", "PASS" if backup_result.wasSuccessful() and not backup_result.skipped else "NOT_VERIFIED", flush=True)
     ThreadingHTTPServer(("0.0.0.0", int(os.environ.get("PORT", "10000"))), Handler).serve_forever()
