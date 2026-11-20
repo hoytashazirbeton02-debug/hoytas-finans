@@ -42,4 +42,7 @@ if __name__ == "__main__":
     from test_database import DatabaseSmoke
     result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(DatabaseSmoke))
     print("HOYTAS_DB_SMOKE:", "PASS" if result.wasSuccessful() and not result.skipped else "NOT_VERIFIED", flush=True)
+    from test_offline_queue import OfflineTests
+    offline_result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(OfflineTests))
+    print("HOYTAS_OFFLINE_SMOKE:", "PASS" if offline_result.wasSuccessful() and not offline_result.skipped else "NOT_VERIFIED", flush=True)
     ThreadingHTTPServer(("0.0.0.0", int(os.environ.get("PORT", "10000"))), Handler).serve_forever()
