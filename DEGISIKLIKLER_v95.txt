@@ -1,0 +1,7 @@
+HOYTAŞ v95
+
+Yeni üyelikler yönetici onayına alınır. Onaysız hesaplar açılışta reddedilir.
+Yeni üyelik formunda şifre ve kurtarma alanları gizlenir ve en az 12 karakter gerekir.
+Üyelikler bu sürümde yerel Windows veritabanında yönetilir.
+Beş başarısız girişten sonra aynı oturumda 30 saniye beklenir.
+Canlı güncelleme paketleri HOYTAŞ GitHub deposundan SHA-256 doğrulamasıyla alınır.

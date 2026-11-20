@@ -26,7 +26,7 @@ from xml.sax.saxutils import escape
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
 TARGET_SCHEMA_VERSION = 50
-APP_VERSION = 94
+APP_VERSION = 95
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 ISOLATED_PROFILE_DIR = os.environ.get("HOYTAS_PROFILE_DIR", "").strip()
 USER_DATA_DIR = ISOLATED_PROFILE_DIR or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
@@ -856,6 +856,8 @@ class HoytasApp(tk.Tk):
                     messagebox.showwarning("Giriş gerekli","Programı kullanmak için yönetici hesabı oluşturulmalı.")
                     self.destroy(); raise SystemExit
                 break
+        failed_attempts = 0
+        locked_until = 0.0
         while True:
             win=tk.Toplevel(self); win.title("HOYTAŞ Hazır Beton - Giriş"); win.transient(self); win.grab_set(); win.resizable(False,False)
             frm=ttk.Frame(win,padding=24); frm.pack()
@@ -866,15 +868,27 @@ class HoytasApp(tk.Tk):
             result={"ok":False}
             def login():
                 global APP_CURRENT_USER
+                nonlocal failed_attempts, locked_until
+                if time.monotonic() < locked_until:
+                    messagebox.showwarning("Biraz bekleyin", "Çok fazla başarısız giriş oldu. 30 saniye sonra tekrar deneyin.", parent=win)
+                    return
                 try:
                     with connect() as c:
-                        row=c.execute("SELECT id,kullanici_adi,parola_hash,salt,rol FROM kullanici WHERE kullanici_adi=? AND aktif=1",(user.get().strip(),)).fetchone()
+                        row=c.execute("SELECT id,kullanici_adi,parola_hash,salt,rol,aktif FROM kullanici WHERE kullanici_adi=?",(user.get().strip(),)).fetchone()
                     if row and hmac.compare_digest(self._hash_password(pw.get(),row[3]),row[2]):
+                        if row[5] != 1:
+                            status = "Üyeliğiniz yönetici onayı bekliyor." if row[5] == -1 else "Hesabınız devre dışı."
+                            messagebox.showwarning("Giriş yapılamadı", status, parent=win)
+                            return
                         self.current_user={"id":row[0],"username":row[1],"role":row[4]}
                         APP_CURRENT_USER = row[1]
                         result["ok"]=True
                         win.destroy()
                     else:
+                        failed_attempts += 1
+                        if failed_attempts == 5:
+                            failed_attempts = 0
+                            locked_until = time.monotonic() + 30
                         messagebox.showerror("Giriş başarısız","Kullanıcı adı veya şifre yanlış.",parent=win)
                 except Exception:
                     detail = traceback.format_exc()
@@ -893,15 +907,15 @@ class HoytasApp(tk.Tk):
             messagebox.showwarning("Giriş gerekli","Giriş yapmadan program açılamaz."); self.destroy(); raise SystemExit
 
     def signup_dialog(self):
-        d=self.prompt("HOYTAŞ Üyelik Oluştur",[("user","Kullanıcı adı","entry",None),("password","Şifre (en az 8 karakter)","entry",None),("recovery","Kurtarma kelimesi (unutmayın)","entry",None)])
+        d=self.prompt("HOYTAŞ Üyelik Oluştur",[("user","Kullanıcı adı","entry",None),("password","Şifre (en az 12 karakter)","secret",None),("recovery","Kurtarma kelimesi (en az 12 karakter)","secret",None)])
         if not d: return
-        if not d["user"].strip() or len(d["password"])<8 or len(d["recovery"].strip())<4:
-            return messagebox.showerror("Eksik bilgi","Kullanıcı adı, en az 8 karakter şifre ve en az 4 karakter kurtarma kelimesi gerekli.")
+        if not d["user"].strip() or len(d["password"])<12 or len(d["recovery"].strip())<12:
+            return messagebox.showerror("Eksik bilgi","Kullanıcı adı, en az 12 karakter şifre ve en az 12 karakter kurtarma bilgisi gerekli.")
         salt=secrets.token_hex(16); rs=secrets.token_hex(16)
         try:
-            with connect() as c: c.execute("INSERT INTO kullanici(kullanici_adi,parola_hash,salt,rol,kurtarma_hash,kurtarma_salt) VALUES(?,?,?,?,?,?)",(d["user"].strip(),self._hash_password(d["password"],salt),salt,"Kullanıcı",self._hash_password(d["recovery"].strip().casefold(),rs),rs))
+            with connect() as c: c.execute("INSERT INTO kullanici(kullanici_adi,parola_hash,salt,rol,kurtarma_hash,kurtarma_salt,aktif) VALUES(?,?,?,?,?,?,-1)",(d["user"].strip(),self._hash_password(d["password"],salt),salt,"Kullanıcı",self._hash_password(d["recovery"].strip().casefold(),rs),rs))
         except sqlite3.IntegrityError: return messagebox.showerror("Kullanıcı mevcut","Bu kullanıcı adı zaten kayıtlı.")
-        messagebox.showinfo("Üyelik oluşturuldu","Hesap oluşturuldu. Şimdi kullanıcı adı ve şifrenizle giriş yapabilirsiniz. Kurtarma kelimenizi güvenli yerde saklayın.")
+        messagebox.showinfo("Üyelik oluşturuldu","Üyelik isteği kaydedildi. Yönetici onayından sonra giriş yapabilirsiniz.")
 
     def forgot_password_dialog(self):
         d=self.prompt("Şifre Kurtarma",[("user","Kullanıcı adı","entry",None),("recovery","Kurtarma kelimesi","entry",None),("password","Yeni şifre (en az 8 karakter)","entry",None)])
@@ -1400,6 +1414,10 @@ class HoytasApp(tk.Tk):
         if version < 1 or version > 9999:
             raise RuntimeError("Manifest sürüm numarası izin verilen aralıkta değil.")
         package_url = normalize_dropbox_download_url(str(manifest.get("package_url", "")).strip())
+        if ISOLATED_PROFILE_DIR and not re.fullmatch(
+            r"https://github\.com/hoytashazirbeton02-debug/hoytas-finans/archive/[0-9a-f]{40}\.zip", package_url
+        ):
+            raise RuntimeError("Canlı güncelleme paketi HOYTAŞ yayın deposuna ait olmalıdır.")
         digest = str(manifest.get("sha256", "")).strip().lower()
         package_parsed = urllib.parse.urlparse(package_url)
         # Kaynağın güvenliğini sürüm karşılaştırmasından önce doğrula.
@@ -1498,6 +1516,8 @@ class HoytasApp(tk.Tk):
                     unix_mode = (info.external_attr >> 16) & 0xFFFF
                     if (unix_mode & 0o170000) == 0o120000:
                         raise RuntimeError("Güvenlik: ZIP içindeki sembolik bağlantı reddedildi.")
+                    if ISOLATED_PROFILE_DIR and clean_name.lower().endswith((".db", ".sqlite", ".sqlite3")):
+                        raise RuntimeError("Canlı güncelleme paketi veritabanı dosyası içeremez.")
                     if info.file_size > 150 * 1024 * 1024:
                         raise RuntimeError("ZIP içinde izin verilen boyutu aşan dosya var.")
                     total_uncompressed += info.file_size
@@ -2406,7 +2426,7 @@ class HoytasApp(tk.Tk):
                         combo.configure(values=matches if matches else original)
                     widget.bind("<KeyRelease>", suggest_values)
             else:
-                widget = ttk.Entry(body, width=33)
+                widget = ttk.Entry(body, width=33, show="*" if kind == "secret" else "")
             if key in initial and initial[key] is not None:
                 try:
                     initial_value = display_date(initial[key]) if key.lower() in ("tarih", "vade") else str(initial[key])
@@ -2675,6 +2695,8 @@ class HoytasApp(tk.Tk):
         ttk.Label(frm,text="Son 1.000 işlem gösterilir. Denetim kayıtları normal kullanıcı ekranlarından silinemez.",foreground="#66736B").pack(anchor="w",pady=(7,0))
 
     def manage_users(self):
+        if getattr(self, "current_user", {}).get("role") != "Yönetici":
+            return messagebox.showwarning("Yetki gerekli", "Üyelikleri yalnızca yönetici yönetebilir.", parent=self)
         win=tk.Toplevel(self); win.title("Kullanıcı Yönetimi"); win.transient(self); win.grab_set(); win.geometry("520x390")
         frm=ttk.Frame(win,padding=16); frm.pack(fill="both",expand=True)
         ttk.Label(frm,text="Kullanıcı Hesapları",font=("Segoe UI",15,"bold")).pack(anchor="w")
@@ -2684,7 +2706,7 @@ class HoytasApp(tk.Tk):
         def reload_users():
             tree.delete(*tree.get_children())
             with connect() as c: rows=c.execute("SELECT id,kullanici_adi,rol,aktif FROM kullanici ORDER BY id").fetchall()
-            for row in rows: tree.insert("","end",values=(row[0],row[1],row[2],"Aktif" if row[3] else "Pasif"))
+            for row in rows: tree.insert("","end",values=(row[0],row[1],row[2],{1: "Aktif", -1: "Onay bekliyor"}.get(row[3], "Pasif")))
         def add_user():
             d=self.prompt("Yeni Kullanıcı",[("user","Kullanıcı adı","entry",None),("password","Şifre (en az 8 karakter)","entry",None),("role","Rol","combo",["Kullanıcı","Yönetici"])])
             if not d:return
@@ -2704,7 +2726,7 @@ class HoytasApp(tk.Tk):
             reload_users()
         row=ttk.Frame(frm); row.pack(fill="x")
         ttk.Button(row,text="Yeni Kullanıcı Ekle",command=add_user).pack(side="left")
-        ttk.Button(row,text="Aktif / Pasif Yap",command=toggle_user).pack(side="left",padx=8)
+        ttk.Button(row,text="Onayla / Aktif-Pasif Yap",command=toggle_user).pack(side="left",padx=8)
         reload_users()
 
     def add_santiye(self):
