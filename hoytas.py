@@ -3673,6 +3673,10 @@ if __name__ == "__main__":
         faulthandler.enable(file=_hang_log)
         faulthandler.dump_traceback_later(20, repeat=True, file=_hang_log)
         app = HoytasApp()
+        if os.environ.get("HOYTAS_SYNC_URL", "").strip():
+            from hybrid_runtime import start_background_sync
+
+            start_background_sync(app, connect, USER_DATA_DIR)
         # HoytasApp.__init__ already performs the initial refresh; avoid a duplicate startup pass.
         app.after(500, app.automatic_backup)
         app.after(900, app.check_due_cheques)
