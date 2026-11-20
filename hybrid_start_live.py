@@ -1,6 +1,7 @@
 """Open HOYTAŞ in the verified live profile while preserving the legacy installation."""
 from contextlib import closing
 import getpass
+import json
 import os
 from pathlib import Path
 import sqlite3
@@ -66,6 +67,24 @@ def prepare_live_profile(folder, relay):
     return target
 
 
+
+def launch_target(profile, default):
+    pointer = profile / "aktif_program_yolu.txt"
+    if not pointer.is_file():
+        return default
+    directory = Path(pointer.read_text(encoding="utf-16").strip()).resolve()
+    expected_parent = (profile / "surumler").resolve()
+    if directory.parent != expected_parent or not directory.name.startswith("v") or not directory.name[1:].isdecimal():
+        raise RuntimeError("Aktif canlı sürüm yolu geçersiz.")
+    marker = json.loads((directory / "CANLI_GUNCELLEME.json").read_text(encoding="utf-8"))
+    if marker != {"channel": "hoytas-canli", "version": int(directory.name[1:])}:
+        raise RuntimeError("Aktif canlı sürüm kimliği geçersiz.")
+    target = directory / "hoytas.py"
+    if not target.is_file():
+        raise RuntimeError("Aktif canlı sürüm dosyası bulunamadı.")
+    return target
+
+
 def main():
     folder = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "HOYTASFinans"
     try:
@@ -75,7 +94,8 @@ def main():
                "HOYTAS_HYBRID_CAPTURE": "1", "HOYTAS_SYNC_URL": ENDPOINT,
                "HOYTAS_SYNC_TOKEN": token}
         print("HOYTAŞ canlı profili açılıyor. Bu profili kullanırken eski HOYTAŞ penceresini kapalı tut.")
-        return subprocess.call([sys.executable, str(Path(__file__).with_name("hoytas.py"))], env=env)
+        app = launch_target(profile, Path(__file__).with_name("hoytas.py"))
+        return subprocess.call([sys.executable, str(app)], env=env)
     except (OSError, ValueError, RuntimeError, sqlite3.Error) as error:
         print(f"CANLI PROFİL AÇILAMADI: {error}", file=sys.stderr)
         return 1

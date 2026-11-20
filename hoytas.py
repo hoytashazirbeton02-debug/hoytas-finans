@@ -26,7 +26,7 @@ from xml.sax.saxutils import escape
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
 TARGET_SCHEMA_VERSION = 50
-APP_VERSION = 91
+APP_VERSION = 92
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 ISOLATED_PROFILE_DIR = os.environ.get("HOYTAS_PROFILE_DIR", "").strip()
 USER_DATA_DIR = ISOLATED_PROFILE_DIR or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
@@ -41,6 +41,10 @@ UPDATE_CONFIG_PATH = os.path.join(USER_DATA_DIR, "guncelleme_ayarlari.json")
 # Canlı yayın adresi doğrulanmış, anonim HTTPS erişimli bir manifest olmalıdır.
 # Önceki OneDrive bağlantısı 401 verdiği için hatalı adres varsayılan olmaktan çıkarıldı.
 DEFAULT_UPDATE_MANIFEST_URL = ""
+LIVE_UPDATE_MANIFEST_URL = "https://raw.githubusercontent.com/hoytashazirbeton02-debug/hoytas-finans/refs/heads/v91-hibrit-entegrasyon/canli-manifest.json"
+LIVE_UPDATE_FILES = {"Windows_Canli_Baslat.cmd", "hybrid_start_live.py", "hybrid_runtime.py",
+                     "hybrid_http_relay.py", "hybrid_exchange.py", "hybrid_inbound.py",
+                     "hybrid_identity.py", "hybrid_audit_bridge.py"}
 DEFAULT_GITHUB_REPO = "hoytashazirbeton02-debug/hoytas-finans"
 # pythonw.exe kullanıldığında konsol olmadığı için beklenmeyen hataları kalıcı loga yaz.
 if sys.stderr is None:
@@ -722,8 +726,7 @@ class HoytasApp(tk.Tk):
             self.bind_all(f"<Alt-{_i}>", lambda e, i=_i: self._shortcut_tab(i))
         self.refresh_all()
         # Sunucu tanımlıysa açılışta sessizce yeni sürüm kontrolü yap.
-        if not ISOLATED_PROFILE_DIR:
-            self.after(1800, self.check_for_updates_silent)
+        self.after(1800, self.check_for_updates_silent)
 
     def _adapt_action_rows(self, root):
         """Wrap button-only packed toolbars without altering their commands."""
@@ -1218,10 +1221,15 @@ class HoytasApp(tk.Tk):
         results = queue.Queue()
         def worker():
             try:
-                repo = self._update_config()
-                with open(UPDATE_CONFIG_PATH, "r", encoding="utf-8") as f:
-                    config = json.load(f)
-                url = str(config.get("manifest_url", "")).strip() or DEFAULT_UPDATE_MANIFEST_URL
+                repo = None
+                if ISOLATED_PROFILE_DIR:
+                    url = LIVE_UPDATE_MANIFEST_URL
+                else:
+                    repo = self._update_config()
+                    with open(UPDATE_CONFIG_PATH, "r", encoding="utf-8") as f:
+                        config = json.load(f)
+                    url = str(config.get("manifest_url", "")).strip() or DEFAULT_UPDATE_MANIFEST_URL
+                use_manifest = bool(url)
                 if url:
                     url = normalize_dropbox_download_url(url)
                     if urllib.parse.urlparse(url).scheme != "https":
@@ -1237,7 +1245,9 @@ class HoytasApp(tk.Tk):
                 if len(raw) > 2 * 1024 * 1024:
                     raise ValueError("Güncelleme bilgisi çok büyük.")
                 data = json.loads(raw.decode("utf-8"))
-                version = int(data["version"]) if config.get("manifest_url") or DEFAULT_UPDATE_MANIFEST_URL else int(re.fullmatch(r"v?(\d+)", str(data["tag_name"])).group(1))
+                if ISOLATED_PROFILE_DIR and data.get("channel") != "hoytas-canli":
+                    raise RuntimeError("Canlı güncelleme kanalı doğrulanamadı.")
+                version = int(data["version"]) if use_manifest else int(re.fullmatch(r"v?(\d+)", str(data["tag_name"])).group(1))
                 results.put(version)
             except Exception as exc:
                 self._log_update_error(exc)
@@ -1270,6 +1280,9 @@ class HoytasApp(tk.Tk):
     def check_for_updates(self, silent=False):
         """Önce bağımsız HTTPS manifestini, gerekirse eski GitHub kaynağını denetle."""
         try:
+            if ISOLATED_PROFILE_DIR:
+                self._check_manifest_update(LIVE_UPDATE_MANIFEST_URL, silent=silent)
+                return
             repo = self._update_config()
             try:
                 with open(UPDATE_CONFIG_PATH, "r", encoding="utf-8") as config_file:
@@ -1369,6 +1382,8 @@ class HoytasApp(tk.Tk):
         manifest = json.loads(manifest_bytes.decode("utf-8"))
         if not isinstance(manifest, dict):
             raise RuntimeError("Güncelleme manifest biçimi geçersiz.")
+        if ISOLATED_PROFILE_DIR and manifest.get("channel") != "hoytas-canli":
+            raise RuntimeError("Canlı güncelleme kanalı doğrulanamadı.")
         raw_version = manifest.get("version")
         if isinstance(raw_version, bool):
             raise RuntimeError("Manifest sürüm numarası geçersiz.")
@@ -1438,7 +1453,8 @@ class HoytasApp(tk.Tk):
             f.write(destination)
         os.replace(pointer_tmp, pointer)
         try:
-            _restore_desktop_shortcut_after_update(destination)
+            if not ISOLATED_PROFILE_DIR:
+                _restore_desktop_shortcut_after_update(destination)
         except Exception as exc:
             self._log_update_error(exc)
         messagebox.showinfo(
@@ -1494,6 +1510,18 @@ class HoytasApp(tk.Tk):
                 if version <= APP_VERSION:
                     raise RuntimeError(f"Seçilen paket v{version}. Bu program v{APP_VERSION}; daha yeni bir sürüm seçin.")
 
+                if ISOLATED_PROFILE_DIR:
+                    package_root = prefix + "/" if prefix else ""
+                    members_by_path = {i.filename.replace("\\", "/") for i in members}
+                    if not {package_root + name for name in LIVE_UPDATE_FILES}.issubset(members_by_path):
+                        raise RuntimeError("Canlı HOYTAŞ paketi eksik.")
+                    try:
+                        marker = json.loads(zf.read(package_root + "CANLI_GUNCELLEME.json"))
+                    except (KeyError, ValueError) as error:
+                        raise RuntimeError("Bu paket canlı HOYTAŞ kanalına ait değil.") from error
+                    if marker != {"channel": "hoytas-canli", "version": version}:
+                        raise RuntimeError("Canlı HOYTAŞ paket kimliği doğrulanamadı.")
+
                 root = USER_DATA_DIR
                 versions_dir = os.path.join(root, "surumler")
                 os.makedirs(versions_dir, exist_ok=True)
@@ -1522,17 +1550,16 @@ class HoytasApp(tk.Tk):
                         raise RuntimeError("ZIP açıldı ancak programın ana dosyası bulunamadı.")
                     if not os.path.isfile(os.path.join(source_dir, "Baslat.vbs")):
                         raise RuntimeError("Paketin doğrudan açılış dosyası (Baslat.vbs) eksik.")
-                    # Önce veritabanının SQLite online backup'ını al; canlı dosyayı kopyalama.
-                    os.makedirs(BACKUP_DIR, exist_ok=True)
-                    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    backup_path = os.path.join(BACKUP_DIR, f"guncelleme_oncesi_v{version}_{stamp}.db")
-                    with sqlite3.connect(DB_PATH, timeout=30) as source_db:
-                        with sqlite3.connect(backup_path) as backup_db:
-                            source_db.backup(backup_db)
-                    with open(backup_path, "rb") as check_file:
-                        if not check_file.read(16).startswith(b"SQLite format 3"):
-                            raise RuntimeError("Güncelleme öncesi veritabanı yedeği doğrulanamadı.")
-                    shutil.copytree(source_dir, destination)
+                    with open(os.path.join(source_dir, "hoytas.py"), encoding="utf-8") as app_file:
+                        if not re.search(r"^APP_VERSION\s*=\s*" + str(version) + r"\s*$",
+                                         app_file.read(4096), re.MULTILINE):
+                            raise RuntimeError("Paketin uygulama dosyasındaki sürüm numarası uyuşmuyor.")
+                    source_db = sqlite3.connect(DB_PATH, timeout=30)
+                    try:
+                        backup_path = _verified_sqlite_backup(source_db, f"guncelleme_oncesi_v{version}")
+                    finally:
+                        source_db.close()
+                    os.rename(source_dir, destination)
                 finally:
                     shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -1544,7 +1571,8 @@ class HoytasApp(tk.Tk):
             os.replace(pointer_tmp, pointer)
             shortcut_note = "Masaüstü kısayolu güncel sürüme bağlandı."
             try:
-                _restore_desktop_shortcut_after_update(destination)
+                if not ISOLATED_PROFILE_DIR:
+                    _restore_desktop_shortcut_after_update(destination)
             except Exception as shortcut_exc:
                 shortcut_note = f"Masaüstü kısayolu otomatik oluşturulamadı: {shortcut_exc}"
                 self._log_update_error(shortcut_exc)

@@ -1,0 +1,5 @@
+HOYTAŞ v92
+
+Cari ve beton aktarımına fatura, çek, kasa ve banka işlemleri eklendi.
+Canlı profil için ayrı otomatik güncelleme kanalı açıldı.
+Yeni sürümler ayrı program klasörlerine kurulur. Canlı veritabanı ve masaüstü simgesi korunur.
