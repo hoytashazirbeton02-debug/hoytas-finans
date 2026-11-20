@@ -28,12 +28,13 @@ APP_CURRENT_USER = "Sistem"
 TARGET_SCHEMA_VERSION = 50
 APP_VERSION = 91
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
-USER_DATA_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
+ISOLATED_PROFILE_DIR = os.environ.get("HOYTAS_PROFILE_DIR", "").strip()
+USER_DATA_DIR = ISOLATED_PROFILE_DIR or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
 os.makedirs(USER_DATA_DIR, exist_ok=True)
 DB_PATH = os.path.join(USER_DATA_DIR, "hoytas.db")
 LEGACY_DB_PATH = os.path.join(APP_DIR, "hoytas.db")
 # Onceki surumdeki veritabanini ilk acilista bir defa aktar; var olan kayitlari ezme.
-if not os.path.exists(DB_PATH) and os.path.isfile(LEGACY_DB_PATH):
+if not ISOLATED_PROFILE_DIR and not os.path.exists(DB_PATH) and os.path.isfile(LEGACY_DB_PATH):
     shutil.copy2(LEGACY_DB_PATH, DB_PATH)
 BACKUP_DIR = os.path.join(USER_DATA_DIR, "yedekler")
 UPDATE_CONFIG_PATH = os.path.join(USER_DATA_DIR, "guncelleme_ayarlari.json")
@@ -721,7 +722,8 @@ class HoytasApp(tk.Tk):
             self.bind_all(f"<Alt-{_i}>", lambda e, i=_i: self._shortcut_tab(i))
         self.refresh_all()
         # Sunucu tanımlıysa açılışta sessizce yeni sürüm kontrolü yap.
-        self.after(1800, self.check_for_updates_silent)
+        if not ISOLATED_PROFILE_DIR:
+            self.after(1800, self.check_for_updates_silent)
 
     def _adapt_action_rows(self, root):
         """Wrap button-only packed toolbars without altering their commands."""
@@ -3661,7 +3663,8 @@ if __name__ == "__main__":
         os.makedirs(BACKUP_DIR, exist_ok=True)
         # If the desktop icon was lost during an earlier update, recreate it on first launch.
         try:
-            _restore_desktop_shortcut_after_update(APP_DIR)
+            if not ISOLATED_PROFILE_DIR:
+                _restore_desktop_shortcut_after_update(APP_DIR)
         except Exception as shortcut_exc:
             try:
                 with open(os.path.join(USER_DATA_DIR, "guncelleme.log"), "a", encoding="utf-8") as log:
