@@ -38,4 +38,8 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
 if __name__ == "__main__":
+    import unittest
+    from test_database import DatabaseSmoke
+    result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(DatabaseSmoke))
+    print("HOYTAS_DB_SMOKE:", "PASS" if result.wasSuccessful() and not result.skipped else "NOT_VERIFIED", flush=True)
     ThreadingHTTPServer(("0.0.0.0", int(os.environ.get("PORT", "10000"))), Handler).serve_forever()
