@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from hybrid_audit_bridge import pending_batches
+from hybrid_inbound import ReplicaConflict, apply_batch
 
 
 class DesktopCaptureTests(unittest.TestCase):
@@ -67,6 +68,42 @@ class DesktopCaptureTests(unittest.TestCase):
         with self.app.connect() as db:
             db.execute("UPDATE cari SET unvan='Yerel Düzenleme' WHERE id=?", (existing_id,))
             self.assertEqual(db.execute("SELECT count(*) FROM hybrid_audit_queue").fetchone(), (5,))
+
+
+    def test_replicate_sales_batch_without_echo_or_partial_apply(self):
+        source = self.app.DB_PATH
+        os.environ["HOYTAS_HYBRID_CAPTURE"] = "1"
+        with self.app.connect() as db:
+            db.execute("INSERT INTO cari(id,tur,unvan,created_at) VALUES (1,'Müşteri','Besni','2026-11-01')")
+        with self.app.connect() as db:
+            sale_id = db.execute("""INSERT INTO beton_satis
+                (tarih,cari_id,miktar_m3,birim_fiyat,pompa_ucreti,toplam,odeme_durumu)
+                VALUES ('2026-11-20',1,30.5,100,500,3550,'Vadeli')""").lastrowid
+            self.app.sync_beton_sale_cari_movement(db, sale_id)
+        with self.app.connect() as db:
+            batches = pending_batches(db)
+
+        self.app.DB_PATH = str(Path(source).with_name("recipient.db"))
+        with self.app.connect():
+            pass
+        self.assertEqual(apply_batch(self.app.connect, *batches[0]), "applied")
+        with self.app.connect() as db:
+            db.execute("""INSERT INTO hareket
+                (id,tarih,cari_id,tur,kategori,tutar) VALUES (1,'2026-11-20',1,'Borç','Yerel',10)""")
+        with self.assertRaises(ReplicaConflict):
+            apply_batch(self.app.connect, *batches[1])
+        with self.app.connect() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM beton_satis").fetchone(), (0,))
+            self.assertEqual(db.execute("SELECT count(*) FROM hybrid_received_batch").fetchone(), (1,))
+            self.assertEqual(len(pending_batches(db)), 1)
+            db.execute("DELETE FROM hareket WHERE id=1")
+
+        self.assertEqual(apply_batch(self.app.connect, *batches[1]), "applied")
+        self.assertEqual(apply_batch(self.app.connect, *batches[1]), "duplicate")
+        with self.app.connect() as db:
+            self.assertEqual(db.execute("SELECT miktar_m3,pompa_ucreti FROM beton_satis").fetchone(), (30.5, 500))
+            self.assertEqual(db.execute("SELECT bakiye FROM cari_bakiye").fetchone(), (3550,))
+            self.assertEqual(len(pending_batches(db)), 2)
 
 
 if __name__ == "__main__":
