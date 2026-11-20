@@ -15,6 +15,8 @@ from uuid import uuid4
 from hybrid_audit_bridge import pending_batches
 from hybrid_inbound import ReplicaConflict, apply_batch
 from hybrid_exchange import exchange_once
+from hybrid_baseline import prepare_baseline
+from hybrid_identity import BLOCK
 from hybrid_postgres_relay import PostgresRelay
 from hybrid_http_relay import HTTPRelay
 from hybrid_relay_server import handler_for
@@ -114,6 +116,52 @@ class DesktopCaptureTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT bakiye FROM cari_bakiye").fetchone(), (3550,))
             self.assertEqual(len(pending_batches(db)), 2)
 
+
+    def test_verified_baseline_and_disjoint_offline_ids(self):
+        source = Path(self.app.DB_PATH)
+        with self.app.connect() as db:
+            original = db.execute(
+                "INSERT INTO cari(tur,unvan,created_at) VALUES ('Müşteri','Eski Cari','2026-11-01')"
+            ).lastrowid
+        folder = source.parent / "baseline"
+        _, counts = prepare_baseline(source, folder)
+        self.assertEqual(counts["cari"], 1)
+
+        self.app.DB_PATH = str(folder / "oturum-1.sqlite")
+        with self.assertRaisesRegex(RuntimeError, "hibrit oturum"):
+            self.app.connect()
+        os.environ["HOYTAS_HYBRID_CAPTURE"] = "1"
+        batches = []
+        ids = []
+        for slot in (1, 2):
+            self.app.DB_PATH = str(folder / f"oturum-{slot}.sqlite")
+            with self.app.connect() as db:
+                self.assertEqual(db.execute("SELECT unvan FROM cari WHERE id=?", (original,)).fetchone(),
+                                 ("Eski Cari",))
+                sale = db.insert_shared("""INSERT INTO beton_satis
+                    (tarih,cari_id,miktar_m3,birim_fiyat,pompa_ucreti,toplam,odeme_durumu)
+                    VALUES ('2026-11-20',?,30.5,100,500,3550,'Vadeli')""", (original,)).lastrowid
+                movement = self.app.sync_beton_sale_cari_movement(db, sale)
+                self.assertEqual((sale, movement), (slot * BLOCK + 1, slot * BLOCK + 1))
+            ids.append(sale)
+            with self.app.connect() as db:
+                [batch] = pending_batches(db)
+                batches.append(batch)
+
+        for slot, incoming in ((1, batches[1]), (2, batches[0])):
+            self.app.DB_PATH = str(folder / f"oturum-{slot}.sqlite")
+            self.assertEqual(apply_batch(self.app.connect, *incoming), "applied")
+            with self.app.connect() as db:
+                self.assertEqual(db.execute("SELECT id FROM beton_satis ORDER BY id").fetchall(),
+                                 [(value,) for value in ids])
+                self.assertEqual(db.execute("SELECT bakiye FROM cari_bakiye").fetchone(), (7100,))
+                self.assertEqual(db.insert_shared("INSERT INTO santiye(ad) VALUES(?)",
+                                                  ("Sonraki Şantiye",)).lastrowid, slot * BLOCK + 1)
+
+        self.app.DB_PATH = str(source)
+        os.environ["HOYTAS_HYBRID_CAPTURE"] = "0"
+        with self.app.connect() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM beton_satis").fetchone(), (0,))
 
     @unittest.skipUnless(os.environ.get("HOYTAS_TEST_POSTGRES_DSN"), "Isolated PostgreSQL required")
     def test_exchange_across_postgres_with_lost_acknowledgement(self):

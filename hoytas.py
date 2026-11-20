@@ -263,6 +263,14 @@ def _install_audit_triggers(con):
 class ClosingSQLiteConnection(sqlite3.Connection):
     """Commit/rollback and always release the database handle on context exit."""
     hybrid_batch_id = None
+    hybrid_slot = None
+
+    def insert_shared(self, sql, values):
+        if self.hybrid_slot is None:
+            return self.execute(sql, values)
+        from hybrid_identity import insert_shared
+
+        return insert_shared(self, self.hybrid_slot, sql, values)
 
     def capture_batch_id(self):
         if self.hybrid_batch_id is None:
@@ -288,11 +296,16 @@ def _enable_hybrid_capture(con):
     if os.environ.get("HOYTAS_HYBRID_CAPTURE") == "1":
         try:
             from hybrid_audit_bridge import install_capture
+            from hybrid_identity import replica_slot
 
+            con.hybrid_slot = replica_slot(con)
             install_capture(con, con.capture_batch_id)
         except Exception:
             con.close()
             raise
+    elif con.execute("SELECT 1 FROM sqlite_master WHERE name='hybrid_replica_identity'").fetchone():
+        con.close()
+        raise RuntimeError("Bu veritabanı hibrit oturum ayarıyla açılmalıdır.")
     return con
 
 
@@ -559,7 +572,7 @@ def sync_beton_sale_cari_movement(db, sale_id):
         for (duplicate_id,) in linked[1:]:
             db.execute("DELETE FROM hareket WHERE id=?", (duplicate_id,))
         return keep_id
-    cur = db.execute("""INSERT INTO hareket(tarih,cari_id,tur,kategori,aciklama,tutar,odeme_yontemi)
+    cur = db.insert_shared("""INSERT INTO hareket(tarih,cari_id,tur,kategori,aciklama,tutar,odeme_yontemi)
         VALUES(?,?,?,?,?,?,?)""", (tarih,cari_id,"Borç","Satış",description,toplam,"Vadeli"))
     return cur.lastrowid
 
@@ -983,7 +996,7 @@ class HoytasApp(tk.Tk):
             with connect() as c:
                 c.execute("INSERT INTO gelen_fatura_odeme(fatura_id,tarih,tutar,yontem,aciklama) VALUES(?,?,?,?,?)",(rid,dt,amount,d["yontem"],d["aciklama"]))
                 c.execute("UPDATE gelen_fatura SET odenen=?,durum=? WHERE id=?",(newpaid,status,rid))
-                c.execute("INSERT INTO hareket(tarih,cari_id,tur,kategori,aciklama,tutar,odeme_yontemi) VALUES(?,?,?,?,?,?,?)",(dt,row[0],"Gider","Alış Faturası Ödemesi",ref,amount,d["yontem"]))
+                c.insert_shared("INSERT INTO hareket(tarih,cari_id,tur,kategori,aciklama,tutar,odeme_yontemi) VALUES(?,?,?,?,?,?,?)",(dt,row[0],"Gider","Alış Faturası Ödemesi",ref,amount,d["yontem"]))
                 if d["yontem"]=="Nakit": c.execute("INSERT INTO nakit_kasa(tarih,yon,kaynak,aciklama,tutar,kullanici) VALUES(?,?,?,?,?,?)",(dt,"Para Çıkışı","Gelen Fatura",ref,amount,getattr(self,"current_user",{}).get("username","")))
                 elif d["yontem"]=="Banka": c.execute("INSERT INTO banka_hareket(tarih,banka,hesap,yon,aciklama,tutar) VALUES(?,?,?,?,?,?)",(dt,"Banka","", "Para Çıkışı",ref,amount))
             self.refresh_all(); messagebox.showinfo("Ödeme kaydedildi",f"Ödeme: {amount:,.2f} TL\\nKalan: {round(kalan-amount,2):,.2f} TL\\nDurum: {status}",parent=self)
@@ -2134,7 +2147,7 @@ class HoytasApp(tk.Tk):
         with connect() as c:
             if c.execute("SELECT id FROM cari WHERE unvan=? COLLATE NOCASE",(unvan,)).fetchone():
                 return messagebox.showwarning("Kayıt mevcut","Bu ünvanla cari zaten kayıtlı.",parent=self)
-            c.execute("INSERT INTO cari(tur,unvan,telefon,vergi_no,notlar,created_at) VALUES(?,?,?,?,?,?)",
+            c.insert_shared("INSERT INTO cari(tur,unvan,telefon,vergi_no,notlar,created_at) VALUES(?,?,?,?,?,?)",
                 ("Tedarikçi",unvan,d["telefon"],"",d["notlar"],datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
         self.refresh_all()
         messagebox.showinfo("Kaydedildi",f"{unvan} tedarikçi carisi oluşturuldu.",parent=self)
@@ -2160,7 +2173,7 @@ class HoytasApp(tk.Tk):
         with connect() as c:
             if not c.execute("SELECT 1 FROM cari WHERE id=?",(cari_id,)).fetchone():
                 return messagebox.showerror("Cari bulunamadı","Seçilen tedarikçi bulunamadı.",parent=self)
-            c.execute("INSERT INTO hareket(tarih,cari_id,tur,kategori,aciklama,tutar,odeme_yontemi) VALUES(?,?,?,?,?,?,?)",
+            c.insert_shared("INSERT INTO hareket(tarih,cari_id,tur,kategori,aciklama,tutar,odeme_yontemi) VALUES(?,?,?,?,?,?,?)",
                 (tarih,cari_id,"Borç",category,acik,tutar,"Vadeli"))
         self.refresh_all()
         messagebox.showinfo("Alışveriş kaydedildi",f"{tutar:,.2f} TL alışveriş tedarikçi borcuna eklendi.",parent=self)
@@ -2186,9 +2199,9 @@ class HoytasApp(tk.Tk):
                 return messagebox.showwarning("Tutar fazla",f"Ödeme kalan borcu aşamaz. Kalan borç: {safe_float(bal[0]):,.2f} TL",parent=self)
             name=c.execute("SELECT unvan FROM cari WHERE id=?",(cari_id,)).fetchone()[0]
             acik=(d["aciklama"] or f"{name} tedarikçi ödemesi").strip()
-            c.execute("INSERT INTO hareket(tarih,cari_id,tur,kategori,aciklama,tutar,odeme_yontemi) VALUES(?,?,?,?,?,?,?)",
+            c.insert_shared("INSERT INTO hareket(tarih,cari_id,tur,kategori,aciklama,tutar,odeme_yontemi) VALUES(?,?,?,?,?,?,?)",
                 (tarih,cari_id,"Alacak","Tedarikçi Ödemesi",acik,tutar,d["yontem"]))
-            c.execute("INSERT INTO hareket(tarih,cari_id,tur,kategori,aciklama,tutar,odeme_yontemi) VALUES(?,?,?,?,?,?,?)",
+            c.insert_shared("INSERT INTO hareket(tarih,cari_id,tur,kategori,aciklama,tutar,odeme_yontemi) VALUES(?,?,?,?,?,?,?)",
                 (tarih,cari_id,"Gider","Alışveriş Ödemesi",acik,tutar,d["yontem"]))
             if d["yontem"]=="Nakit":
                 c.execute("INSERT INTO nakit_kasa(tarih,yon,kaynak,aciklama,tutar,kullanici) VALUES(?,?,?,?,?,?)",
@@ -2400,7 +2413,7 @@ class HoytasApp(tk.Tk):
         with connect() as c:
             row=c.execute("SELECT id FROM santiye WHERE lower(ad)=lower(?)",(value,)).fetchone()
             if row: return row[0]
-            cur=c.execute("INSERT INTO santiye(ad) VALUES(?)",(value,))
+            cur=c.insert_shared("INSERT INTO santiye(ad) VALUES(?)",(value,))
             return cur.lastrowid
 
     def edit_selected(self, tree, table):
@@ -2503,8 +2516,8 @@ class HoytasApp(tk.Tk):
                     ref=f"Beton satış tahsilatı #{rid}"
                     paid=c.execute("SELECT id FROM hareket WHERE aciklama=? AND kategori='Tahsilat' LIMIT 1",(ref,)).fetchone()
                     if data["odeme_durumu"]=="Tahsil Edildi" and data["cari_id"] and not paid:
-                        c.execute("INSERT INTO hareket(tarih,cari_id,tur,kategori,aciklama,tutar,odeme_yontemi) VALUES(?,?,?,?,?,?,?)",(data["tarih"],data["cari_id"],"Alacak","Tahsilat",ref,data["toplam"],"Nakit"))
-                        c.execute("INSERT INTO hareket(tarih,cari_id,tur,kategori,aciklama,tutar,odeme_yontemi) VALUES(?,?,?,?,?,?,?)",(data["tarih"],data["cari_id"],"Gelir","Satış",ref,data["toplam"],"Nakit"))
+                        c.insert_shared("INSERT INTO hareket(tarih,cari_id,tur,kategori,aciklama,tutar,odeme_yontemi) VALUES(?,?,?,?,?,?,?)",(data["tarih"],data["cari_id"],"Alacak","Tahsilat",ref,data["toplam"],"Nakit"))
+                        c.insert_shared("INSERT INTO hareket(tarih,cari_id,tur,kategori,aciklama,tutar,odeme_yontemi) VALUES(?,?,?,?,?,?,?)",(data["tarih"],data["cari_id"],"Gelir","Satış",ref,data["toplam"],"Nakit"))
                         c.execute("INSERT INTO nakit_kasa(tarih,yon,kaynak,aciklama,tutar,kullanici) VALUES(?,?,?,?,?,?)",(data["tarih"],"Para Girişi","Beton Satışı",ref,data["toplam"],getattr(self,"current_user",{}).get("username","")))
                     elif data["odeme_durumu"]!="Tahsil Edildi" and paid:
                         c.execute("DELETE FROM hareket WHERE aciklama=? AND kategori IN ('Tahsilat','Satış')",(ref,))
@@ -2594,7 +2607,7 @@ class HoytasApp(tk.Tk):
         if not d: return
         if not d["unvan"]: return messagebox.showwarning("Eksik bilgi","Ünvan zorunludur.")
         with connect() as c:
-            c.execute("INSERT INTO cari(tur,unvan,telefon,vergi_no,notlar,created_at) VALUES(?,?,?,?,?,?)",
+            c.insert_shared("INSERT INTO cari(tur,unvan,telefon,vergi_no,notlar,created_at) VALUES(?,?,?,?,?,?)",
                 (d["tur"],d["unvan"],d["telefon"],d["vergi_no"],d["notlar"],datetime.now().isoformat(timespec="seconds")))
         self.refresh_all()
 
@@ -2662,7 +2675,7 @@ class HoytasApp(tk.Tk):
         d=self.prompt("Yeni Şantiye",[("ad","Şantiye adı","entry",None),("adres","Adres","entry",None),("yetkili","Yetkili kişi","entry",None),("telefon","Telefon","entry",None),("notlar","Notlar","entry",None)])
         if not d: return
         if not d["ad"]: return messagebox.showwarning("Eksik bilgi","Şantiye adı zorunludur.")
-        with connect() as c: c.execute("INSERT INTO santiye(ad,adres,yetkili,telefon,notlar) VALUES(?,?,?,?,?)",(d["ad"],d["adres"],d["yetkili"],d["telefon"],d["notlar"]))
+        with connect() as c: c.insert_shared("INSERT INTO santiye(ad,adres,yetkili,telefon,notlar) VALUES(?,?,?,?,?)",(d["ad"],d["adres"],d["yetkili"],d["telefon"],d["notlar"]))
         self.refresh_all()
 
     def add_fatura(self):
@@ -2784,10 +2797,10 @@ class HoytasApp(tk.Tk):
                           (fatura_id,tarih,tutar,d["yontem"],aciklama))
                 c.execute("UPDATE fatura SET odenen=odenen+? WHERE id=?", (tutar,fatura_id))
             # Tahsilat, cari borcunu yalnızca alınan tutar kadar azaltır.
-            c.execute("INSERT INTO hareket(tarih,cari_id,tur,kategori,aciklama,tutar,odeme_yontemi) VALUES(?,?,?,?,?,?,?)",
+            c.insert_shared("INSERT INTO hareket(tarih,cari_id,tur,kategori,aciklama,tutar,odeme_yontemi) VALUES(?,?,?,?,?,?,?)",
                       (tarih, cari_id, "Alacak", "Tahsilat", aciklama, tutar, d["yontem"]))
             # Tahsilat gelir hareketi olarak raporlanır; satış borcu ayrıca korunur.
-            c.execute("INSERT INTO hareket(tarih,cari_id,tur,kategori,aciklama,tutar,odeme_yontemi) VALUES(?,?,?,?,?,?,?)",
+            c.insert_shared("INSERT INTO hareket(tarih,cari_id,tur,kategori,aciklama,tutar,odeme_yontemi) VALUES(?,?,?,?,?,?,?)",
                       (tarih, cari_id, "Gelir", "Tahsilat", aciklama, tutar, d["yontem"]))
             if d["yontem"] == "Nakit":
                 c.execute("INSERT INTO nakit_kasa(tarih,yon,kaynak,aciklama,tutar,kullanici) VALUES(?,?,?,?,?,?)",
@@ -2836,7 +2849,7 @@ class HoytasApp(tk.Tk):
         except ValueError:
             return messagebox.showerror("Hatalı bilgi","Tarih GG.AA.YYYY biçiminde, tutar ise sıfırdan büyük sayı olmalıdır.")
         with connect() as c:
-            c.execute("INSERT INTO hareket(tarih,cari_id,tur,kategori,aciklama,tutar,odeme_yontemi) VALUES(?,?,?,?,?,?,?)",
+            c.insert_shared("INSERT INTO hareket(tarih,cari_id,tur,kategori,aciklama,tutar,odeme_yontemi) VALUES(?,?,?,?,?,?,?)",
                 (tarih,cari_id,d["tur"],d["kategori"],d["aciklama"],tutar,d["odeme"]))
         self.refresh_all()
 
@@ -2860,7 +2873,7 @@ class HoytasApp(tk.Tk):
                 # Alınan çek müşteri alacağını tahsilat gibi azaltır; verilen çek
                 # ise cari borcu/alacak yönünde ters etki oluşturur.
                 move_type = "Alacak" if d["yon"] == "Alınan" else "Borç"
-                c.execute("INSERT INTO hareket(tarih,cari_id,tur,kategori,aciklama,tutar,odeme_yontemi) VALUES(?,?,?,?,?,?,?)",(datetime.now().strftime("%Y-%m-%d"),cari_id,move_type,"Çek",f"{d['yon']} çek #{d['cek_no']} - {banka}",tutar,"Çek"))
+                c.insert_shared("INSERT INTO hareket(tarih,cari_id,tur,kategori,aciklama,tutar,odeme_yontemi) VALUES(?,?,?,?,?,?,?)",(datetime.now().strftime("%Y-%m-%d"),cari_id,move_type,"Çek",f"{d['yon']} çek #{d['cek_no']} - {banka}",tutar,"Çek"))
         self.refresh_all()
 
     def add_stok(self):
@@ -2923,7 +2936,7 @@ class HoytasApp(tk.Tk):
         except ValueError:
             return messagebox.showerror("Hatalı bilgi","Tarih GG.AA.YYYY olmalı; metreküp sıfırdan büyük olmalı. Fiyatı boş bırakabilirsiniz (0 TL kaydedilir); fiyat ve pompa ücreti negatif olamaz. 30,5 gibi küsurat girebilirsiniz.")
         with connect() as c:
-            cur=c.execute("INSERT INTO beton_satis(tarih,cari_id,santiye_id,beton_cinsi,miktar_m3,birim_fiyat,pompa_ucreti,toplam,odeme_durumu,aciklama) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            cur=c.insert_shared("INSERT INTO beton_satis(tarih,cari_id,santiye_id,beton_cinsi,miktar_m3,birim_fiyat,pompa_ucreti,toplam,odeme_durumu,aciklama) VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (tarih,cari_id,santiye_id,d["beton_cinsi"],miktar,fiyat,pompa_ucreti,toplam,d["durum"],d["aciklama"]))
             sale_id=cur.lastrowid
             # Her satış için cari bağlantısını tek ortak fonksiyon üzerinden oluştur.
@@ -2931,9 +2944,9 @@ class HoytasApp(tk.Tk):
             if cari_id and d["durum"] == "Tahsil Edildi":
                 method=d.get("odeme_yontemi") or "Nakit"
                 ref=f"Beton satış tahsilatı #{sale_id}"
-                c.execute("INSERT INTO hareket(tarih,cari_id,tur,kategori,aciklama,tutar,odeme_yontemi) VALUES(?,?,?,?,?,?,?)",
+                c.insert_shared("INSERT INTO hareket(tarih,cari_id,tur,kategori,aciklama,tutar,odeme_yontemi) VALUES(?,?,?,?,?,?,?)",
                     (tarih,cari_id,"Alacak","Tahsilat",ref,toplam,method))
-                c.execute("INSERT INTO hareket(tarih,cari_id,tur,kategori,aciklama,tutar,odeme_yontemi) VALUES(?,?,?,?,?,?,?)",
+                c.insert_shared("INSERT INTO hareket(tarih,cari_id,tur,kategori,aciklama,tutar,odeme_yontemi) VALUES(?,?,?,?,?,?,?)",
                     (tarih,cari_id,"Gelir","Satış",ref,toplam,method))
                 if method == "Nakit":
                     c.execute("INSERT INTO nakit_kasa(tarih,yon,kaynak,aciklama,tutar,kullanici) VALUES(?,?,?,?,?,?)",
