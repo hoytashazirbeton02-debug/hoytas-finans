@@ -45,4 +45,7 @@ if __name__ == "__main__":
     from test_offline_queue import OfflineTests
     offline_result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(OfflineTests))
     print("HOYTAS_OFFLINE_SMOKE:", "PASS" if offline_result.wasSuccessful() and not offline_result.skipped else "NOT_VERIFIED", flush=True)
+    from test_sync_core import SyncTests
+    sync_result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(SyncTests))
+    print("HOYTAS_SYNC_SMOKE:", "PASS" if sync_result.wasSuccessful() and not sync_result.skipped else "NOT_VERIFIED", flush=True)
     ThreadingHTTPServer(("0.0.0.0", int(os.environ.get("PORT", "10000"))), Handler).serve_forever()
