@@ -43,7 +43,7 @@ def prepare_live_profile(folder, relay):
     database = target / "hoytas.db"
     if database.is_file():
         with readonly(database) as db:
-            if replica_slot(db) != 1:
+            if replica_slot(db) is None:
                 raise RuntimeError("Canlı profil oturum kimliği geçersiz.")
         return target
     staged = [path for path in folder.glob("canli-profil-*/oturum-1.sqlite") if path.is_file()]

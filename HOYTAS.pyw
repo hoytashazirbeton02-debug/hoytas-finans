@@ -58,7 +58,7 @@ def main():
     try:
         profile = Path(os.environ["LOCALAPPDATA"]) / "HOYTASFinans" / "canli-kullanim"
         with readonly(profile / "hoytas.db") as db:
-            if replica_slot(db) != 1:
+            if replica_slot(db) is None:
                 raise RuntimeError("Canlı HOYTAŞ profili bulunamadı.")
         credential = profile / "canli_anahtar.dpapi"
         token = None
