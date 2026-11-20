@@ -15,8 +15,14 @@ def database_ready():
         return False
 
 class Handler(BaseHTTPRequestHandler):
+    def do_HEAD(self):
+        self.respond(False)
+
     def do_GET(self):
-        if self.path not in ("/health", "/ready"):
+        self.respond(True)
+
+    def respond(self, include_body):
+        if self.path not in ("/", "/health", "/ready"):
             self.send_error(404)
             return
         ready = database_ready() if self.path == "/ready" else None
@@ -26,7 +32,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        if include_body:
+            self.wfile.write(body)
 
 if __name__ == "__main__":
     ThreadingHTTPServer(("0.0.0.0", int(os.environ.get("PORT", "10000"))), Handler).serve_forever()
