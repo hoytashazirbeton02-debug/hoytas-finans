@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from health import Handler
 from record_probe import PATH
+from windows_roundtrip import run_probe
 
 
 @unittest.skipUnless(os.environ.get("DATABASE_URL"), "Test database URL required")
@@ -46,6 +47,7 @@ class RecordProbeTests(unittest.TestCase):
                     self.assertEqual(request("POST", PATH, stale), (409, {"status": "conflict"}))
                     status, result = request("GET", path)
                     self.assertEqual((status, result["version"], result["payload"]["pump_fee"]), (200, 2, "650.00"))
+                    run_probe(token, f"http://127.0.0.1:{server.server_port}{PATH}")
                 finally:
                     server.shutdown()
                     worker.join(timeout=10)
