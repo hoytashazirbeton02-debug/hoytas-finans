@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from hybrid_audit_bridge import pending_batches
+
 
 class DesktopCaptureTests(unittest.TestCase):
     def setUp(self):
@@ -50,10 +52,21 @@ class DesktopCaptureTests(unittest.TestCase):
             self.assertEqual(json.loads(rows[2][2])["tutar"], 3550)
             self.assertEqual(db.execute("SELECT bakiye FROM cari_bakiye").fetchone(), (3550,))
 
+        with self.app.connect() as db:
+            batches = pending_batches(db, limit=1)
+            self.assertEqual(len(batches), 1)
+            self.assertEqual([event[1] for event in batches[0][1]], ["cari", "beton_satis", "hareket"])
+            db.execute("UPDATE cari SET unvan='İlk' WHERE id=?", (existing_id,))
+            db.commit()
+            db.execute("UPDATE cari SET unvan='İkinci' WHERE id=?", (existing_id,))
+        with self.app.connect() as db:
+            batches = pending_batches(db)
+            self.assertEqual([len(events) for _, events in batches], [3, 1, 1])
+
         os.environ["HOYTAS_HYBRID_CAPTURE"] = "0"
         with self.app.connect() as db:
             db.execute("UPDATE cari SET unvan='Yerel Düzenleme' WHERE id=?", (existing_id,))
-            self.assertEqual(db.execute("SELECT count(*) FROM hybrid_audit_queue").fetchone(), (3,))
+            self.assertEqual(db.execute("SELECT count(*) FROM hybrid_audit_queue").fetchone(), (5,))
 
 
 if __name__ == "__main__":

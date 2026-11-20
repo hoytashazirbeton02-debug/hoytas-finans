@@ -1,7 +1,10 @@
 """Capture opt-in desktop changes in the same SQLite transaction."""
 
 
-def install_capture(db):
+from collections import defaultdict
+
+
+def install_capture(db, batch_id=None):
     db.execute("""CREATE TABLE IF NOT EXISTS hybrid_audit_queue (
         event_id TEXT PRIMARY KEY,
         audit_id INTEGER UNIQUE NOT NULL,
@@ -11,8 +14,18 @@ def install_capture(db):
         old_values TEXT,
         new_values TEXT
     )""")
+    if batch_id is not None:
+        db.create_function("hoytas_capture_batch", 0, batch_id)
+        db.execute("""CREATE TABLE IF NOT EXISTS hybrid_capture_batch (
+            audit_id INTEGER PRIMARY KEY,
+            batch_id TEXT NOT NULL
+        )""")
+    capture_batch = "" if batch_id is None else """
+        INSERT INTO hybrid_capture_batch(audit_id, batch_id)
+        VALUES (NEW.id, hoytas_capture_batch());
+    """
     # A temporary trigger keeps capture scoped to explicitly enabled connections.
-    db.execute("""CREATE TEMP TRIGGER IF NOT EXISTS hybrid_capture
+    db.execute(f"""CREATE TEMP TRIGGER IF NOT EXISTS hybrid_capture
         AFTER INSERT ON main.audit_log
         WHEN NEW.table_name IN ('cari', 'hareket', 'beton_satis', 'santiye')
         BEGIN
@@ -21,4 +34,27 @@ def install_capture(db):
             VALUES
                 (lower(hex(randomblob(16))), NEW.id, NEW.table_name, NEW.record_id,
                  NEW.action, NEW.old_values, NEW.new_values);
+            {capture_batch}
         END""")
+
+
+def pending_batches(db, limit=20):
+    """Return complete committed batches from a separate reader connection."""
+    if db.in_transaction:
+        raise RuntimeError("Read pending batches outside a write transaction")
+    rows = db.execute("""
+        WITH selected AS (
+            SELECT batch_id FROM hybrid_capture_batch
+            GROUP BY batch_id ORDER BY MIN(audit_id) LIMIT ?
+        )
+        SELECT b.batch_id, q.event_id, q.table_name, q.record_id,
+               q.action, q.old_values, q.new_values
+        FROM selected s
+        JOIN hybrid_capture_batch b ON b.batch_id = s.batch_id
+        JOIN hybrid_audit_queue q ON q.audit_id = b.audit_id
+        ORDER BY q.audit_id
+    """, (limit,))
+    batches = defaultdict(list)
+    for batch_id, *event in rows:
+        batches[batch_id].append(tuple(event))
+    return list(batches.items())

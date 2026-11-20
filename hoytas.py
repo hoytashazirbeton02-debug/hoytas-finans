@@ -262,6 +262,21 @@ def _install_audit_triggers(con):
 
 class ClosingSQLiteConnection(sqlite3.Connection):
     """Commit/rollback and always release the database handle on context exit."""
+    hybrid_batch_id = None
+
+    def capture_batch_id(self):
+        if self.hybrid_batch_id is None:
+            self.hybrid_batch_id = secrets.token_hex(16)
+        return self.hybrid_batch_id
+
+    def commit(self):
+        super().commit()
+        self.hybrid_batch_id = None
+
+    def rollback(self):
+        super().rollback()
+        self.hybrid_batch_id = None
+
     def __exit__(self, exc_type, exc_value, traceback):
         try:
             return super().__exit__(exc_type, exc_value, traceback)
@@ -274,7 +289,7 @@ def _enable_hybrid_capture(con):
         try:
             from hybrid_audit_bridge import install_capture
 
-            install_capture(con)
+            install_capture(con, con.capture_batch_id)
         except Exception:
             con.close()
             raise
