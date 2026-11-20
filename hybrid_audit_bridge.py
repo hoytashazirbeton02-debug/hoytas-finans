@@ -38,13 +38,17 @@ def install_capture(db, batch_id=None):
         END""")
 
 
-def pending_batches(db, limit=20):
+def pending_batches(db, limit=20, *, unsent_only=False):
     """Return complete committed batches from a separate reader connection."""
     if db.in_transaction:
         raise RuntimeError("Read pending batches outside a write transaction")
-    rows = db.execute("""
+    exclusion = (
+        "WHERE batch_id NOT IN (SELECT batch_id FROM hybrid_sent_batch)"
+        if unsent_only else ""
+    )
+    rows = db.execute(f"""
         WITH selected AS (
-            SELECT batch_id FROM hybrid_capture_batch
+            SELECT batch_id FROM hybrid_capture_batch {exclusion}
             GROUP BY batch_id ORDER BY MIN(audit_id) LIMIT ?
         )
         SELECT b.batch_id, q.event_id, q.table_name, q.record_id,

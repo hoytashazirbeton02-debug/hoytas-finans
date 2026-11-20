@@ -6,9 +6,12 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+from contextlib import contextmanager
 
 from hybrid_audit_bridge import pending_batches
 from hybrid_inbound import ReplicaConflict, apply_batch
+from hybrid_exchange import exchange_once
+from hybrid_postgres_relay import PostgresRelay
 
 
 class DesktopCaptureTests(unittest.TestCase):
@@ -104,6 +107,53 @@ class DesktopCaptureTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT miktar_m3,pompa_ucreti FROM beton_satis").fetchone(), (30.5, 500))
             self.assertEqual(db.execute("SELECT bakiye FROM cari_bakiye").fetchone(), (3550,))
             self.assertEqual(len(pending_batches(db)), 2)
+
+
+    @unittest.skipUnless(os.environ.get("HOYTAS_TEST_POSTGRES_DSN"), "Isolated PostgreSQL required")
+    def test_exchange_across_postgres_with_lost_acknowledgement(self):
+        import psycopg
+
+        class LostAcknowledgement:
+            def pull(self, cursor, limit):
+                return relay.pull(cursor, limit)
+
+            def push(self, batch_id, events):
+                relay.push(batch_id, events)
+                raise ConnectionError("Disconnected after commit")
+
+        postgres = self.enterContext(psycopg.connect(os.environ["HOYTAS_TEST_POSTGRES_DSN"], autocommit=True))
+        postgres.execute("""CREATE TEMP TABLE hybrid_relay_batch (
+            sequence bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            batch_id text NOT NULL UNIQUE,
+            events jsonb NOT NULL
+        )""")
+
+        @contextmanager
+        def relay_connection():
+            with postgres.transaction():
+                yield postgres
+
+        relay = PostgresRelay(relay_connection)
+        source = self.app.DB_PATH
+        os.environ["HOYTAS_HYBRID_CAPTURE"] = "1"
+        with self.app.connect() as db:
+            db.execute("INSERT INTO cari(id,tur,unvan,created_at) VALUES (1,'Müşteri','Besni','2026-11-01')")
+            sale_id = db.execute("""INSERT INTO beton_satis
+                (tarih,cari_id,miktar_m3,birim_fiyat,pompa_ucreti,toplam,odeme_durumu)
+                VALUES ('2026-11-20',1,30.5,100,500,3550,'Vadeli')""").lastrowid
+            self.app.sync_beton_sale_cari_movement(db, sale_id)
+
+        with self.assertRaises(ConnectionError):
+            exchange_once(self.app.connect, LostAcknowledgement())
+        self.assertEqual(exchange_once(self.app.connect, relay), (1, 0))
+        self.assertEqual(len(relay.pull(0, 20)), 1)
+
+        self.app.DB_PATH = str(Path(source).with_name("exchange-recipient.db"))
+        self.assertEqual(exchange_once(self.app.connect, relay), (1, 0))
+        self.assertEqual(exchange_once(self.app.connect, relay), (0, 0))
+        with self.app.connect() as db:
+            self.assertEqual(db.execute("SELECT miktar_m3,pompa_ucreti FROM beton_satis").fetchone(), (30.5, 500))
+            self.assertEqual(db.execute("SELECT bakiye FROM cari_bakiye").fetchone(), (3550,))
 
 
 if __name__ == "__main__":
