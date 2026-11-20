@@ -1,5 +1,6 @@
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os, json
+from urllib.parse import urlsplit
 
 def database_ready():
     url = os.environ.get("DATABASE_URL")
@@ -22,10 +23,11 @@ class Handler(BaseHTTPRequestHandler):
         self.respond(True)
 
     def respond(self, include_body):
-        if self.path not in ("/", "/health", "/ready"):
+        path = urlsplit(self.path).path.rstrip("/") or "/"
+        if path not in ("/", "/health", "/ready"):
             self.send_error(404)
             return
-        ready = database_ready() if self.path == "/ready" else None
+        ready = database_ready() if path == "/ready" else None
         body = json.dumps({"status": "ok" if ready is not False else "unavailable", "mode": "test", "sync_enabled": False, "database_ready": ready}).encode()
         self.send_response(503 if ready is False else 200)
         self.send_header("Content-Type", "application/json")
