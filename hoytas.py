@@ -26,7 +26,7 @@ from xml.sax.saxutils import escape
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
 TARGET_SCHEMA_VERSION = 50
-APP_VERSION = 92
+APP_VERSION = 93
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 ISOLATED_PROFILE_DIR = os.environ.get("HOYTAS_PROFILE_DIR", "").strip()
 USER_DATA_DIR = ISOLATED_PROFILE_DIR or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
@@ -3704,6 +3704,14 @@ if __name__ == "__main__":
         faulthandler.enable(file=_hang_log)
         faulthandler.dump_traceback_later(20, repeat=True, file=_hang_log)
         app = HoytasApp()
+        if ISOLATED_PROFILE_DIR and os.name == "nt":
+            try:
+                from hybrid_shortcut_setup import install_after_update
+
+                install_after_update(ISOLATED_PROFILE_DIR, os.environ.get("HOYTAS_SYNC_TOKEN", ""))
+            except Exception as shortcut_exc:
+                app._log_update_error(shortcut_exc)
+                messagebox.showwarning("HOYTAŞ kısayolu", "v93 açıldı, ancak masaüstü simgesi yenilenemedi. Ayrıntı güncelleme kaydına yazıldı.", parent=app)
         if os.environ.get("HOYTAS_SYNC_URL", "").strip():
             from hybrid_runtime import start_background_sync
 

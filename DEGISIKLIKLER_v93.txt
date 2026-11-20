@@ -1,0 +1,5 @@
+HOYTAŞ v93
+
+Masaüstü simgesi canlı HOYTAŞ giriş ekranını doğrudan açar.
+İlk başarılı girişten sonra mevcut HOYTAŞ kısayolları güncellenir.
+Canlı aktarım anahtarı Windows kullanıcı hesabına bağlı şifreli biçimde saklanır.

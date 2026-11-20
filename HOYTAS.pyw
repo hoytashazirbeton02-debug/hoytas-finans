@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from tempfile import NamedTemporaryFile
 import tkinter as tk
 from tkinter import messagebox, simpledialog
 
@@ -35,6 +36,22 @@ def windows_protect(data, encrypt):
         free(result.data)
 
 
+def save_credential(path, token):
+    encrypted = windows_protect(token.encode("utf-8"), True)
+    with NamedTemporaryFile(dir=path.parent, prefix="canli-anahtar-", delete=False) as temporary:
+        name = Path(temporary.name)
+        try:
+            temporary.write(encrypted)
+        except BaseException:
+            temporary.close()
+            name.unlink(missing_ok=True)
+            raise
+    try:
+        os.replace(name, path)
+    finally:
+        name.unlink(missing_ok=True)
+
+
 def main():
     parent = tk.Tk()
     parent.withdraw()
@@ -56,9 +73,7 @@ def main():
                 return
             token = token.strip()
             HTTPRelay(ENDPOINT, token).pull(0, 1)
-            temporary = credential.with_suffix(".tmp")
-            temporary.write_bytes(windows_protect(token.encode("utf-8"), True))
-            os.replace(temporary, credential)
+            save_credential(credential, token)
         target = launch_target(profile, Path(__file__).with_name("hoytas.py"))
         env = {**os.environ, "HOYTAS_PROFILE_DIR": str(profile), "HOYTAS_HYBRID_CAPTURE": "1",
                "HOYTAS_SYNC_URL": ENDPOINT, "HOYTAS_SYNC_TOKEN": token}
