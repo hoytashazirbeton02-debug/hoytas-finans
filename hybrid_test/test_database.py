@@ -2,11 +2,12 @@
 import os
 import uuid
 import unittest
-import psycopg
 
 @unittest.skipUnless(os.environ.get("DATABASE_URL"), "Test database URL required")
 class DatabaseSmoke(unittest.TestCase):
     def test_transaction_and_duplicate(self):
+        import psycopg
+
         with psycopg.connect(os.environ["DATABASE_URL"], connect_timeout=10) as conn:
             with conn.cursor() as cur:
                 cur.execute("CREATE TEMP TABLE hoytas_smoke_events (id uuid PRIMARY KEY, payload text NOT NULL) ON COMMIT DROP")
