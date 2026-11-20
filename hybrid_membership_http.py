@@ -54,7 +54,7 @@ class MembershipHTTP:
                 return 202, {"status": "pending"}
             if path == "/membership/login":
                 session = self.memberships.login(data["username"], data["password"])
-                return 200, {"session": session}
+                return 200, {"session": session, "role": self.memberships.session_role(session)}
             if path == "/membership/pending":
                 return 200, {"pending": self.memberships.pending(token)}
             if self.memberships.approve(token, data["username"]):

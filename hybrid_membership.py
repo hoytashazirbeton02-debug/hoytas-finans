@@ -81,6 +81,10 @@ class Memberships:
                 (%s,%s,now()+interval '8 hours')""", (key, user_key(username)))
         return token
 
+    def session_role(self, token):
+        with self.connect() as db:
+            return self._session_account(db, token)[1]
+
     def pending(self, token):
         with self.connect() as db:
             self._administrator(db, token)
@@ -98,13 +102,19 @@ class Memberships:
             return approved is not None
 
     def _administrator(self, db, token):
+        username, role = self._session_account(db, token)
+        if role != "admin":
+            raise PermissionError("Administrator session required")
+        return username
+
+    def _session_account(self, db, token):
         if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{43}", token):
             raise PermissionError("Administrator session required")
         key = sha256(token.encode("ascii")).digest()
         row = db.execute("""
-            SELECT m.username FROM hybrid_member_session s JOIN hybrid_member m USING (username)
-            WHERE s.digest=%s AND s.expires_at>now() AND m.role='admin' AND m.state='active'
+            SELECT m.username, m.role FROM hybrid_member_session s JOIN hybrid_member m USING (username)
+            WHERE s.digest=%s AND s.expires_at>now() AND m.state='active'
         """, (key,)).fetchone()
         if row is None:
             raise PermissionError("Administrator session required")
-        return row[0]
+        return row
