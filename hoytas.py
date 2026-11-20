@@ -26,7 +26,7 @@ from xml.sax.saxutils import escape
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
 TARGET_SCHEMA_VERSION = 50
-APP_VERSION = 89
+APP_VERSION = 90
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 USER_DATA_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
 os.makedirs(USER_DATA_DIR, exist_ok=True)
@@ -632,8 +632,8 @@ class HoytasApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("HOYTAŞ Hazır Beton | Finans ve İşletme Yönetimi")
-        self.geometry("1440x900")
-        self.minsize(1180, 720)
+        self.geometry(f"{min(1440,self.winfo_screenwidth()-32)}x{min(900,self.winfo_screenheight()-80)}")
+        self.minsize(800, 550)
         self.configure(bg="#F3F5F4")
         self._ensure_admin_and_login()
         self.style = ttk.Style(self)
@@ -650,10 +650,10 @@ class HoytasApp(tk.Tk):
         self.style.configure("TCombobox", padding=7, fieldbackground="#FFFFFF", foreground="#24352C", arrowsize=14)
         self.style.map("TCombobox", fieldbackground=[("readonly", "#FFFFFF")], foreground=[("readonly", "#24352C")])
         self.style.configure("TNotebook", background="#E8EEEA", borderwidth=0, tabmargins=(3, 7, 3, 0))
-        self.style.configure("TNotebook.Tab", padding=(16, 12), font=("Segoe UI", 10, "bold"),
+        self.style.configure("TNotebook.Tab", padding=(7, 8), font=("Segoe UI", 9, "bold"),
                              background="#DCE6DF", foreground="#40564A", borderwidth=0)
         self.style.map("TNotebook.Tab", background=[("selected", "#FFFFFF"), ("active", "#C9DCCF")],
-                       foreground=[("selected", "#1D5B39"), ("active", "#1F3028")], padding=[("selected", (17, 13))])
+                       foreground=[("selected", "#1D5B39"), ("active", "#1F3028")], padding=[("selected", (7, 8))])
         self.style.configure("Treeview", rowheight=34, font=("Segoe UI", 9), background="#FFFFFF",
                              fieldbackground="#FFFFFF", foreground="#24352C", borderwidth=0)
         self.style.configure("Treeview.Heading", font=("Segoe UI", 9, "bold"),
@@ -666,6 +666,7 @@ class HoytasApp(tk.Tk):
         self.style.configure("Metric.TLabelframe", background="#FFFFFF", bordercolor="#D8E0DB", relief="solid")
         self.style.configure("Metric.TLabel", background="#FFFFFF", foreground="#1F3028", font=("Segoe UI", 18, "bold"))
         self._build()
+        self._adapt_action_rows(self)
         # Initial refresh and write operations already synchronize all modules.
         # Avoid a duplicate full refresh on the initial notebook event.
         self._last_selected_tab = self.tabs.select()
@@ -682,12 +683,53 @@ class HoytasApp(tk.Tk):
         # Sunucu tanımlıysa açılışta sessizce yeni sürüm kontrolü yap.
         self.after(1800, self.check_for_updates_silent)
 
+    def _adapt_action_rows(self, root):
+        """Wrap button-only packed toolbars without altering their commands."""
+        for frame in root.winfo_children():
+            if isinstance(frame, ttk.Frame):
+                children = frame.winfo_children()
+                if len(children) >= 2 and all(isinstance(w, ttk.Button) and w.winfo_manager()=="pack" for w in children):
+                    for w in children:
+                        w.pack_forget()
+                    def arrange(event=None, f=frame, buttons=tuple(children)):
+                        width = max(1, f.winfo_width())
+                        if width <= 1:
+                            return
+                        layout = []
+                        row = col = used = 0
+                        for w in buttons:
+                            need = w.winfo_reqwidth()+8
+                            if used and used+need > width:
+                                row += 1; col = used = 0
+                            layout.append((row,col))
+                            col += 1; used += need
+                        if getattr(f,"_toolbar_layout",None)==layout:
+                            return
+                        f._toolbar_layout=layout
+                        for w,(r,c) in zip(buttons,layout):
+                            w.grid(row=r,column=c,sticky="w",padx=3,pady=2)
+                    for i,w in enumerate(children):
+                        w.grid(row=0,column=i,sticky="w",padx=3,pady=2)
+                    frame.bind("<Configure>",arrange,add="+")
+                    frame.after_idle(arrange)
+                else:
+                    self._adapt_action_rows(frame)
+            elif isinstance(frame, ttk.Notebook):
+                self._adapt_action_rows(frame)
+
     def _refresh_on_tab_change(self, event=None):
         """Sekme değişiminde bütün modülleri aynı veritabanı görüntüsüne getir."""
         selected = self.tabs.select()
         if selected == self._last_selected_tab:
             return
         self._last_selected_tab = selected
+        pending = getattr(self, "_tab_refresh_job", None)
+        if pending is not None:
+            self.after_cancel(pending)
+        self._tab_refresh_job = self.after(180, self._run_tab_refresh)
+
+    def _run_tab_refresh(self):
+        self._tab_refresh_job = None
         if getattr(self, "_refreshing_tab_change", False):
             return
         self._refreshing_tab_change = True
@@ -959,7 +1001,7 @@ class HoytasApp(tk.Tk):
                  font=("Segoe UI", 9)).pack(side="right", padx=24)
         tk.Frame(self, bg="#DDB62E", height=3).pack(fill="x")
         self.tabs = ttk.Notebook(self)
-        self.tabs.pack(fill="both", expand=True, padx=18, pady=(14, 10))
+        self.tabs.pack(fill="both", expand=True, padx=10, pady=(8, 6))
         self.dashboard = ttk.Frame(self.tabs, padding=18)
         self.cari_tab = ttk.Frame(self.tabs, padding=12)
         self.borc_takip_tab = ttk.Frame(self.tabs, padding=12)
@@ -988,6 +1030,15 @@ class HoytasApp(tk.Tk):
         ]
         for frame, title in tab_items:
             self.tabs.add(frame, text=title)
+        nav = ttk.Frame(self)
+        nav.pack(fill="x",before=self.tabs,padx=10,pady=4)
+        ttk.Label(nav,text="Menüye git:").pack(side="left")
+        names = [title.replace("\n"," ") for _,title in tab_items]
+        jump = ttk.Combobox(nav,values=names,state="readonly",width=28)
+        jump.pack(side="left",padx=6)
+        jump.current(0)
+        jump.bind("<<ComboboxSelected>>",lambda e:self.tabs.select(tab_items[jump.current()][0]))
+        self.tabs.bind("<<NotebookTabChanged>>",lambda e:jump.current(self.tabs.index("current")),add="+")
         # Her sekmenin kendine ait işlem rehberi; genel açıklama yerine bağlama özgü bilgi.
         ttk.Label(self.cari_tab, text="Cari bakiyeleri ve faturalar ayrı izlenir. Bir carinin toplam borcunu ve fatura tahsilatını ilgili kayıt üzerinden kontrol edin.", foreground="#315B46", wraplength=1200).pack(anchor="w", pady=(0, 8))
         ttk.Label(self.beton_tab, text="Beton cinsi, m³, şantiye, pompa bedeli ve tahsilat durumunu burada takip edin. Satış açıklamasına teslim/şantiye bilgisini yazın.", foreground="#315B46", wraplength=1200).pack(anchor="w", pady=(0, 8))
@@ -1013,7 +1064,7 @@ class HoytasApp(tk.Tk):
         self._build_kasa()
         self._build_extra_tabs()
         bottom = ttk.Frame(self, padding=(18, 4, 18, 12))
-        bottom.pack(fill="x")
+        bottom.pack(side="bottom",fill="x",before=self.tabs)
         bottom_top = ttk.Frame(bottom); bottom_top.pack(fill="x", pady=(0, 5))
         bottom_bottom = ttk.Frame(bottom); bottom_bottom.pack(fill="x")
         for parent, specs in [
@@ -1887,6 +1938,8 @@ class HoytasApp(tk.Tk):
             win = tk.Toplevel(self)
             win.title("Toplu cari kontrol")
             win.geometry("920x480")
+            win.minsize(650,360)
+            footer=ttk.Frame(win,padding=8); footer.pack(side="bottom",fill="x")
             ttk.Label(win,text=f"{len(rows)} cari kontrol edildi; {len(issues)} inceleme gerekli.").pack(anchor="w",padx=12,pady=8)
             frame=ttk.Frame(win); frame.pack(fill="both",expand=True,padx=12)
             cols=("name","missing","wrong","ambiguous","balance","delta")
@@ -1898,7 +1951,7 @@ class HoytasApp(tk.Tk):
             scroll.pack(side="right",fill="y"); tree.pack(fill="both",expand=True)
             for cid,name,missing,wrong,ambiguous,err,delta in issues:
                 tree.insert("","end",values=(name,len(missing),len(wrong),len(ambiguous),"Var" if err else "Yok",f"{delta:,.2f}"))
-            ttk.Label(win,text="Yalnızca tekil, aynı cariye bağlı tutar hataları toplu onarılır. Eksik, belirsiz ve diğer hatalar elle incelenir.").pack(anchor="w",padx=12,pady=8)
+            ttk.Label(footer,text="Yalnızca tekil, aynı cariye bağlı tutar hataları toplu onarılır. Eksik, belirsiz ve diğer hatalar elle incelenir.",wraplength=620).pack(anchor="w",pady=4)
             def eligible(data):
                 return [(r[0],x) for r in data if not r[5] for x in r[3] if x[5]==r[0]]
             planned=eligible(rows)
@@ -1926,8 +1979,8 @@ class HoytasApp(tk.Tk):
                     self.bulk_cari_audit()
                 except Exception as exc:
                     messagebox.showerror("Onarım hatası",str(exc),parent=self)
-            ttk.Button(win,text="Kesin tutar hatalarını onar",command=repair).pack(side="left",padx=12,pady=8)
-            ttk.Button(win,text="Kapat",command=win.destroy).pack(side="right",padx=12,pady=8)
+            ttk.Button(footer,text="Kesin tutar hatalarını onar",command=repair).pack(side="left",padx=12,pady=8)
+            ttk.Button(footer,text="Kapat",command=win.destroy).pack(side="right",padx=12,pady=8)
         except Exception as exc:
             messagebox.showerror("Cari kontrol hatası",str(exc),parent=self)
 
@@ -2968,12 +3021,17 @@ class HoytasApp(tk.Tk):
         children = tree.get_children()
         if getattr(tree, "_render_signature", None) == signature and len(children) == len(shown):
             return
+        selected_ids = {str(tree.item(i,"values")[0]) for i in tree.selection() if tree.item(i,"values")}
+        scroll_position = tree.yview()[0] if children else 0
         tree.delete(*children)
         for idx, row in enumerate(shown):
             tag = row_tags.get(str(row[0]))
             if not tag:
                 tag = "even" if idx % 2 == 0 else "odd"
-            tree.insert("", "end", values=row, tags=(tag,))
+            item = tree.insert("", "end", values=row, tags=(tag,))
+            if str(row[0]) in selected_ids:
+                tree.selection_add(item)
+        tree.yview_moveto(scroll_position)
         tree._render_signature = signature
 
     def fill_tree(self, tree, rows):

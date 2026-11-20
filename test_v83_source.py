@@ -5,7 +5,7 @@ from pathlib import Path
 
 source = Path("hoytas.py").read_text(encoding="utf-8")
 tree = ast.parse(source)
-assert "APP_VERSION = 89" in source
+assert "APP_VERSION = 90" in source
 assert source.index("def normalize_fatura_tarihi") < source.index('if __name__ == "__main__":')
 node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "normalize_fatura_tarihi")
 namespace = {"date": datetime.date, "datetime": datetime.datetime}
@@ -69,3 +69,8 @@ rows=ns["audit_all_cari"](db)
 assert len(rows)==2 and rows[0][4] and rows[0][5]
 assert db.execute("SELECT COUNT(*) FROM hareket").fetchone()[0]==3
 print("v89 bulk read-only audit checks passed")
+
+assert 'self.after(180, self._run_tab_refresh)' in source
+assert 'footer=ttk.Frame(win,padding=8)' in source
+assert 'self._adapt_action_rows(self)' in source
+assert 'tree.yview_moveto(scroll_position)' in source

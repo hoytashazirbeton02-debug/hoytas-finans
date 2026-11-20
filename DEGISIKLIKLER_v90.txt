@@ -1,0 +1,1 @@
+v90: Alt işlem alanları öncelikli yerleşim, düğme satırları genişliğe göre sarma, menü seçim kutusu, sekme yenileme birleştirme, tablo seçim ve kaydırma konumu koruma. Cari veri veya şema değişikliği yok.
