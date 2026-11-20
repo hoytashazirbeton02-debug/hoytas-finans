@@ -26,7 +26,7 @@ from xml.sax.saxutils import escape
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
 TARGET_SCHEMA_VERSION = 50
-APP_VERSION = 90
+APP_VERSION = 91
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 USER_DATA_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
 os.makedirs(USER_DATA_DIR, exist_ok=True)
@@ -685,6 +685,15 @@ class HoytasApp(tk.Tk):
 
     def _adapt_action_rows(self, root):
         """Wrap button-only packed toolbars without altering their commands."""
+        # Reserve all fixed-height controls before allocating remaining space to tables.
+        packed = root.pack_slaves()
+        flexible = [w for w in packed if str(w.pack_info().get("expand")) in ("1", "True", "true") and w.pack_info().get("fill") == "both"]
+        if flexible:
+            first = flexible[0]
+            for w in packed[packed.index(first)+1:]:
+                info = w.pack_info()
+                if w not in flexible and info.get("side") == "top":
+                    w.pack_configure(before=first)
         for frame in root.winfo_children():
             if isinstance(frame, ttk.Frame):
                 children = frame.winfo_children()
@@ -1539,7 +1548,7 @@ class HoytasApp(tk.Tk):
         ttk.Button(searchbar, text="Temizle", command=lambda v=search_var: v.set("")).pack(side="left")
         frame = ttk.Frame(parent)
         frame.pack(fill="both", expand=True, pady=(4, 0))
-        tree = DateTreeview(frame, columns=columns, show="headings")
+        tree = DateTreeview(frame, columns=columns, show="headings", height=6)
         for i, (col, head) in enumerate(zip(columns, headings)):
             tree.heading(col, text=head)
             tree.column(col, width=(widths[i] if widths else 130), anchor="w")

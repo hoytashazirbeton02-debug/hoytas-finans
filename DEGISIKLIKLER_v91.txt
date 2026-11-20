@@ -1,0 +1,1 @@
+v91: Sabit işlem çubukları genişleyen tablolardan önce yerleştirilir; tablo başlangıç yüksekliği azaltılır. Finansal kayıtlar ve şema değişmez.
