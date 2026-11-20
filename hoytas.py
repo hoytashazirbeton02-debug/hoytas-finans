@@ -26,7 +26,7 @@ from xml.sax.saxutils import escape
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
 TARGET_SCHEMA_VERSION = 50
-APP_VERSION = 87
+APP_VERSION = 88
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 USER_DATA_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
 os.makedirs(USER_DATA_DIR, exist_ok=True)
@@ -448,6 +448,8 @@ def resolve_customer_id(connection, value, allowed_types=("Müşteri", "Diğer")
 def linked_beton_sale_id(description):
     """Return the source sale ID for an automatically generated Cari movement."""
     match = re.search(r"\[SATIŞ:(\d+)\]", str(description or ""), flags=re.IGNORECASE)
+    if not match:
+        match = re.match(r"Beton satış #(\d+)(?!\d)", str(description or ""), flags=re.IGNORECASE)
     return int(match.group(1)) if match else None
 
 
@@ -512,11 +514,9 @@ def sync_beton_sale_cari_movement(db, sale_id):
     if not sale:
         raise ValueError(f"Beton satış kaydı bulunamadı: {sale_id}")
     tarih,cari_id,cinsi,m3,fiyat,pompa,toplam,notlar,durum = sale
-    marker = f"%[SATIŞ:{sale_id}]%"
-    # Include both stable IDs and pre-v65 legacy descriptions in one repair pass.
-    linked = db.execute("""SELECT id FROM hareket WHERE kategori='Satış' AND tur='Borç'
-        AND (aciklama LIKE ? OR aciklama LIKE ? OR aciklama LIKE ?) ORDER BY id""",
-        (marker, f"Beton satış #{sale_id} - %", f"Beton satış #{sale_id}%")).fetchall()
+    linked = [(mid,) for mid, desc in db.execute(
+        "SELECT id,aciklama FROM hareket WHERE kategori='Satış' AND tur='Borç' ORDER BY id")
+        if linked_beton_sale_id(desc) == sale_id]
     if not cari_id:
         for (movement_id,) in linked:
             db.execute("DELETE FROM hareket WHERE id=?", (movement_id,))
@@ -549,10 +549,7 @@ def audit_beton_cari_amounts(db, cari_id):
         FROM hareket WHERE tur='Borç' AND kategori='Satış' ORDER BY id""").fetchall()
     missing, mismatched, ambiguous = [], [], []
     for sale_id, date, amount in sales:
-        import re
-        matches = [m for m in movements if
-                   f"[SATIŞ:{sale_id}]" in m[4] or
-                   re.search(r"Beton satış #" + re.escape(str(sale_id)) + r"(?!\d)", m[4], re.I)]
+        matches = [m for m in movements if linked_beton_sale_id(m[4]) == sale_id]
         if len(matches) == 1:
             m = matches[0]
             if m[1] != cari_id or m[2] != date or abs(safe_float(m[3])-safe_float(amount)) > .009:
@@ -560,9 +557,7 @@ def audit_beton_cari_amounts(db, cari_id):
         elif len(matches) > 1:
             ambiguous.append((sale_id, date, safe_float(amount), 'Çoklu bağlantı'))
         else:
-            candidates = [m for m in movements if m[1] == cari_id and m[2] == date
-                          and '[SATIŞ:' not in m[4] and
-                          abs(safe_float(m[3])-safe_float(amount)) < .01]
+            candidates = [m for m in movements if m[1] == cari_id and linked_beton_sale_id(m[4]) is None]
             if candidates:
                 ambiguous.append((sale_id, date, safe_float(amount), 'Kimliği belirsiz eski hareket'))
             else:
@@ -572,23 +567,9 @@ def audit_beton_cari_amounts(db, cari_id):
 
 def find_missing_beton_movements(db, cari_id):
     """Return unlinked sales; avoid creating a duplicate for plausible legacy entries."""
-    sales = db.execute("""SELECT id,tarih,toplam FROM beton_satis
-        WHERE cari_id=? ORDER BY tarih,id""", (cari_id,)).fetchall()
-    movements = db.execute("""SELECT id,tarih,tutar,COALESCE(aciklama,'') FROM hareket
-        WHERE cari_id=? AND tur='Borç' AND kategori='Satış'""", (cari_id,)).fetchall()
-    missing, ambiguous = [], []
-    for sale_id, date, amount in sales:
-        explicit = [m for m in movements if f"[SATIŞ:{sale_id}]" in m[3]
-                    or m[3].startswith(f"Beton satış #{sale_id} - ")
-                    or m[3] == f"Beton satış #{sale_id}"]
-        if explicit:
-            continue
-        # Existing unmarked sales with same date and amount may already represent
-        # this sale. Never guess or duplicate a financial debit.
-        possible = [m for m in movements if "[SATIŞ:" not in m[3]
-                    and m[1] == date and abs(safe_float(m[2])-safe_float(amount)) < 0.01]
-        (ambiguous if possible else missing).append((sale_id, date, amount))
-    return missing, ambiguous
+    missing, _, ambiguous = audit_beton_cari_amounts(db, cari_id)
+    return missing, [row[:3] for row in ambiguous]
+
 
 def normalize_date(value):
     """Accept DD.MM.YYYY or DD-MM-YYYY; store dates consistently as ISO."""

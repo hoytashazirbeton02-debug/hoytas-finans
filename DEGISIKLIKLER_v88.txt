@@ -1,0 +1,1 @@
+v88: Beton-cari eski satış numaraları kesin eşleştirilir. Kimliği belirsiz eski borçlar otomatik eklenmez. 11.400 TL tutar farkı senaryosu, tahsilat koruması ve komşu satış numarası için regresyon testi eklendi. Onarım mevcut yedekli onay akışından yapılır.
