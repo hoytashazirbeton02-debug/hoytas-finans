@@ -1,6 +1,7 @@
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os, json
 from urllib.parse import urlsplit
+from record_probe import PATH as RECORD_PROBE_PATH, handle as handle_record_probe
 
 def database_ready():
     url = os.environ.get("DATABASE_URL")
@@ -17,12 +18,18 @@ def database_ready():
 
 class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
-        if urlsplit(self.path).path != "/sync-test":
-            self.send_error(404)
-            return
-        from test_endpoint import handle
+        path = urlsplit(self.path).path
         self.connection.settimeout(10)
-        status, result = handle(self)
+        if path == RECORD_PROBE_PATH:
+            self.send_json(*handle_record_probe(self))
+        elif path == "/sync-test":
+            from test_endpoint import handle
+
+            self.send_json(*handle(self))
+        else:
+            self.send_error(404)
+
+    def send_json(self, status, result):
         body = json.dumps(result).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
@@ -35,7 +42,11 @@ class Handler(BaseHTTPRequestHandler):
         self.respond(False)
 
     def do_GET(self):
-        self.respond(True)
+        path = urlsplit(self.path).path
+        if path.startswith(RECORD_PROBE_PATH + "/"):
+            self.send_json(*handle_record_probe(self, path[len(RECORD_PROBE_PATH) + 1:]))
+        else:
+            self.respond(True)
 
     def respond(self, include_body):
         path = urlsplit(self.path).path.rstrip("/") or "/"
