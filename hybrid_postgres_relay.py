@@ -13,22 +13,45 @@ class PostgresRelay:
                 batch_id text NOT NULL UNIQUE,
                 events jsonb NOT NULL
             )""")
+            db.execute("""CREATE TABLE IF NOT EXISTS hybrid_relay_record (
+                table_name text NOT NULL,
+                record_id bigint NOT NULL,
+                snapshot jsonb,
+                PRIMARY KEY (table_name, record_id)
+            )""")
 
     def push(self, batch_id, events):
         payload = json.dumps(events, ensure_ascii=False, allow_nan=False)
         with self.connect() as db:
             # Serialize append and commit order so a reader cannot skip a late commit.
             db.execute("LOCK TABLE hybrid_relay_batch IN SHARE ROW EXCLUSIVE MODE")
-            db.execute("""
-                INSERT INTO hybrid_relay_batch (batch_id, events)
-                VALUES (%s, %s::jsonb) ON CONFLICT (batch_id) DO NOTHING
-            """, (batch_id, payload))
             matched = db.execute(
                 "SELECT events = %s::jsonb FROM hybrid_relay_batch WHERE batch_id=%s",
                 (payload, batch_id),
             ).fetchone()
-            if matched != (True,):
-                raise ValueError("Relay batch ID reused with different contents")
+            if matched is not None:
+                if matched != (True,):
+                    raise ValueError("Relay batch ID reused with different contents")
+                return batch_id
+
+            for _, table, record_id, _, before, after in events:
+                current = db.execute("""
+                    SELECT snapshot IS NOT DISTINCT FROM %s::jsonb FROM hybrid_relay_record
+                    WHERE table_name=%s AND record_id=%s
+                """, (before, table, record_id)).fetchone()
+                if current == (False,):
+                    raise ValueError("Relay record changed")
+                if before is None and current is not None:
+                    raise ValueError("Relay record identifier already used")
+                db.execute("""
+                    INSERT INTO hybrid_relay_record VALUES (%s, %s, %s::jsonb)
+                    ON CONFLICT (table_name, record_id)
+                    DO UPDATE SET snapshot=EXCLUDED.snapshot
+                """, (table, record_id, after))
+            db.execute("""
+                INSERT INTO hybrid_relay_batch (batch_id, events)
+                VALUES (%s, %s::jsonb)
+            """, (batch_id, payload))
         return batch_id
 
     def pull(self, after, limit):

@@ -7,11 +7,17 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from contextlib import contextmanager
+from http.server import ThreadingHTTPServer
+from threading import Thread
+from urllib.error import HTTPError
+from uuid import uuid4
 
 from hybrid_audit_bridge import pending_batches
 from hybrid_inbound import ReplicaConflict, apply_batch
 from hybrid_exchange import exchange_once
 from hybrid_postgres_relay import PostgresRelay
+from hybrid_http_relay import HTTPRelay
+from hybrid_relay_server import handler_for
 
 
 class DesktopCaptureTests(unittest.TestCase):
@@ -128,12 +134,29 @@ class DesktopCaptureTests(unittest.TestCase):
             events jsonb NOT NULL
         )""")
 
+        postgres.execute("""CREATE TEMP TABLE hybrid_relay_record (
+            table_name text NOT NULL, record_id bigint NOT NULL, snapshot jsonb,
+            PRIMARY KEY (table_name, record_id)
+        )""")
+
         @contextmanager
         def relay_connection():
             with postgres.transaction():
                 yield postgres
 
-        relay = PostgresRelay(relay_connection)
+        storage = PostgresRelay(relay_connection)
+        storage.initialize()
+        token = uuid4().hex
+        server = self.enterContext(ThreadingHTTPServer(("127.0.0.1", 0), handler_for(storage, token)))
+        worker = Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        self.addCleanup(worker.join, 10)
+        self.addCleanup(server.shutdown)
+        endpoint = f"http://127.0.0.1:{server.server_port}"
+        relay = HTTPRelay(endpoint, token, allow_loopback_http=True)
+        with self.assertRaises(HTTPError) as unauthorized:
+            HTTPRelay(endpoint, uuid4().hex, allow_loopback_http=True).pull(0, 1)
+        self.assertEqual(unauthorized.exception.code, 401)
         source = self.app.DB_PATH
         os.environ["HOYTAS_HYBRID_CAPTURE"] = "1"
         with self.app.connect() as db:
@@ -146,6 +169,11 @@ class DesktopCaptureTests(unittest.TestCase):
         with self.assertRaises(ConnectionError):
             exchange_once(self.app.connect, LostAcknowledgement())
         self.assertEqual(exchange_once(self.app.connect, relay), (1, 0))
+        sent = relay.pull(0, 20)
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(relay.push(sent[0][1], sent[0][2]), sent[0][1])
+        with self.assertRaises(ReplicaConflict):
+            relay.push(uuid4().hex, sent[0][2])
         self.assertEqual(len(relay.pull(0, 20)), 1)
 
         self.app.DB_PATH = str(Path(source).with_name("exchange-recipient.db"))
