@@ -1,0 +1,4 @@
+HOYTAŞ v102
+
+Seçili işlemin ve aynı işlemde kaydedilen bağlı hareketlerin güvenli biçimde geri alınması.
+Çek ekleme ve düzenlemede Ciro Edildi durumu.
