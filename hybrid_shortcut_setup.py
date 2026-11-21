@@ -8,13 +8,16 @@ from hybrid_identity import replica_slot
 from hybrid_start_live import readonly
 
 
-def install_shortcut():
+def install_shortcut(*, existing_only=False):
     folder = Path(__file__).resolve().parent
     pythonw = Path(sys.executable).with_name("pythonw.exe")
     for path in (pythonw, folder / "HOYTAS.pyw", folder / "HOYTAS.ico"):
         if not path.is_file():
             raise FileNotFoundError(path)
-    subprocess.run(["cscript.exe", "//nologo", "HOYTAS_Dogrudan_Kisayol.vbs", str(pythonw)],
+    command = ["cscript.exe", "//nologo", "HOYTAS_Dogrudan_Kisayol.vbs", str(pythonw)]
+    if existing_only:
+        command.append("existing-only")
+    subprocess.run(command,
                    cwd=folder, check=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     return pythonw, folder
 
@@ -24,7 +27,7 @@ def install_after_update(profile, version, central):
         return
     completed = Path(profile) / f"masaustu-kisayolu-v{version}.ok"
     if not completed.is_file():
-        install_shortcut()
+        install_shortcut(existing_only=True)
         completed.touch()
 
 
