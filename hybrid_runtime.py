@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Thread
+from time import monotonic
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
 
@@ -34,10 +35,27 @@ def start_background_sync(app, connect, data_directory):
     token = getattr(app, "membership_session", None) or os.environ.get("HOYTAS_SYNC_TOKEN", "")
     relay = production_relay(connect, endpoint, token)
     results = Queue()
+    client = getattr(app, "membership_client", None)
+    with connect() as db:
+        publish_pending = (getattr(app, "membership_session", None) and client is not None
+                           and app.current_user["role"] == "Yönetici" and replica_slot(db) == 1)
+    publish_retry_at = 0
 
     def run():
+        nonlocal publish_pending, publish_retry_at
         try:
-            results.put((exchange_once(connect, relay, limit=5), None))
+            result = exchange_once(connect, relay, limit=5)
+            if publish_pending and result == (0, 0) and monotonic() >= publish_retry_at:
+                from hybrid_enrollment import read_baseline
+
+                try:
+                    baseline = read_baseline(Path(data_directory) / "hoytas.db")
+                    client.publish_baseline(token, baseline)
+                    publish_pending = False
+                except (OSError, ValueError, RuntimeError) as error:
+                    app._log_update_error(error)
+                    publish_retry_at = monotonic() + 60
+            results.put((result, None))
         except Exception as error:
             results.put((None, error))
 
