@@ -26,7 +26,7 @@ from xml.sax.saxutils import escape
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
 TARGET_SCHEMA_VERSION = 50
-APP_VERSION = 95
+APP_VERSION = 96
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 ISOLATED_PROFILE_DIR = os.environ.get("HOYTAS_PROFILE_DIR", "").strip()
 USER_DATA_DIR = ISOLATED_PROFILE_DIR or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
@@ -44,7 +44,8 @@ DEFAULT_UPDATE_MANIFEST_URL = ""
 LIVE_UPDATE_MANIFEST_URL = "https://raw.githubusercontent.com/hoytashazirbeton02-debug/hoytas-finans/refs/heads/v91-hibrit-entegrasyon/canli-manifest.json"
 LIVE_UPDATE_FILES = {"Windows_Canli_Baslat.cmd", "hybrid_start_live.py", "hybrid_runtime.py",
                      "hybrid_http_relay.py", "hybrid_exchange.py", "hybrid_inbound.py",
-                     "hybrid_identity.py", "hybrid_audit_bridge.py"}
+                     "hybrid_identity.py", "hybrid_audit_bridge.py", "HOYTAS.pyw",
+                     "hybrid_membership_client.py", "hybrid_desktop_membership.py", "hybrid_enrollment.py"}
 DEFAULT_GITHUB_REPO = "hoytashazirbeton02-debug/hoytas-finans"
 # pythonw.exe kullanıldığında konsol olmadığı için beklenmeyen hataları kalıcı loga yaz.
 if sys.stderr is None:
@@ -3772,6 +3773,16 @@ def normalize_fatura_tarihi(value):
 
 if __name__ == "__main__":
     app = None
+    if os.name == "nt" and sys.version_info[:2] == (3, 14):
+        bundled = os.path.join(os.environ["LOCALAPPDATA"], "HOYTASFinans", "Python314-Kitaplik")
+        if os.path.isdir(bundled):
+            sys.path.append(bundled)
+    if (os.path.basename(os.path.normpath(ISOLATED_PROFILE_DIR)) == "canli-kullanim"
+            and os.environ.get("HOYTAS_HYBRID_CAPTURE") == "1"):
+        from hybrid_windows_profile import ENDPOINT
+
+        os.environ["HOYTAS_MEMBERSHIP_URL"] = ENDPOINT
+        os.environ["HOYTAS_SYNC_URL"] = ENDPOINT
     try:
         os.makedirs(BACKUP_DIR, exist_ok=True)
         # If the desktop icon was lost during an earlier update, recreate it on first launch.
@@ -3789,11 +3800,11 @@ if __name__ == "__main__":
         faulthandler.enable(file=_hang_log)
         faulthandler.dump_traceback_later(20, repeat=True, file=_hang_log)
         app = HoytasApp()
-        if ISOLATED_PROFILE_DIR and os.name == "nt" and app.membership_client is None:
+        if ISOLATED_PROFILE_DIR and os.name == "nt":
             try:
                 from hybrid_shortcut_setup import install_after_update
 
-                install_after_update(ISOLATED_PROFILE_DIR, os.environ.get("HOYTAS_SYNC_TOKEN", ""))
+                install_after_update(ISOLATED_PROFILE_DIR, APP_VERSION, app.membership_client is not None)
             except Exception as shortcut_exc:
                 app._log_update_error(shortcut_exc)
                 messagebox.showwarning("HOYTAŞ kısayolu", f"v{APP_VERSION} açıldı, ancak masaüstü simgesi yenilenemedi. Ayrıntı güncelleme kaydına yazıldı.", parent=app)

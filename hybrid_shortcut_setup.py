@@ -1,6 +1,5 @@
 """Register a direct, windowless launch for the existing live profile."""
 import os
-import runpy
 from pathlib import Path
 import subprocess
 import sys
@@ -20,17 +19,13 @@ def install_shortcut():
     return pythonw, folder
 
 
-def install_after_update(profile, token):
-    folder = Path(profile)
-    completed = folder / "masaustu-kisayolu-v94.ok"
-    if completed.is_file():
+def install_after_update(profile, version, central):
+    if not central:
         return
-    if token:
-        launcher = Path(__file__).resolve().with_name("HOYTAS.pyw")
-        save = runpy.run_path(str(launcher))["save_credential"]
-        save(folder / "canli_anahtar.dpapi", token)
-    install_shortcut()
-    completed.touch()
+    completed = Path(profile) / f"masaustu-kisayolu-v{version}.ok"
+    if not completed.is_file():
+        install_shortcut()
+        completed.touch()
 
 
 def main():

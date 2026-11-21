@@ -1,0 +1,5 @@
+HOYTAŞ v96
+- Mevcut HOYTAŞ uygulamasının canlı giriş ekranı merkezi kullanıcı hesabını kullanır.
+- İlk kurulum paketinde HOYTAŞ, Python ve PDF/Excel bileşenleri birlikte kurulur.
+- Yönetici uygulamanın Kullanıcı Yönetimi ekranından çalışan başvurularını onaylar ve başlangıç kayıtlarını paylaşır.
+- Onaylı ikinci bilgisayar başlangıç kayıtlarını internetten alır ve ortak işlemleri eşitler.
