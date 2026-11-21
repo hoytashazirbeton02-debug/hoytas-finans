@@ -25,8 +25,8 @@ from xml.sax.saxutils import escape
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
-TARGET_SCHEMA_VERSION = 50
-APP_VERSION = 98
+TARGET_SCHEMA_VERSION = 51
+APP_VERSION = 99
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 ISOLATED_PROFILE_DIR = os.environ.get("HOYTAS_PROFILE_DIR", "").strip()
 USER_DATA_DIR = ISOLATED_PROFILE_DIR or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
@@ -156,6 +156,10 @@ CREATE TABLE IF NOT EXISTS stok (
 CREATE TABLE IF NOT EXISTS personel (
  id INTEGER PRIMARY KEY AUTOINCREMENT, ad TEXT NOT NULL, gorev TEXT,
  telefon TEXT, maas REAL NOT NULL DEFAULT 0, notlar TEXT
+);
+CREATE TABLE IF NOT EXISTS personel_odeme_bilgisi (
+ personel_id INTEGER PRIMARY KEY REFERENCES personel(id) ON DELETE CASCADE,
+ iban TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS beton_satis (
  id INTEGER PRIMARY KEY AUTOINCREMENT, tarih TEXT NOT NULL, cari_id INTEGER, santiye_id INTEGER,
@@ -400,6 +404,25 @@ def connect(path=None):
     # Sürüm numarası ancak bütün yükseltmeler ve bütünlük kontrolü başarıyla tamamlandıktan sonra yazılır.
     con.execute(f"PRAGMA user_version = {TARGET_SCHEMA_VERSION}")
     return _enable_hybrid_capture(con)
+
+def normalize_personel_iban(value):
+    iban = "".join(value.split()).upper()
+    if not iban:
+        return ""
+    if not re.fullmatch(r"TR[0-9]{24}", iban):
+        raise ValueError("IBAN, TR ile başlamalı ve toplam 26 karakter olmalıdır.")
+    if int(iban[4:] + "2927" + iban[2:4]) % 97 != 1:
+        raise ValueError("IBAN kontrolü başarısız. Bankadaki IBAN'ı kontrol edin.")
+    return iban
+
+
+def save_personel_iban(db, personel_id, iban):
+    if iban:
+        db.execute("""INSERT INTO personel_odeme_bilgisi(personel_id,iban) VALUES (?,?)
+            ON CONFLICT(personel_id) DO UPDATE SET iban=excluded.iban""", (personel_id, iban))
+    else:
+        db.execute("DELETE FROM personel_odeme_bilgisi WHERE personel_id=?", (personel_id,))
+
 
 def parse_amount(value):
     """Read Turkish/international numeric formats without losing financial precision."""
@@ -881,6 +904,8 @@ class HoytasApp(tk.Tk):
         APP_CURRENT_USER = account["username"]
 
     def _ensure_admin_and_login(self):
+        from login_memory import LoginFields
+
         with connect() as c:
             count = c.execute("SELECT COUNT(*) FROM kullanici").fetchone()[0]
         if count == 0:
@@ -912,12 +937,15 @@ class HoytasApp(tk.Tk):
             frm=ttk.Frame(win,padding=24); frm.pack()
             ttk.Label(frm,text="HOYTAŞ Hazır Beton",font=("Segoe UI",22,"bold")).grid(row=0,column=0,columnspan=2,pady=(0,3))
             ttk.Label(frm,text="Finans Yönetimi - Güvenli Giriş").grid(row=1,column=0,columnspan=2,pady=(0,14))
-            ttk.Label(frm,text="Kullanıcı adı").grid(row=2,column=0,sticky="w",pady=5); user=ttk.Entry(frm,width=28); user.grid(row=2,column=1,pady=5)
-            ttk.Label(frm,text="Şifre").grid(row=3,column=0,sticky="w",pady=5); pw=ttk.Entry(frm,width=28,show="*"); pw.grid(row=3,column=1,pady=5)
+            ttk.Label(frm,text="Kullanıcı adı").grid(row=2,column=0,sticky="w",pady=5)
+            ttk.Label(frm,text="Şifre").grid(row=3,column=0,sticky="w",pady=5)
+            fields = LoginFields(frm, 2, "yerel")
+            user, pw = fields.username, fields.password
             result={"ok":False}
             def login():
                 global APP_CURRENT_USER
                 nonlocal failed_attempts, locked_until
+                pw.configure(show="*")
                 if time.monotonic() < locked_until:
                     messagebox.showwarning("Biraz bekleyin", "Çok fazla başarısız giriş oldu. 30 saniye sonra tekrar deneyin.", parent=win)
                     return
@@ -931,6 +959,7 @@ class HoytasApp(tk.Tk):
                             return
                         self.current_user={"id":row[0],"username":row[1],"role":row[4]}
                         APP_CURRENT_USER = row[1]
+                        fields.save(row[1], pw.get(), fields.remember.get())
                         result["ok"]=True
                         win.destroy()
                     else:
@@ -947,8 +976,8 @@ class HoytasApp(tk.Tk):
                     except OSError:
                         pass
                     messagebox.showerror("Giriş sırasında hata", "Giriş işlemi tamamlanamadı. Verileriniz silinmedi.\nAyrıntı: " + str(detail.splitlines()[-1] if detail.splitlines() else "Bilinmeyen hata"), parent=win)
-            ttk.Button(frm,text="Giriş Yap",command=login).grid(row=4,column=0,columnspan=2,pady=(14,0))
-            links=ttk.Frame(frm); links.grid(row=5,column=0,columnspan=2,pady=(8,0))
+            ttk.Button(frm,text="Giriş Yap",command=login).grid(row=5,column=0,columnspan=2,pady=(14,0))
+            links=ttk.Frame(frm); links.grid(row=6,column=0,columnspan=2,pady=(8,0))
             ttk.Button(links,text="Yeni Üye Ol",command=self.signup_dialog).pack(side="left",padx=4)
             ttk.Button(links,text="Şifremi Unuttum",command=self.forgot_password_dialog).pack(side="left",padx=4)
             pw.bind("<Return>",lambda e:login()); user.focus_set(); self.wait_window(win)
@@ -2436,16 +2465,40 @@ class HoytasApp(tk.Tk):
         win.transient(self)
         bar = ttk.Frame(win, padding=8)
         bar.pack(fill="x")
+        payment = ttk.Frame(win, padding=(8, 0, 8, 8))
+        payment.pack(fill="x")
+        iban_value = tk.StringVar(win)
+        ttk.Label(payment, text="IBAN").pack(side="left", padx=(0, 6))
+        ttk.Entry(payment, textvariable=iban_value, width=30, state="readonly").pack(side="left")
+        def copy_payment_iban():
+            win.clipboard_clear()
+            win.clipboard_append(iban_value.get())
+
+        copy_iban = ttk.Button(payment, text="IBAN'ı Kopyala", command=copy_payment_iban)
+        copy_iban.pack(side="left", padx=6)
         tree = self._tree(win, ("id", "tarih", "tur", "donem", "tutar", "yontem", "aciklama"),
                           ("ID", "Tarih", "İşlem Türü", "Dönem", "Tutar TL", "Ödeme Yöntemi", "Açıklama"),
                           (55, 95, 115, 95, 100, 120, 240))
 
         def refresh():
             with connect() as db:
+                account = db.execute("""SELECT p.ad, COALESCE(o.iban,'') FROM personel p
+                    LEFT JOIN personel_odeme_bilgisi o ON o.personel_id=p.id WHERE p.id=?""",
+                    (personel_id,)).fetchone()
                 rows = db.execute("""SELECT id,tarih,COALESCE(islem_turu,'Maaş'),donem,
                     printf('%.2f',tutar),COALESCE(yontem,''),COALESCE(aciklama,'')
                     FROM maas_odeme WHERE personel_id=? ORDER BY tarih,id""", (personel_id,)).fetchall()
+            if account:
+                win.title(f"Personel Kartı - {account[0]}")
+                iban_value.set(account[1])
+            copy_iban.state(["!disabled"] if iban_value.get() else ["disabled"])
             self.fill_tree(tree, rows)
+
+        def edit_payment():
+            self.edit_personel_payment(personel_id)
+            refresh()
+
+        ttk.Button(payment, text="Ad Soyad / IBAN Düzenle", command=edit_payment).pack(side="left")
 
         def add(kind):
             self.add_maas_odeme(personel_id, kind)
@@ -3136,18 +3189,45 @@ class HoytasApp(tk.Tk):
                       (d["kod"],d["ad"],d["birim"],miktar,fiyat))
         self.refresh_all()
 
+    def edit_personel_payment(self, personel_id):
+        with connect() as db:
+            row = db.execute("""SELECT p.ad, COALESCE(o.iban,'') FROM personel p
+                LEFT JOIN personel_odeme_bilgisi o ON o.personel_id=p.id WHERE p.id=?""",
+                (personel_id,)).fetchone()
+        if row is None:
+            return
+        data = self.prompt("Personel Ödeme Bilgileri",
+            [("ad", "Ad Soyad", "entry", None), ("iban", "IBAN", "entry", None)],
+            {"ad": row[0], "iban": row[1]})
+        if not data:
+            return
+        try:
+            if not data["ad"]:
+                raise ValueError("Ad soyad zorunludur.")
+            iban = normalize_personel_iban(data["iban"])
+            with connect() as db:
+                if data["ad"] != row[0]:
+                    db.execute("UPDATE personel SET ad=? WHERE id=?", (data["ad"], personel_id))
+                save_personel_iban(db, personel_id, iban)
+            self.refresh_all()
+        except (ValueError, sqlite3.Error) as error:
+            messagebox.showerror("Ödeme bilgileri kaydedilemedi", str(error), parent=self)
+
     def add_personel(self):
         d = self.prompt("Personel Ekle", [("ad","Ad Soyad","entry",None),("gorev","Görev","entry",None),
-            ("telefon","Telefon","entry",None),("maas","Aylık Maaş (TL)","entry",None),("notlar","Notlar","entry",None)])
+            ("telefon","Telefon","entry",None),("iban","IBAN","entry",None),("maas","Aylık Maaş (TL)","entry",None),("notlar","Notlar","entry",None)])
         if not d: return
         try:
             maas=parse_amount(d["maas"] or "0")
-            if not d["ad"] or maas < 0: raise ValueError()
-        except ValueError:
-            return messagebox.showerror("Hatalı bilgi","Ad soyad gerekli; maaş negatif olamaz.")
+            if not d["ad"] or maas < 0:
+                raise ValueError("Ad soyad gerekli; maaş negatif olamaz.")
+            iban = normalize_personel_iban(d["iban"])
+        except ValueError as error:
+            return messagebox.showerror("Hatalı bilgi", str(error), parent=self)
         with connect() as c:
-            c.execute("INSERT INTO personel(ad,gorev,telefon,maas,notlar) VALUES(?,?,?,?,?)",
-                      (d["ad"],d["gorev"],d["telefon"],maas,d["notlar"]))
+            personel = c.execute("INSERT INTO personel(ad,gorev,telefon,maas,notlar) VALUES(?,?,?,?,?)",
+                      (d["ad"],d["gorev"],d["telefon"],maas,d["notlar"])).lastrowid
+            save_personel_iban(c, personel, iban)
         self.refresh_all()
 
     def add_beton(self, cari_context=None):
