@@ -10,6 +10,7 @@ from hybrid_start_live import readonly
 
 MAX_BASELINE_BYTES = 32 * 1024 * 1024
 LOCAL_ONLY = ("stok", "stok_hareket", "personel", "maas_odeme")
+BASELINE_HISTORY = (*LOCAL_ONLY, "audit_log")
 
 
 def read_baseline(source):
@@ -23,11 +24,12 @@ def read_baseline(source):
         if cursor is None or pending:
             raise RuntimeError("Paylaşmadan önce canlı senkronizasyonun tamamlanmasını bekleyin.")
         tables = {}
-        for table in TABLES:
+        for table in (*TABLES, *BASELINE_HISTORY):
             rows = db.execute(f"SELECT * FROM {table} ORDER BY id")
             columns = [column[0] for column in rows.description]
             tables[table] = [dict(zip(columns, row)) for row in rows]
-        return {"cursor": cursor[0], "tables": tables}
+        history = {table: tables.pop(table) for table in BASELINE_HISTORY}
+        return {"cursor": cursor[0], "tables": tables, "history": history}
 
 
 def install_baseline(target, legacy, client, session, connect, relay):
@@ -49,16 +51,23 @@ def install_baseline(target, legacy, client, session, connect, relay):
         with connect(candidate) as db:
             db.execute("PRAGMA defer_foreign_keys=ON")
             # Disable local auditing while importing the already committed shared state.
+            db.execute("DROP TRIGGER IF EXISTS temp.hybrid_capture")
             triggers = db.execute("SELECT name,sql FROM sqlite_master WHERE type='trigger'").fetchall()
             for name, _ in triggers:
                 quoted = '"' + name.replace('"', '""') + '"'
                 db.execute(f"DROP TRIGGER {quoted}")
-            for table in TABLES:
+            history = baseline.get("history", {})
+            if not isinstance(history, dict) or (history and set(history) != set(BASELINE_HISTORY)):
+                raise RuntimeError("Başlangıç geçmişi biçimi geçersiz.")
+            tables = {**baseline["tables"], **history}
+            for table in (*TABLES, *BASELINE_HISTORY):
+                if table in BASELINE_HISTORY and table not in history:
+                    continue
                 columns = [row[1] for row in db.execute(f"PRAGMA table_info({table})")]
                 fields = ",".join(columns)
                 placeholders = ",".join("?" for _ in columns)
                 db.executemany(f"INSERT INTO {table} ({fields}) VALUES ({placeholders})",
-                               ([row[column] for column in columns] for row in baseline["tables"][table]))
+                               ([row[column] for column in columns] for row in tables[table]))
             configure_identity(db, baseline["slot"])
             db.execute("""CREATE TABLE hybrid_exchange_cursor (
                 singleton INTEGER PRIMARY KEY CHECK (singleton=1), sequence INTEGER NOT NULL)""")
