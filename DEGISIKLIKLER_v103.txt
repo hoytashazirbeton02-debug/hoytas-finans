@@ -1,0 +1,3 @@
+HOYTAŞ v103
+
+İşlem geri alma komutu ve onay penceresindeki Vazgeç düğmesi ayrı gösterilir.
