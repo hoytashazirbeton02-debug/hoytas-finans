@@ -25,8 +25,8 @@ from xml.sax.saxutils import escape
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
-TARGET_SCHEMA_VERSION = 52
-APP_VERSION = 101
+TARGET_SCHEMA_VERSION = 53
+APP_VERSION = 102
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 ISOLATED_PROFILE_DIR = os.environ.get("HOYTAS_PROFILE_DIR", "").strip()
 USER_DATA_DIR = ISOLATED_PROFILE_DIR or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
@@ -244,12 +244,9 @@ def _install_audit_triggers(con):
     )""")
     con.execute("CREATE INDEX IF NOT EXISTS idx_audit_log_time ON audit_log(changed_at DESC, id DESC)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_audit_log_table ON audit_log(table_name, record_id)")
-    tracked = (
-        "cari", "hareket", "cek", "stok", "personel", "beton_satis", "santiye",
-        "fatura", "fatura_tahsilat", "gelen_fatura", "gelen_fatura_odeme", "nakit_kasa",
-        "stok_hareket", "maas_odeme", "banka_hareket"
-    )
-    for table in tracked:
+    from operation_undo import AUDITED_TABLES
+
+    for table in AUDITED_TABLES:
         columns = [row[1] for row in con.execute(f"PRAGMA table_info({table})")]
         if not columns or "id" not in columns:
             continue
@@ -316,6 +313,9 @@ def _enable_hybrid_capture(con):
     elif con.execute("SELECT 1 FROM sqlite_master WHERE name='hybrid_replica_identity'").fetchone():
         con.close()
         raise RuntimeError("Bu veritabanı hibrit oturum ayarıyla açılmalıdır.")
+    from operation_undo import enable_journal
+
+    enable_journal(con)
     return con
 
 
@@ -400,6 +400,9 @@ def connect(path=None):
         for action in ("insert", "update", "delete"):
             con.execute(f"DROP TRIGGER IF EXISTS audit_banka_hareket_{action}")
     _install_audit_triggers(con)
+    from operation_undo import create_journal
+
+    create_journal(con)
     # Şema sürümünü ilan etmeden önce veritabanının fiziksel bütünlüğünü doğrula.
     integrity = con.execute("PRAGMA integrity_check").fetchone()
     if not integrity or integrity[0] != "ok":
@@ -409,7 +412,7 @@ def connect(path=None):
     con.execute(f"PRAGMA user_version = {TARGET_SCHEMA_VERSION}")
     return _enable_hybrid_capture(con)
 
-CHEQUE_STATES = ("Bekliyor", "Portföyde", "Tahsilde", "Tahsil Edildi", "Ödendi", "İade", "Karşılıksız")
+CHEQUE_STATES = ("Bekliyor", "Portföyde", "Tahsilde", "Ciro Edildi", "Tahsil Edildi", "Ödendi", "İade", "Karşılıksız")
 
 
 def cheque_matches_view(direction, status, view):
@@ -1779,6 +1782,7 @@ class HoytasApp(tk.Tk):
             ("stok_hareket_tree","stok_hareket"),("maas_tree","maas_odeme"),("banka_tree","banka_hareket"),
             ("gelen_fatura_tree","gelen_fatura") ]}
         table=mapping.get(tree)
+        undo_table = getattr(tree, "_undo_table", None) or table
         menu=tk.Menu(self, tearoff=0)
         if tree is getattr(self,"cari_tree",None):
             menu.add_command(label="Cari hareketlerini görüntüle", command=self.show_cari_hareketleri)
@@ -1787,11 +1791,48 @@ class HoytasApp(tk.Tk):
             edit_command = self.edit_gelen_fatura if table == "gelen_fatura" else (lambda:self.edit_selected(tree,table))
             menu.add_command(label="Düzenle", command=edit_command)
             menu.add_command(label="Sil", command=lambda:self.delete_selected(tree,table))
+        if undo_table:
+            menu.add_command(label="Seçili İşlemi İptal Et / Geri Al", command=lambda:self.undo_selected_operation(tree, undo_table))
         try:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
             menu.grab_release()
         return "break"
+
+    def undo_selected_operation(self, tree, table):
+        from operation_undo import UndoUnavailable, reverse_operation, selected_operation
+
+        picked = tree.selection()
+        if not picked:
+            return
+        values = tree.item(picked[0], "values")
+        record_id = int(values[0])
+        if table == "cari_invoice":
+            table = "fatura" if values[1] == "Satış" else "gelen_fatura"
+        parent = tree.winfo_toplevel()
+        account = self.current_user
+        username = account["username"]
+        admin = account["role"] == "Yönetici"
+        try:
+            with connect() as db:
+                operation_id = selected_operation(db, table, record_id, username, admin=admin)
+            if not messagebox.askyesno("İşlemi geri al",
+                    "Seçilen kayıtla aynı işlemde kaydedilen bağlı hareketler de geri alınır. "
+                    "Bu işlem yalnızca HOYTAŞ kayıtlarını değiştirir. Onaylıyor musunuz?", parent=parent):
+                return
+            with connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                if selected_operation(db, table, record_id, username, admin=admin) != operation_id:
+                    raise UndoUnavailable("Seçilen kayıt onay sırasında değişmiş.")
+                reverse_operation(db, operation_id)
+        except (UndoUnavailable, sqlite3.Error, ValueError) as error:
+            messagebox.showwarning("İşlem geri alınamadı", str(error), parent=parent)
+            return
+        self.refresh_all()
+        refresh = getattr(tree, "_after_undo", None)
+        if refresh:
+            refresh()
+        messagebox.showinfo("İşlem geri alındı", "Seçili işlem ve bağlı kayıtları geri alındı.", parent=parent)
 
     def _prompt_for_cari(self, cari_context, title, fields):
         if cari_context is not None:
@@ -1873,19 +1914,19 @@ class HoytasApp(tk.Tk):
         ct.pack(fill="both",expand=True)
         for r in checks: ct.insert("","end",values=(r[0],r[1],r[2],r[3],r[4],f"{r[5]:,.2f}",r[6]))
         with connect() as db:
-            invoices = db.execute("""SELECT 'Satış', tarih, belge_no, genel_toplam,
+            invoices = db.execute("""SELECT id, 'Satış', tarih, belge_no, genel_toplam,
                 odenen, tahsil_edilecek-odenen, durum, aciklama FROM fatura WHERE cari_id=?
                 UNION ALL
-                SELECT 'Alış', tarih, belge_no, genel_toplam, odenen,
+                SELECT id, 'Alış', tarih, belge_no, genel_toplam, odenen,
                 genel_toplam-odenen, durum, aciklama FROM gelen_fatura WHERE cari_id=?
-                ORDER BY 2, 1, 3""", (cari_id, cari_id)).fetchall()
+                ORDER BY 3, 2, 4""", (cari_id, cari_id)).fetchall()
         invoice_frame = ttk.Frame(nb, padding=6)
         nb.add(invoice_frame, text="Faturalar")
-        invoice_tree = self._tree(invoice_frame, ("tur", "tarih", "belge", "toplam", "odenen", "kalan", "durum", "aciklama"),
-                                  ("Tür", "Tarih", "Belge No", "Toplam TL", "Ödenen TL", "Kalan TL", "Durum", "Açıklama"),
-                                  (75, 95, 115, 115, 115, 115, 110, 225))
-        for kind, day, number, total, paid, remaining, status, detail in invoices:
-            invoice_tree.insert("", "end", values=(kind, day, number or "",
+        invoice_tree = self._tree(invoice_frame, ("id", "tur", "tarih", "belge", "toplam", "odenen", "kalan", "durum", "aciklama"),
+                                  ("ID", "Tür", "Tarih", "Belge No", "Toplam TL", "Ödenen TL", "Kalan TL", "Durum", "Açıklama"),
+                                  (55, 75, 95, 115, 115, 115, 115, 110, 225))
+        for invoice_id, kind, day, number, total, paid, remaining, status, detail in invoices:
+            invoice_tree.insert("", "end", values=(invoice_id, kind, day, number or "",
                 f"{safe_float(total):,.2f}", f"{safe_float(paid):,.2f}",
                 f"{safe_float(remaining):,.2f}", status, detail or ""))
         nb.select(selected_tab)
@@ -1895,6 +1936,11 @@ class HoytasApp(tk.Tk):
             if operation is not None:
                 operation(cari_context)
             self.show_cari_hareketleri(cari_context, win, current_tab)
+
+        for tree, table in ((mt, "hareket"), (st, "beton_satis"), (ct, "cek"), (invoice_tree, "cari_invoice")):
+            tree._undo_table = table
+            tree._after_undo = refresh_card
+            tree.bind("<Button-3>", lambda event, widget=tree: self._tree_context_menu(event, widget))
 
         commands = ttk.Frame(win, padding=(12, 0, 12, 8))
         commands.pack(fill="x", before=nb)
@@ -2543,6 +2589,8 @@ class HoytasApp(tk.Tk):
         for label, kind in (("Maaş", "Maaş"), ("Avans", "Nakit Avans"), ("Mesai", "Mesai"), ("Kesinti", "Kesinti")):
             ttk.Button(bar, text=label, command=lambda selected_kind=kind: add(selected_kind)).pack(side="left", padx=(0, 6))
         ttk.Button(bar, text="Yenile", command=refresh).pack(side="right")
+        tree._undo_table = "maas_odeme"
+        tree._after_undo = refresh
         refresh()
 
     def _build_personel(self):
@@ -3409,6 +3457,7 @@ class HoytasApp(tk.Tk):
                 c.execute("DELETE FROM banka_hareket WHERE aciklama LIKE ?",(ref,))
             try: c.execute(f"DELETE FROM {table} WHERE id=?",(row_id,))
             except sqlite3.IntegrityError:
+                c.rollback()
                 return messagebox.showerror("Kayıt silinemedi", "Bu kayıt başka işlemlere bağlı. Veri kaybını önlemek için silme durduruldu.", parent=self)
         self.refresh_all()
 
