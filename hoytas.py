@@ -1027,11 +1027,11 @@ class HoytasApp(tk.Tk):
         ttk.Button(row,text="Seçili Faturayı Düzenle",command=self.edit_gelen_fatura).pack(side="left",padx=8)
         ttk.Button(row,text="Seçili Faturayı Sil",command=lambda:self.delete_selected(self.gelen_fatura_tree,"gelen_fatura")).pack(side="right")
 
-    def add_gelen_fatura(self):
+    def add_gelen_fatura(self, cari_context=None):
         with connect() as c: cariler=c.execute("SELECT id,unvan FROM cari WHERE tur IN ('Tedarikçi','Diğer') OR tur='Müşteri' ORDER BY unvan").fetchall()
         if not cariler: return messagebox.showinfo("Tedarikçi gerekli","Önce Cari Hesaplar bölümünden tedarikçi ekleyin.",parent=self)
         names=[f"{i} - {n}" for i,n in cariler]
-        d=self.prompt("Gelen Alış Faturası",[("tarih","Fatura tarihi (GG.AA.YYYY)","entry",None),("vade","Ödeme vadesi (GG.AA.YYYY)","entry",None),("cari","Tedarikçi","combo",names),("belge","Fatura numarası","entry",None),("aciklama","Açıklama / ürün-hizmet","entry",None),("ara","KDV hariç tutar (TL)","entry",None),("kdv","KDV oranı (%)","combo",["0","1","10","20"])])
+        d=self._prompt_for_cari(cari_context, "Gelen Alış Faturası",[("tarih","Fatura tarihi (GG.AA.YYYY)","entry",None),("vade","Ödeme vadesi (GG.AA.YYYY)","entry",None),("cari","Tedarikçi","combo",names),("belge","Fatura numarası","entry",None),("aciklama","Açıklama / ürün-hizmet","entry",None),("ara","KDV hariç tutar (TL)","entry",None),("kdv","KDV oranı (%)","combo",["0","1","10","20"])])
         if not d:return
         try:
             tarih=d["tarih"] or date.today().isoformat(); datetime.strptime(tarih,"%Y-%m-%d")
@@ -1742,15 +1742,39 @@ class HoytasApp(tk.Tk):
             menu.grab_release()
         return "break"
 
-    def show_cari_hareketleri(self):
+    def _prompt_for_cari(self, cari_context, title, fields):
+        if cari_context is not None:
+            cari_id, _ = cari_context
+            with connect() as db:
+                current = db.execute("SELECT unvan, tur FROM cari WHERE id=?", (cari_id,)).fetchone()
+            if current is None:
+                messagebox.showwarning("Cari bulunamadı", "Bu cari artık kayıtlı değil.", parent=self)
+                return None
+            if title == "Yeni Beton Satışı" and current[1] not in ("Müşteri", "Diğer"):
+                messagebox.showwarning("Cari türü", "Beton satışı için müşteri veya diğer türünde cari seçin.", parent=self)
+                return None
+            fields = [(key, "Cari", "combo", [f"{cari_id} - {current[0]}"]) if key == "cari"
+                      else (key, label, kind, options) for key, label, kind, options in fields]
+        return self.prompt(title, fields)
+
+    def show_cari_hareketleri(self, cari_context=None, win=None, selected_tab=0):
         """Seçili carinin borç/alacak hareketlerini ve bağlı satış/çeklerini göster."""
-        sel=self.cari_tree.selection()
-        if not sel:
-            return messagebox.showinfo("Cari seçin","Hareketlerini görmek için önce bir cari seçin.",parent=self)
-        vals=self.cari_tree.item(sel[0],"values")
-        cari_id=int(vals[0]); unvan=str(vals[2])
-        win=tk.Toplevel(self); win.title(f"Cari Hareketleri - {unvan}"); win.geometry("1100x650"); win.minsize(850,450)
-        win.transient(self)
+        if cari_context is None:
+            sel = self.cari_tree.selection()
+            if not sel:
+                return messagebox.showinfo("Cari seçin", "Önce bir cari seçin.", parent=self)
+            vals = self.cari_tree.item(sel[0], "values")
+            cari_context = int(vals[0]), str(vals[2])
+        cari_id, unvan = cari_context
+        if win is None:
+            win = tk.Toplevel(self)
+            win.title(f"Cari Kartı - {unvan}")
+            win.geometry("1100x650")
+            win.minsize(850, 450)
+            win.transient(self)
+        else:
+            for child in win.winfo_children():
+                child.destroy()
         top=ttk.Frame(win,padding=12); top.pack(fill="x")
         ttk.Label(top,text=unvan,font=("Segoe UI",15,"bold")).pack(side="left")
         with connect() as c:
@@ -1797,6 +1821,43 @@ class HoytasApp(tk.Tk):
         for col,head,width in zip(ct.cget("columns"),("ID","Yön","Banka","Çek No","Vade","Tutar TL","Durum"),(45,100,160,140,110,140,150)): ct.heading(col,text=head); ct.column(col,width=width,anchor="w")
         ct.pack(fill="both",expand=True)
         for r in checks: ct.insert("","end",values=(r[0],r[1],r[2],r[3],r[4],f"{r[5]:,.2f}",r[6]))
+        with connect() as db:
+            invoices = db.execute("""SELECT 'Satış', tarih, belge_no, genel_toplam,
+                odenen, tahsil_edilecek-odenen, durum, aciklama FROM fatura WHERE cari_id=?
+                UNION ALL
+                SELECT 'Alış', tarih, belge_no, genel_toplam, odenen,
+                genel_toplam-odenen, durum, aciklama FROM gelen_fatura WHERE cari_id=?
+                ORDER BY 2, 1, 3""", (cari_id, cari_id)).fetchall()
+        invoice_frame = ttk.Frame(nb, padding=6)
+        nb.add(invoice_frame, text="Faturalar")
+        invoice_tree = self._tree(invoice_frame, ("tur", "tarih", "belge", "toplam", "odenen", "kalan", "durum", "aciklama"),
+                                  ("Tür", "Tarih", "Belge No", "Toplam TL", "Ödenen TL", "Kalan TL", "Durum", "Açıklama"),
+                                  (75, 95, 115, 115, 115, 115, 110, 225))
+        for kind, day, number, total, paid, remaining, status, detail in invoices:
+            invoice_tree.insert("", "end", values=(kind, day, number or "",
+                f"{safe_float(total):,.2f}", f"{safe_float(paid):,.2f}",
+                f"{safe_float(remaining):,.2f}", status, detail or ""))
+        nb.select(selected_tab)
+
+        def refresh_card(operation=None, tab=None):
+            current_tab = nb.index(nb.select()) if tab is None else tab
+            if operation is not None:
+                operation(cari_context)
+            self.show_cari_hareketleri(cari_context, win, current_tab)
+
+        commands = ttk.Frame(win, padding=(12, 0, 12, 8))
+        commands.pack(fill="x", before=nb)
+        for label, operation, tab in (
+            ("Beton Satışı", self.add_beton, 1),
+            ("Tahsilat Al", self.cari_tahsilat, 0),
+            ("Çek Girişi", self.add_cek, 2),
+            ("Satış Faturası Taslağı", self.add_fatura, 3),
+            ("Alış Faturası", self.add_gelen_fatura, 3),
+            ("Cari Hareket Ekle", self.add_hareket, 0),
+        ):
+            ttk.Button(commands, text=label,
+                       command=lambda op=operation, index=tab: refresh_card(op, index)).pack(side="left", padx=(0, 5))
+        ttk.Button(commands, text="Yenile", command=refresh_card).pack(side="right")
         with connect() as audit_db:
             missing_sales, wrong_sales, ambiguous_sales = audit_beton_cari_amounts(audit_db, cari_id)
         if missing_sales or wrong_sales or ambiguous_sales:
@@ -2794,14 +2855,14 @@ class HoytasApp(tk.Tk):
         with connect() as c: c.insert_shared("INSERT INTO santiye(ad,adres,yetkili,telefon,notlar) VALUES(?,?,?,?,?)",(d["ad"],d["adres"],d["yetkili"],d["telefon"],d["notlar"]))
         self.refresh_all()
 
-    def add_fatura(self):
+    def add_fatura(self, cari_context=None):
         """Yerel taslak: m³, KDV ve seçilen tevkifat oranından net tahsilatı hesapla."""
         with connect() as c:
             cariler = c.execute("SELECT id,unvan FROM cari ORDER BY unvan").fetchall()
         if not cariler:
             return messagebox.showinfo("Cari gerekli", "Önce cari hesap ekleyin.", parent=self)
         names = [f"{i} - {n}" for i,n in cariler]
-        d = self.prompt("Yeni Satış Faturası Taslağı", [
+        d = self._prompt_for_cari(cari_context, "Yeni Satış Faturası Taslağı", [
             ("tarih", "Fatura tarihi (GG.AA.YYYY)", "entry", None),
             ("cari", "Faturanın kesileceği cari", "combo_search", names),
             ("belge", "Fatura / belge numarası", "entry", None),
@@ -2871,13 +2932,15 @@ class HoytasApp(tk.Tk):
             "Önceden kaydedilmiş fatura tahsilatları silinmez.",
             parent=self)
 
-    def cari_tahsilat(self):
+    def cari_tahsilat(self, cari_context=None):
         """Seçili müşteriden alınan kısmi/tam ödemeyi cari ve para hareketlerine işler."""
-        sel = self.cari_tree.selection()
-        if not sel:
-            return messagebox.showinfo("Cari seçin", "Önce tahsilat alınacak müşteriyi seçin.", parent=self)
-        vals = self.cari_tree.item(sel[0], "values")
-        cari_id, cari_unvan = int(vals[0]), str(vals[2])
+        if cari_context is None:
+            sel = self.cari_tree.selection()
+            if not sel:
+                return messagebox.showinfo("Cari seçin", "Önce tahsilat alınacak müşteriyi seçin.", parent=self)
+            vals = self.cari_tree.item(sel[0], "values")
+            cari_context = int(vals[0]), str(vals[2])
+        cari_id, cari_unvan = cari_context
         with connect() as c:
             open_invoices = c.execute("""SELECT id, COALESCE(belge_no,''), tahsil_edilecek-odenen
                 FROM fatura WHERE cari_id=? AND tahsil_edilecek-odenen>0.005
@@ -2948,10 +3011,10 @@ class HoytasApp(tk.Tk):
         if term: rows=[r for r in rows if term in normalize_search_text(" ".join(str(x or "") for x in r[:5]))]
         self.fill_tree(self.cari_tree,rows)
 
-    def add_hareket(self):
+    def add_hareket(self, cari_context=None):
         with connect() as c: cariler = c.execute("SELECT id,unvan FROM cari ORDER BY unvan").fetchall()
         names = ["(Cari seçilmedi)"] + [f"{i} - {n}" for i,n in cariler]
-        d = self.prompt("Yeni Gelir / Gider", [("tarih","Tarih (GG.AA.YYYY)","entry",None),
+        d = self._prompt_for_cari(cari_context, "Yeni Gelir / Gider", [("tarih","Tarih (GG.AA.YYYY)","entry",None),
             ("tur","Tür","combo",["Gelir","Gider","Borç","Alacak"]),("kategori","Kategori","combo",["Satış","Alış","Tahsilat","Ödeme","Maaş","Yakıt","Kira","Diğer"]),
             ("cari","Cari","combo",names),("aciklama","Açıklama","entry",None),("tutar","Tutar (TL)","entry",None),
             ("odeme","Ödeme yöntemi","combo",["Nakit","Banka","Kredi Kartı","Çek","Diğer"])])
@@ -2969,11 +3032,11 @@ class HoytasApp(tk.Tk):
                 (tarih,cari_id,d["tur"],d["kategori"],d["aciklama"],tutar,d["odeme"]))
         self.refresh_all()
 
-    def add_cek(self):
+    def add_cek(self, cari_context=None):
         with connect() as c: cariler=c.execute("SELECT id,unvan FROM cari ORDER BY unvan").fetchall()
         names=["(Cari seçilmedi)"]+[f"{i} - {n}" for i,n in cariler]
         banks=["010 - T.C. Ziraat Bankası","012 - Türkiye Halk Bankası","015 - Türkiye Vakıflar Bankası","032 - Türk Ekonomi Bankası","046 - Akbank","062 - Türkiye Garanti Bankası","064 - Türkiye İş Bankası","067 - Yapı ve Kredi Bankası","111 - QNB Bank","134 - DenizBank","203 - Albaraka Türk","206 - Türkiye Finans","208 - Kuveyt Türk","210 - Vakıf Katılım","211 - Türkiye Emlak Katılım","214 - Şekerbank","223 - Alternatif Bank","999 - Diğer / listede yok"]
-        d=self.prompt("Yeni Çek",[("yon","Yön","combo",["Alınan","Verilen"]),("banka","Banka adı ve kodu","combo",banks), ("cari","İlgili cari hesap","combo",names),
+        d=self._prompt_for_cari(cari_context, "Yeni Çek",[("yon","Yön","combo",["Alınan","Verilen"]),("banka","Banka adı ve kodu","combo",banks), ("cari","İlgili cari hesap","combo",names),
             ("cek_no","Çek No","entry",None),("taraf","Keşideci / Lehtar","entry",None),("vade","Vade (GG.AA.YYYY)","entry",None),("tutar","Tutar (TL)","entry",None),
             ("durum","Durum","combo",["Bekliyor","Tahsil Edildi","Ödendi","İade","Karşılıksız"]),("notlar","Notlar","entry",None)])
         if not d:return
@@ -3022,13 +3085,13 @@ class HoytasApp(tk.Tk):
                       (d["ad"],d["gorev"],d["telefon"],maas,d["notlar"]))
         self.refresh_all()
 
-    def add_beton(self):
+    def add_beton(self, cari_context=None):
         with connect() as c: cariler = c.execute("SELECT id,unvan FROM cari WHERE tur='Müşteri' OR tur='Diğer' ORDER BY unvan").fetchall()
         names = ["(Cari seçilmedi)"] + [f"{i} - {n}" for i,n in cariler]
         with connect() as c: sites=c.execute("SELECT id,ad FROM santiye ORDER BY ad").fetchall()
         site_names=[f"{i} - {n}" for i,n in sites]
         site_names += [n for n in ["Adıyaman", "Besni", "Tut", "Gölbaşı", "Erkenek", "Erkenek Köyü"] if n.casefold() not in [x.casefold() for x in site_names]]
-        d = self.prompt("Yeni Beton Satışı", [("tarih","Tarih (GG.AA.YYYY)","entry",None),
+        d = self._prompt_for_cari(cari_context, "Yeni Beton Satışı", [("tarih","Tarih (GG.AA.YYYY)","entry",None),
             ("cari","Müşteri ara (ünvan yazın) / seçin","combo_search",names),("santiye","Gideceği şantiye (elle yazabilirsiniz)","combo_edit",site_names),("beton_cinsi","Beton Cinsi","combo",["C16","C20","C25","C30","C35","C40","Şap"]),("m3","Miktar (m³; ör. 30,5)","entry",None),
             ("fiyat","Birim Fiyat (TL/m³)","entry",None),
             ("pompa_ucreti","Pompa Ücreti (TL, yoksa 0)","entry",None),
