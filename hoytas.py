@@ -2419,6 +2419,38 @@ class HoytasApp(tk.Tk):
         ttk.Button(row,text="Seçili Kalemi Düzenle",command=lambda:self.edit_selected(self.stok_tree,"stok")).pack(side="left")
         ttk.Button(row, text="Seçili Kalemi Sil", command=lambda: self.delete_selected(self.stok_tree,"stok")).pack(side="right")
 
+    def show_personel_karti(self, event=None):
+        selected = self.personel_tree.selection()
+        if not selected:
+            return messagebox.showinfo("Personel seçin", "Önce bir personel seçin.", parent=self)
+        personel_id, name = self.personel_tree.item(selected[0], "values")[:2]
+        personel_id = int(personel_id)
+        win = tk.Toplevel(self)
+        win.title(f"Personel Kartı - {name}")
+        win.geometry("940x460")
+        win.transient(self)
+        bar = ttk.Frame(win, padding=8)
+        bar.pack(fill="x")
+        tree = self._tree(win, ("id", "tarih", "tur", "donem", "tutar", "yontem", "aciklama"),
+                          ("ID", "Tarih", "İşlem Türü", "Dönem", "Tutar TL", "Ödeme Yöntemi", "Açıklama"),
+                          (55, 95, 115, 95, 100, 120, 240))
+
+        def refresh():
+            with connect() as db:
+                rows = db.execute("""SELECT id,tarih,COALESCE(islem_turu,'Maaş'),donem,
+                    printf('%.2f',tutar),COALESCE(yontem,''),COALESCE(aciklama,'')
+                    FROM maas_odeme WHERE personel_id=? ORDER BY tarih,id""", (personel_id,)).fetchall()
+            self.fill_tree(tree, rows)
+
+        def add(kind):
+            self.add_maas_odeme(personel_id, kind)
+            refresh()
+
+        for label, kind in (("Maaş", "Maaş"), ("Avans", "Nakit Avans"), ("Mesai", "Mesai"), ("Kesinti", "Kesinti")):
+            ttk.Button(bar, text=label, command=lambda selected_kind=kind: add(selected_kind)).pack(side="left", padx=(0, 6))
+        ttk.Button(bar, text="Yenile", command=refresh).pack(side="right")
+        refresh()
+
     def _build_personel(self):
         bar = ttk.Frame(self.personel_tab); bar.pack(fill="x")
         ttk.Label(bar, text="Personel", font=("Segoe UI", 16, "bold")).pack(side="left")
@@ -2426,6 +2458,8 @@ class HoytasApp(tk.Tk):
         self.personel_tree = self._tree(self.personel_tab, ("id","ad","gorev","telefon","maas","notlar"),
             ("ID","Ad Soyad","Görev","Telefon","Aylık Maaş (TL)","Notlar"), (50,220,180,140,150,300))
         row=ttk.Frame(self.personel_tab); row.pack(fill="x",pady=8)
+        self.personel_tree.bind("<Double-1>", self.show_personel_karti)
+        ttk.Button(row, text="Personel Kartını Aç", command=self.show_personel_karti).pack(side="left", padx=(0, 8))
         ttk.Button(row,text="Seçili Personeli Düzenle",command=lambda:self.edit_selected(self.personel_tree,"personel")).pack(side="left")
         ttk.Button(row, text="Seçili Personeli Sil", command=lambda: self.delete_selected(self.personel_tree,"personel")).pack(side="right")
 
@@ -2611,7 +2645,7 @@ class HoytasApp(tk.Tk):
           "nakit_kasa":[("tarih","Tarih (GG.AA.YYYY)","entry",None),("yon","İşlem","combo",["Para Girişi","Para Çıkışı"]),("kaynak","Kaynak","entry",None),("aciklama","Açıklama","entry",None),("tutar","Tutar (TL)","entry",None)],
           "santiye":[("ad","Şantiye adı","entry",None),("adres","Adres","entry",None),("yetkili","Yetkili","entry",None),("telefon","Telefon","entry",None),("notlar","Notlar","entry",None)],
           "stok_hareket":[("tarih","Tarih","entry",None),("stok_id","Stok ID","entry",None),("yon","Yön","combo",["Giriş","Çıkış"]),("miktar","Miktar","entry",None),("aciklama","Açıklama","entry",None)],
-          "maas_odeme":[("tarih","Tarih","entry",None),("personel_id","Personel ID","entry",None),("islem_turu","İşlem Türü","combo",["Maaş","Nakit Avans"]),("donem","Dönem (YYYY-AA)","entry",None),("tutar","Tutar","entry",None),("yontem","Ödeme yöntemi","entry",None),("aciklama","Açıklama","entry",None)],
+          "maas_odeme":[("tarih","Tarih","entry",None),("personel_id","Personel ID","entry",None),("islem_turu","İşlem Türü","combo",["Maaş","Nakit Avans","Mesai","Kesinti"]),("donem","Dönem (YYYY-AA)","entry",None),("tutar","Tutar","entry",None),("yontem","Ödeme yöntemi","entry",None),("aciklama","Açıklama","entry",None)],
           "banka_hareket":[("tarih","Tarih","entry",None),("banka","Banka","entry",None),("hesap","Hesap / IBAN sonu","entry",None),("yon","İşlem","combo",["Para Girişi","Para Çıkışı"]),("aciklama","Açıklama","entry",None),("tutar","Tutar","entry",None)]}
         if table not in specs: return messagebox.showinfo("Bilgi","Bu listedeki düzenleme henüz desteklenmiyor.",parent=self)
         cols=[f[0] for f in specs[table]]
@@ -2739,18 +2773,44 @@ class HoytasApp(tk.Tk):
             self.refresh_all()
         except Exception as e: messagebox.showerror("Stok hareketi kaydedilemedi",str(e),parent=self)
 
-    def add_maas_odeme(self):
-        with connect() as c: items=c.execute("SELECT id,ad FROM personel ORDER BY ad").fetchall()
-        if not items:return messagebox.showinfo("Personel yok","Önce Personel sekmesinden personel ekleyin.",parent=self)
-        d=self.prompt("Maaş / Nakit Avans Ödemesi",[("tarih","Ödeme tarihi","entry",None),("personel","Personel","combo",[f"{i} - {n}" for i,n in items]),("islem_turu","İşlem türü","combo",["Maaş","Nakit Avans"]),("donem","Dönem (YYYY-AA)","entry",None),("tutar","Tutar (TL)","entry",None),("yontem","Ödeme yöntemi","combo",["Banka","Nakit","Diğer"]),("aciklama","Açıklama","entry",None)])
-        if not d:return
+    def add_maas_odeme(self, personel_id=None, kind=None):
+        with connect() as db:
+            if personel_id is None:
+                items = db.execute("SELECT id,ad FROM personel ORDER BY ad").fetchall()
+            else:
+                items = db.execute("SELECT id,ad FROM personel WHERE id=?", (personel_id,)).fetchall()
+        if not items:
+            return messagebox.showinfo("Personel yok", "Kayıtlı bir personel seçin.", parent=self)
+        fields = [
+            ("tarih", "İşlem tarihi", "entry", None),
+            ("personel", "Personel", "combo", [f"{i} - {n}" for i, n in items]),
+            ("islem_turu", "İşlem türü", "combo", [kind] if kind else list(("Maaş", "Nakit Avans", "Mesai", "Kesinti"))),
+            ("donem", "Dönem (YYYY-AA)", "entry", None),
+            ("tutar", "Tutar (TL)", "entry", None),
+        ]
+        if kind not in ("Mesai", "Kesinti"):
+            fields.append(("yontem", "Ödeme yöntemi (maaş/avans)", "combo", ["Banka", "Nakit", "Diğer"]))
+        fields.append(("aciklama", "Açıklama", "entry", None))
+        data = self.prompt(f"Personel İşlemi - {kind}" if kind else "Personel İşlemi", fields)
+        if not data:
+            return
         try:
-            dt=d["tarih"] or date.today().isoformat(); datetime.strptime(dt,"%Y-%m-%d"); pid=int(d["personel"].split(" - ",1)[0]); amount=parse_amount(d["tutar"])
-            if amount<=0:raise ValueError("Tutar sıfırdan büyük olmalı.")
-            if d["donem"]: datetime.strptime(d["donem"]+"-01","%Y-%m-%d")
-            with connect() as c:c.execute("INSERT INTO maas_odeme(tarih,personel_id,donem,tutar,yontem,aciklama,islem_turu) VALUES(?,?,?,?,?,?,?)",(dt,pid,d["donem"],amount,d["yontem"],d["aciklama"],d["islem_turu"]))
+            day = data["tarih"] or date.today().isoformat()
+            datetime.strptime(day, "%Y-%m-%d")
+            pid = int(data["personel"].split(" - ", 1)[0])
+            amount = parse_amount(data["tutar"])
+            if amount <= 0:
+                raise ValueError("Tutar sıfırdan büyük olmalı.")
+            if data["donem"]:
+                datetime.strptime(data["donem"] + "-01", "%Y-%m-%d")
+            method = data.get("yontem", "") if data["islem_turu"] in ("Maaş", "Nakit Avans") else ""
+            with connect() as db:
+                db.execute("""INSERT INTO maas_odeme(tarih,personel_id,donem,tutar,yontem,aciklama,islem_turu)
+                    VALUES(?,?,?,?,?,?,?)""", (day, pid, data["donem"], amount,
+                    method, data["aciklama"], data["islem_turu"]))
             self.refresh_all()
-        except Exception as e:messagebox.showerror("Maaş ödemesi kaydedilemedi",str(e),parent=self)
+        except (ValueError, sqlite3.Error) as error:
+            messagebox.showerror("Personel işlemi kaydedilemedi", str(error), parent=self)
 
     def add_banka_hareket(self):
         d=self.prompt("Banka İşlemi",[("tarih","Tarih (GG.AA.YYYY)","entry",None),("banka","Banka adı","entry",None),("hesap","Hesap / IBAN sonu","entry",None),("yon","İşlem","combo",["Para Girişi","Para Çıkışı"]),("aciklama","Açıklama","entry",None),("tutar","Tutar (TL)","entry",None)])
