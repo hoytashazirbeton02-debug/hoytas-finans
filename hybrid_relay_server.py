@@ -67,8 +67,16 @@ def handler_for(relay, token, membership=None):
                 return
             supplied = self.headers.get("Authorization", "").encode()
             if not hmac.compare_digest(supplied, expected):
-                self.reply(401, {})
-                return
+                try:
+                    if membership is None or membership.enrollment is None or not supplied.startswith(b"Bearer "):
+                        raise PermissionError
+                    membership.memberships.session_role(supplied[7:].decode())
+                except (PermissionError, UnicodeError):
+                    self.reply(401, {})
+                    return
+                except Exception:
+                    self.reply(503, {})
+                    return
             try:
                 if writing:
                     size = int(self.headers.get("Content-Length", "0"))
@@ -94,7 +102,7 @@ def handler_for(relay, token, membership=None):
                 self.reply(200, result)
 
         def reply(self, status, result):
-            body = json.dumps(result, ensure_ascii=False).encode()
+            body = json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -117,12 +125,15 @@ def main():
     invitation = os.environ.get("HOYTAS_MEMBERSHIP_INVITATION")
     membership = None
     if invitation:
+        from hybrid_enrollment_store import EnrollmentStore
         from hybrid_membership import Memberships
         from hybrid_membership_http import MembershipHTTP
 
         members = Memberships(connect)
         members.initialize()
-        membership = MembershipHTTP(members, invitation)
+        enrollment = EnrollmentStore(members)
+        enrollment.initialize()
+        membership = MembershipHTTP(members, invitation, enrollment, os.environ.get("HOYTAS_ADMIN_SETUP_CODE"))
     handler = handler_for(relay, token, membership)
     relay.initialize()
     with ThreadingHTTPServer(("0.0.0.0", int(os.environ.get("PORT", "10000"))), handler) as server:

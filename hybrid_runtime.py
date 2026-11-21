@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Thread
+from urllib.error import HTTPError
 from urllib.parse import urlsplit
 
 from hybrid_exchange import exchange_once
@@ -30,14 +31,15 @@ def start_background_sync(app, connect, data_directory):
     endpoint = os.environ.get("HOYTAS_SYNC_URL", "").strip()
     if not endpoint:
         return
-    relay = production_relay(connect, endpoint, os.environ.get("HOYTAS_SYNC_TOKEN", ""))
+    token = getattr(app, "membership_session", None) or os.environ.get("HOYTAS_SYNC_TOKEN", "")
+    relay = production_relay(connect, endpoint, token)
     results = Queue()
 
     def run():
         try:
             results.put((exchange_once(connect, relay, limit=5), None))
         except Exception as error:
-            results.put((None, type(error)))
+            results.put((None, error))
 
     def poll():
         try:
@@ -49,10 +51,13 @@ def start_background_sync(app, connect, data_directory):
         if error is not None:
             try:
                 with (Path(data_directory) / "senkronizasyon.log").open("a", encoding="utf-8") as handle:
-                    handle.write(f"{datetime.now().isoformat(timespec='seconds')} {error.__name__}\n")
+                    handle.write(f"{datetime.now().isoformat(timespec='seconds')} {type(error).__name__}\n")
             except OSError:
                 pass
-            if issubclass(error, ReplicaConflict):
+            if isinstance(error, HTTPError) and error.code == 401 and getattr(app, "membership_session", None):
+                app.title("HOYTAŞ — Oturum sona erdi, yeniden giriş yapın")
+                return
+            if isinstance(error, ReplicaConflict):
                 app.title("HOYTAŞ — Senkronizasyon çakışması")
                 return
             app.title("HOYTAŞ — Sunucu bağlantısı bekleniyor")

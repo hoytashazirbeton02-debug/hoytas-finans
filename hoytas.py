@@ -314,9 +314,10 @@ def _enable_hybrid_capture(con):
     return con
 
 
-def connect():
-    existed = os.path.isfile(DB_PATH) and os.path.getsize(DB_PATH) > 0
-    con = sqlite3.connect(DB_PATH, timeout=3, factory=ClosingSQLiteConnection)
+def connect(path=None):
+    path = DB_PATH if path is None else path
+    existed = os.path.isfile(path) and os.path.getsize(path) > 0
+    con = sqlite3.connect(path, timeout=3, factory=ClosingSQLiteConnection)
     con.row_factory = None
     con.create_function("hoytas_actor", 0, lambda: APP_CURRENT_USER)
     con.execute("PRAGMA busy_timeout = 3000")
@@ -686,7 +687,14 @@ class HoytasApp(tk.Tk):
         self.geometry(f"{min(1440,self.winfo_screenwidth()-32)}x{min(900,self.winfo_screenheight()-80)}")
         self.minsize(800, 550)
         self.configure(bg="#F3F5F4")
-        self._ensure_admin_and_login()
+        self.membership_client = None
+        endpoint = os.environ.get("HOYTAS_MEMBERSHIP_URL", "").strip()
+        if endpoint and ISOLATED_PROFILE_DIR:
+            from hybrid_membership_client import MembershipClient
+            self.membership_client = MembershipClient(endpoint)
+            self._central_login()
+        else:
+            self._ensure_admin_and_login()
         self.style = ttk.Style(self)
         try: self.style.theme_use("clam")
         except tk.TclError: pass
@@ -830,6 +838,41 @@ class HoytasApp(tk.Tk):
 
     def _hash_password(self, password, salt):
         return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 180000).hex()
+
+    def _central_login(self):
+        global APP_CURRENT_USER
+        from hybrid_desktop_membership import sign_in
+
+        from pathlib import Path
+        from hybrid_enrollment import install_baseline
+        from hybrid_identity import replica_slot
+        from hybrid_start_live import readonly
+
+        database = Path(DB_PATH)
+        setup_admin = False
+        if database.is_file():
+            with readonly(database) as db:
+                setup_admin = replica_slot(db) == 1
+        def prepare(account):
+            from hybrid_http_relay import HTTPRelay
+
+            if not database.is_file():
+                legacy = database.parent.parent / "hoytas.db"
+                session = account["session"]
+                relay = HTTPRelay(self.membership_client.url, session)
+                install_baseline(database, legacy, self.membership_client, session, connect, relay)
+            with connect() as db:
+                if replica_slot(db) is None:
+                    raise RuntimeError("Canlı profil kimliği bulunamadı.")
+
+        account = sign_in(self, self.membership_client, setup_admin=setup_admin, prepare=prepare)
+        if account is None:
+            self.destroy()
+            raise SystemExit
+        self.membership_session = account["session"]
+        role = "Yönetici" if account["role"] == "admin" else "Kullanıcı"
+        self.current_user = {"username": account["username"], "role": role}
+        APP_CURRENT_USER = account["username"]
 
     def _ensure_admin_and_login(self):
         with connect() as c:
@@ -1145,7 +1188,8 @@ class HoytasApp(tk.Tk):
             (bottom_top, [("⟳ Yenile (F5)", self._refresh_from_button), ("Excel Raporu", self.export_excel),
                           ("CSV Dışa Aktar", self.export_csv), ("Şimdi Yedekle", self.backup),
                           ("Veritabanı Kontrolü", self.database_health_check), ("PDF Raporları", self.pdf_menu)]),
-            (bottom_bottom, [("Şifre Değiştir", self.change_password_dialog), ("Veritabanı Konumu", self.show_db_path),
+            (bottom_bottom, ([("Şifre Değiştir", self.change_password_dialog)] if self.membership_client is None else []) +
+                            [("Veritabanı Konumu", self.show_db_path),
                              ("Güncelleme URL Ayarları", self.configure_update_url),
                              ("Güncellemeleri Denetle", self.check_for_updates), ("ZIP ile Güncelle", self.install_update_package)])
         ]:
@@ -2697,6 +2741,19 @@ class HoytasApp(tk.Tk):
     def manage_users(self):
         if getattr(self, "current_user", {}).get("role") != "Yönetici":
             return messagebox.showwarning("Yetki gerekli", "Üyelikleri yalnızca yönetici yönetebilir.", parent=self)
+        if self.membership_client is not None:
+            from hybrid_desktop_membership import manage_pending
+            from pathlib import Path
+            from hybrid_enrollment import read_baseline
+
+            def publish():
+                return self.membership_client.publish_baseline(
+                    self.membership_session, read_baseline(Path(DB_PATH)))
+
+            with connect() as db:
+                publish_available = db.hybrid_slot == 1
+            return manage_pending(self, self.membership_client, self.membership_session,
+                                  publish if publish_available else None)
         win=tk.Toplevel(self); win.title("Kullanıcı Yönetimi"); win.transient(self); win.grab_set(); win.geometry("520x390")
         frm=ttk.Frame(win,padding=16); frm.pack(fill="both",expand=True)
         ttk.Label(frm,text="Kullanıcı Hesapları",font=("Segoe UI",15,"bold")).pack(anchor="w")
@@ -3732,7 +3789,7 @@ if __name__ == "__main__":
         faulthandler.enable(file=_hang_log)
         faulthandler.dump_traceback_later(20, repeat=True, file=_hang_log)
         app = HoytasApp()
-        if ISOLATED_PROFILE_DIR and os.name == "nt":
+        if ISOLATED_PROFILE_DIR and os.name == "nt" and app.membership_client is None:
             try:
                 from hybrid_shortcut_setup import install_after_update
 
