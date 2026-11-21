@@ -845,7 +845,7 @@ class HoytasApp(tk.Tk):
         from hybrid_desktop_membership import sign_in
 
         from pathlib import Path
-        from hybrid_enrollment import install_baseline
+        from hybrid_enrollment import install_baseline, restore_enrolled_history
         from hybrid_identity import replica_slot
         from hybrid_start_live import readonly
 
@@ -862,6 +862,11 @@ class HoytasApp(tk.Tk):
                 session = account["session"]
                 relay = HTTPRelay(self.membership_client.url, session)
                 install_baseline(database, legacy, self.membership_client, session, connect, relay)
+            elif not setup_admin:
+                try:
+                    restore_enrolled_history(database, self.membership_client, account["session"], connect)
+                except (OSError, ValueError, RuntimeError, sqlite3.Error) as error:
+                    self._log_update_error(error)
             with connect() as db:
                 if replica_slot(db) is None:
                     raise RuntimeError("Canlı profil kimliği bulunamadı.")
