@@ -26,7 +26,7 @@ from xml.sax.saxutils import escape
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
 TARGET_SCHEMA_VERSION = 53
-APP_VERSION = 102
+APP_VERSION = 103
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 ISOLATED_PROFILE_DIR = os.environ.get("HOYTAS_PROFILE_DIR", "").strip()
 USER_DATA_DIR = ISOLATED_PROFILE_DIR or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
@@ -1792,7 +1792,7 @@ class HoytasApp(tk.Tk):
             menu.add_command(label="Düzenle", command=edit_command)
             menu.add_command(label="Sil", command=lambda:self.delete_selected(tree,table))
         if undo_table:
-            menu.add_command(label="Seçili İşlemi İptal Et / Geri Al", command=lambda:self.undo_selected_operation(tree, undo_table))
+            menu.add_command(label="Seçili İşlemi Geri Al", command=lambda:self.undo_selected_operation(tree, undo_table))
         try:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -1816,9 +1816,7 @@ class HoytasApp(tk.Tk):
         try:
             with connect() as db:
                 operation_id = selected_operation(db, table, record_id, username, admin=admin)
-            if not messagebox.askyesno("İşlemi geri al",
-                    "Seçilen kayıtla aynı işlemde kaydedilen bağlı hareketler de geri alınır. "
-                    "Bu işlem yalnızca HOYTAŞ kayıtlarını değiştirir. Onaylıyor musunuz?", parent=parent):
+            if not self.confirm_undo(parent):
                 return
             with connect() as db:
                 db.execute("BEGIN IMMEDIATE")
@@ -1833,6 +1831,36 @@ class HoytasApp(tk.Tk):
         if refresh:
             refresh()
         messagebox.showinfo("İşlem geri alındı", "Seçili işlem ve bağlı kayıtları geri alındı.", parent=parent)
+
+    def confirm_undo(self, parent):
+        window = tk.Toplevel(parent)
+        window.title("İşlemi geri al")
+        window.transient(parent)
+        window.resizable(False, False)
+        previous_grab = parent.grab_current()
+        window.grab_set()
+        frame = ttk.Frame(window, padding=16)
+        frame.pack()
+        ttk.Label(frame, text="Seçili işlem ve aynı işlemde kaydedilen bağlı hareketler geri alınacak.",
+                  wraplength=390).pack(pady=(0, 12))
+        confirmed = False
+
+        def approve():
+            nonlocal confirmed
+            confirmed = True
+            window.destroy()
+
+        buttons = ttk.Frame(frame)
+        buttons.pack(anchor="e")
+        ttk.Button(buttons, text="Geri Al", command=approve).pack(side="left", padx=4)
+        cancel = ttk.Button(buttons, text="Vazgeç", command=window.destroy)
+        cancel.pack(side="left")
+        cancel.focus_set()
+        window.bind("<Escape>", lambda _: window.destroy())
+        parent.wait_window(window)
+        if previous_grab is not None and previous_grab.winfo_exists():
+            previous_grab.grab_set()
+        return confirmed
 
     def _prompt_for_cari(self, cari_context, title, fields):
         if cari_context is not None:
