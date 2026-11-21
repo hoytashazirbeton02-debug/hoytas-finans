@@ -1,3 +1,4 @@
 HOYTAŞ v101
 
 Banka giriş ve çıkış işlemlerinde gönderici / alıcı adı veya ünvanı eklenebilir ve düzenlenebilir.
+Çekler ekranında kendi çeklerimiz, tahsildeki çekler ve portföydeki çekler görünümleri.
