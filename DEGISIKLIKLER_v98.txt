@@ -1,0 +1,5 @@
+HOYTAŞ v98
+
+Cari kartından beton satışı, tahsilat, çek ve fatura işlemleri.
+Personel kartından maaş, avans, mesai ve kesinti.
+Yetkili merkezi girişle yeni iş istasyonuna başlangıç personel, stok ve işlem geçmişi aktarımı.
