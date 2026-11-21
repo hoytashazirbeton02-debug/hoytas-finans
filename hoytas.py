@@ -26,7 +26,7 @@ from xml.sax.saxutils import escape
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
 TARGET_SCHEMA_VERSION = 53
-APP_VERSION = 103
+APP_VERSION = 104
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 ISOLATED_PROFILE_DIR = os.environ.get("HOYTAS_PROFILE_DIR", "").strip()
 USER_DATA_DIR = ISOLATED_PROFILE_DIR or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
@@ -415,9 +415,19 @@ def connect(path=None):
 CHEQUE_STATES = ("Bekliyor", "Portföyde", "Tahsilde", "Ciro Edildi", "Tahsil Edildi", "Ödendi", "İade", "Karşılıksız")
 
 
+CHEQUE_STATUS_REPORTS = {
+    "Tahsildeki Çekler Dökümü": "collection",
+    "Kendi Çeklerimiz Dökümü": "own",
+    "Ciro Edilen Çekler Dökümü": "endorsed",
+    "Portföydeki Çekler Dökümü": "portfolio",
+}
+
+
 def cheque_matches_view(direction, status, view):
-    if view == "own":
-        return direction == "Verilen"
+    if view == "endorsed":
+        return status == "Ciro Edildi"
+    if view in ("received", "own"):
+        return direction == ("Alınan" if view == "received" else "Verilen")
     if view == "collection":
         return direction == "Alınan" and status == "Tahsilde"
     if view == "portfolio":
@@ -2533,6 +2543,11 @@ class HoytasApp(tk.Tk):
                              ("Tahsildeki Çekler", "collection"), ("Portföydeki Çekler", "portfolio")):
             ttk.Radiobutton(filters, text=label, value=value, variable=self.cheque_view,
                             command=self._change_cheque_view).pack(side="left", padx=(0, 12))
+        reports = ttk.Frame(self.cek_tab)
+        reports.pack(fill="x", pady=(0, 8))
+        for title in CHEQUE_STATUS_REPORTS:
+            ttk.Button(reports, text=title.removesuffix(" Dökümü") + " PDF",
+                       command=lambda report=title: self.export_pdf_report(report)).pack(side="left", padx=(0, 6))
         self.cek_tree = self._tree(self.cek_tab, ("id","yon","banka","cek_no","taraf","vade","tutar","durum"),
             ("ID","Yön","Banka","Çek No","Keşideci / Lehtar","Vade","Tutar (TL)","Durum"), (50,100,130,120,220,110,120,110))
         row=ttk.Frame(self.cek_tab); row.pack(fill="x",pady=8)
@@ -3603,7 +3618,7 @@ class HoytasApp(tk.Tk):
 
     def pdf_menu(self):
         with connect() as c: cariler=c.execute("SELECT id,unvan FROM cari ORDER BY unvan").fetchall()
-        choices=["Cari Hesap Ekstresi","Cari Hareket Dökümü","Cari Beton Satış Dökümü","Gelir-Gider Raporu","Çek Listesi","Alınan Çekler Dökümü","Verilen Çekler Dökümü","Beton Satış Raporu","Beton Satışları Dökümü","Fatura Taslağı PDF","Gelen Alış Faturaları","Kasa ve Banka Raporu"]
+        choices=["Cari Hesap Ekstresi","Cari Hareket Dökümü","Cari Beton Satış Dökümü","Gelir-Gider Raporu","Çek Listesi","Alınan Çekler Dökümü","Verilen Çekler Dökümü",*CHEQUE_STATUS_REPORTS,"Beton Satış Raporu","Beton Satışları Dökümü","Fatura Taslağı PDF","Gelen Alış Faturaları","Kasa ve Banka Raporu"]
         d=self.prompt("PDF Raporu Oluştur",[("rapor","Rapor Türü","combo",choices)])
         if not d: return
         cari_id=None
@@ -3766,18 +3781,17 @@ class HoytasApp(tk.Tk):
                 income=c.execute("SELECT COALESCE(SUM(tutar),0) FROM hareket WHERE tur='Gelir'").fetchone()[0]
                 expense=c.execute("SELECT COALESCE(SUM(tutar),0) FROM hareket WHERE tur='Gider'").fetchone()[0]
                 rows.extend([["","","","","Toplam gelir","",f"{income:,.2f}"],["","","","","Toplam gider","",f"{expense:,.2f}"],["","","","","Net","",f"{income-expense:,.2f}"]])
-            elif report_type in ("Çek Listesi", "Alınan Çekler Dökümü", "Verilen Çekler Dökümü"):
-                rows=[["Yön","Banka","Banka Kodu","Çek No","Keşideci/Lehtar","Vade","Tutar (TL)","Durum","Notlar"]]
-                if report_type=="Alınan Çekler Dökümü":
-                    cheque_sql="SELECT yon,COALESCE(banka,''),COALESCE(banka_kodu,''),COALESCE(cek_no,''),COALESCE(kesideci_lehtar,''),vade,tutar,durum,COALESCE(notlar,'') FROM cek WHERE yon='Alınan' ORDER BY vade ASC,id ASC"
-                elif report_type=="Verilen Çekler Dökümü":
-                    cheque_sql="SELECT yon,COALESCE(banka,''),COALESCE(banka_kodu,''),COALESCE(cek_no,''),COALESCE(kesideci_lehtar,''),vade,tutar,durum,COALESCE(notlar,'') FROM cek WHERE yon='Verilen' ORDER BY vade ASC,id ASC"
-                else:
-                    cheque_sql="SELECT yon,COALESCE(banka,''),COALESCE(banka_kodu,''),COALESCE(cek_no,''),COALESCE(kesideci_lehtar,''),vade,tutar,durum,COALESCE(notlar,'') FROM cek ORDER BY vade ASC,id ASC"
-                for r in c.execute(cheque_sql):
+            elif report_type in ("Çek Listesi", "Alınan Çekler Dökümü", "Verilen Çekler Dökümü", *CHEQUE_STATUS_REPORTS):
+                rows = [["Yön","Banka","Banka Kodu","Çek No","Keşideci/Lehtar","Vade","Tutar (TL)","Durum","Notlar"]]
+                view = CHEQUE_STATUS_REPORTS.get(report_type, {
+                    "Alınan Çekler Dökümü": "received", "Verilen Çekler Dökümü": "own",
+                }.get(report_type, "all"))
+                checks = [row for row in c.execute("""SELECT yon,COALESCE(banka,''),COALESCE(banka_kodu,''),
+                    COALESCE(cek_no,''),COALESCE(kesideci_lehtar,''),vade,tutar,durum,COALESCE(notlar,'')
+                    FROM cek ORDER BY vade,id""") if cheque_matches_view(row[0], row[7], view)]
+                for r in checks:
                     rows.append([r[0],r[1],r[2],r[3],Paragraph(escape(r[4]),normal),display_date(r[5]),f"{r[6]:,.2f}",r[7],Paragraph(escape(r[8]),normal)])
-                cheque_total=c.execute("SELECT COALESCE(SUM(tutar),0),COUNT(*) FROM cek" + (" WHERE yon='Alınan'" if report_type=="Alınan Çekler Dökümü" else " WHERE yon='Verilen'" if report_type=="Verilen Çekler Dökümü" else "")).fetchone()
-                rows.append(["","","","","TOPLAM",f"{cheque_total[1]} adet",f"{cheque_total[0]:,.2f}","",""])
+                rows.append(["","","","","TOPLAM",f"{len(checks)} adet",f"{sum(r[6] for r in checks):,.2f}","",""])
             elif report_type=="Fatura Taslağı PDF":
                 invoice=c.execute("SELECT f.tarih,COALESCE(c.unvan,''),COALESCE(c.telefon,''),COALESCE(c.vergi_no,''),COALESCE(f.belge_no,''),COALESCE(f.aciklama,''),f.miktar_m3,f.birim_fiyat,f.ara_toplam,f.kdv_oran,f.kdv_tutar,f.genel_toplam,f.durum FROM fatura f LEFT JOIN cari c ON c.id=f.cari_id WHERE f.id=?",(cari_id,)).fetchone()
                 if not invoice: raise ValueError("Fatura taslağı bulunamadı.")
@@ -3839,6 +3853,7 @@ class HoytasApp(tk.Tk):
             "Çek Listesi": [0.65, 0.90, 0.85, 0.95, 1.45, 0.85, 0.95, 0.85, 1.35],
             "Alınan Çekler Dökümü": [0.65, 0.90, 0.85, 0.95, 1.45, 0.85, 0.95, 0.85, 1.35],
             "Verilen Çekler Dökümü": [0.65, 0.90, 0.85, 0.95, 1.45, 0.85, 0.95, 0.85, 1.35],
+            **{title: [0.65, 0.90, 0.85, 0.95, 1.45, 0.85, 0.95, 0.85, 1.35] for title in CHEQUE_STATUS_REPORTS},
             "Cari Hareket Dökümü": [0.8, 0.8, 1.0, 2.0, 1.0, 1.0, 1.0, 1.0],
             "Cari Beton Satış Dökümü": [0.75, 0.9, 0.75, 0.9, 0.75, 0.9, 1.0, 1.0, 1.8],
             "Beton Satış Raporu": [0.78, 1.65, 0.90, 0.70, 0.90, 0.90, 1.00, 1.05, 1.60],
