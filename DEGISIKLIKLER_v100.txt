@@ -1,0 +1,4 @@
+HOYTAŞ v100
+
+Windows güncellemelerinde mevcut HOYTAŞ masaüstü kısayolu yeniden kullanılır.
+Güncelleme sırasında yeni masaüstü kısayolu oluşturulmaz.
