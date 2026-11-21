@@ -1,0 +1,4 @@
+HOYTAŞ v99
+
+Giriş ekranında son kullanıcı adları ve Windows hesabına bağlı şifre hatırlama seçeneği.
+Personel kartında ad soyad ve IBAN düzenleme, IBAN doğrulama ve kopyalama.
