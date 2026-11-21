@@ -32,6 +32,7 @@ def apply_batch(connect, batch_id, events, *, actor=None):
 
         # Capture is connection-local. Keep the application audit history without re-queuing remote changes.
         db.execute("DROP TRIGGER IF EXISTS temp.hybrid_capture")
+        db.execute("DROP TRIGGER IF EXISTS temp.hoytas_operation_capture")
         if actor is not None:
             db.create_function("hoytas_actor", 0, lambda: actor)
         for _, table, record_id, action, old_values, new_values in events:
