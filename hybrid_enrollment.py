@@ -60,6 +60,8 @@ def install_baseline(target, legacy, client, session, connect, relay):
             if not isinstance(history, dict) or (history and set(history) != set(BASELINE_HISTORY)):
                 raise RuntimeError("Başlangıç geçmişi biçimi geçersiz.")
             tables = {**baseline["tables"], **history}
+            if "karsi_taraf" in {column[1] for column in db.execute("PRAGMA table_info(banka_hareket)")}:
+                tables["banka_hareket"] = [{"karsi_taraf": "", **row} for row in tables["banka_hareket"]]
             for table in (*TABLES, *BASELINE_HISTORY):
                 if table in BASELINE_HISTORY and table not in history:
                     continue
