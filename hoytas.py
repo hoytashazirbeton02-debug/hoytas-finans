@@ -409,6 +409,19 @@ def connect(path=None):
     con.execute(f"PRAGMA user_version = {TARGET_SCHEMA_VERSION}")
     return _enable_hybrid_capture(con)
 
+CHEQUE_STATES = ("Bekliyor", "Portföyde", "Tahsilde", "Tahsil Edildi", "Ödendi", "İade", "Karşılıksız")
+
+
+def cheque_matches_view(direction, status, view):
+    if view == "own":
+        return direction == "Verilen"
+    if view == "collection":
+        return direction == "Alınan" and status == "Tahsilde"
+    if view == "portfolio":
+        return direction == "Alınan" and status in ("Bekliyor", "Portföyde")
+    return True
+
+
 def normalize_personel_iban(value):
     iban = "".join(value.split()).upper()
     if not iban:
@@ -2439,6 +2452,13 @@ class HoytasApp(tk.Tk):
         bar = ttk.Frame(self.cek_tab); bar.pack(fill="x")
         ttk.Label(bar, text="Alınan / Verilen Çekler", font=("Segoe UI", 16, "bold")).pack(side="left")
         ttk.Button(bar, text="Yeni Çek Ekle", command=self.add_cek).pack(side="right")
+        filters = ttk.Frame(self.cek_tab)
+        filters.pack(fill="x", pady=(4, 8))
+        self.cheque_view = tk.StringVar(self.cek_tab, "all")
+        for label, value in (("Tüm Çekler", "all"), ("Kendi Çeklerimiz", "own"),
+                             ("Tahsildeki Çekler", "collection"), ("Portföydeki Çekler", "portfolio")):
+            ttk.Radiobutton(filters, text=label, value=value, variable=self.cheque_view,
+                            command=self._change_cheque_view).pack(side="left", padx=(0, 12))
         self.cek_tree = self._tree(self.cek_tab, ("id","yon","banka","cek_no","taraf","vade","tutar","durum"),
             ("ID","Yön","Banka","Çek No","Keşideci / Lehtar","Vade","Tutar (TL)","Durum"), (50,100,130,120,220,110,120,110))
         row=ttk.Frame(self.cek_tab); row.pack(fill="x",pady=8)
@@ -2446,6 +2466,18 @@ class HoytasApp(tk.Tk):
         ttk.Button(row,text="Alınan Çekler PDF",command=lambda:self.export_pdf_report("Alınan Çekler Dökümü")).pack(side="left",padx=(8,0))
         ttk.Button(row,text="Verilen Çekler PDF",command=lambda:self.export_pdf_report("Verilen Çekler Dökümü")).pack(side="left",padx=(8,0))
         ttk.Button(row, text="Seçili Çeki Sil", command=lambda: self.delete_selected(self.cek_tree,"cek")).pack(side="right")
+
+    def _change_cheque_view(self):
+        with connect() as db:
+            self._refresh_cheque_view(db)
+
+    def _refresh_cheque_view(self, db):
+        rows = db.execute("""SELECT id,yon,COALESCE(banka,'') ||
+            CASE WHEN COALESCE(banka_kodu,'')='' THEN '' ELSE ' (' || banka_kodu || ')' END,
+            cek_no,COALESCE((SELECT unvan FROM cari WHERE cari.id=cek.cari_id),kesideci_lehtar),
+            vade,printf('%.2f',tutar),durum FROM cek ORDER BY vade,id""")
+        view = self.cheque_view.get()
+        self.fill_tree(self.cek_tree, (row for row in rows if cheque_matches_view(row[1], row[7], view)))
 
     def _build_stok(self):
         bar = ttk.Frame(self.stok_tab); bar.pack(fill="x")
@@ -2699,7 +2731,7 @@ class HoytasApp(tk.Tk):
         specs={
           "cari":[("tur","Tür","combo",["Müşteri","Tedarikçi","Diğer"]),("unvan","Ünvan / Ad Soyad","entry",None),("telefon","Telefon","entry",None),("vergi_no","Vergi / T.C. No","entry",None),("notlar","Notlar","entry",None)],
           "hareket":[("tarih","Tarih (GG.AA.YYYY)","entry",None),("tur","Tür","combo",["Gelir","Gider","Borç","Alacak"]),("kategori","Kategori","entry",None),("cari_id","Cari ID (boş bırakılabilir)","entry",None),("aciklama","Açıklama","entry",None),("tutar","Tutar (TL)","entry",None),("odeme_yontemi","Ödeme yöntemi","entry",None)],
-          "cek":[("yon","Yön","combo",["Alınan","Verilen"]),("banka","Banka adı","entry",None),("banka_kodu","Banka kodu","entry",None),("cari_id","Cari ID (boş bırakılabilir)","entry",None),("cek_no","Çek No","entry",None),("kesideci_lehtar","Keşideci / Lehtar","entry",None),("vade","Vade (GG.AA.YYYY)","entry",None),("tutar","Tutar (TL)","entry",None),("durum","Durum","combo",["Bekliyor","Tahsil Edildi","Ödendi","İade","Karşılıksız"]),("notlar","Notlar","entry",None)],
+          "cek":[("yon","Yön","combo",["Alınan","Verilen"]),("banka","Banka adı","entry",None),("banka_kodu","Banka kodu","entry",None),("cari_id","Cari ID (boş bırakılabilir)","entry",None),("cek_no","Çek No","entry",None),("kesideci_lehtar","Keşideci / Lehtar","entry",None),("vade","Vade (GG.AA.YYYY)","entry",None),("tutar","Tutar (TL)","entry",None),("durum","Durum","combo",list(CHEQUE_STATES)),("notlar","Notlar","entry",None)],
           "stok":[("kod","Stok Kodu","entry",None),("ad","Malzeme Adı","entry",None),("birim","Birim","combo",["Adet","Kg","Ton","m³","Litre","Metre","Paket"]),("miktar","Miktar","entry",None),("birim_fiyat","Birim Fiyat (TL)","entry",None)],
           "personel":[("ad","Ad Soyad","entry",None),("gorev","Görev","entry",None),("telefon","Telefon","entry",None),("maas","Aylık Maaş (TL)","entry",None),("notlar","Notlar","entry",None)],
           "beton_satis":[("tarih","Tarih (GG.AA.YYYY)","entry",None),("cari_id","Cari ID (boş bırakılabilir)","entry",None),("santiye_id","Gideceği şantiye (boş bırakılabilir, elle yazılabilir)","combo_edit",[]),("beton_cinsi","Beton Cinsi","combo",["C16","C20","C25","C30","C35","C40","Şap"]),("miktar_m3","Miktar (m³; ör. 30,5)","entry",None),("birim_fiyat","Birim Fiyat (TL/m³)","entry",None),("pompa_ucreti","Pompa Ücreti (TL)","entry",None),("odeme_durumu","Ödeme Durumu","combo",["Vadeli / Tahsil Edilmedi","Tahsil Edildi"]),("aciklama","Açıklama","entry",None)],
@@ -3160,7 +3192,7 @@ class HoytasApp(tk.Tk):
         banks=["010 - T.C. Ziraat Bankası","012 - Türkiye Halk Bankası","015 - Türkiye Vakıflar Bankası","032 - Türk Ekonomi Bankası","046 - Akbank","062 - Türkiye Garanti Bankası","064 - Türkiye İş Bankası","067 - Yapı ve Kredi Bankası","111 - QNB Bank","134 - DenizBank","203 - Albaraka Türk","206 - Türkiye Finans","208 - Kuveyt Türk","210 - Vakıf Katılım","211 - Türkiye Emlak Katılım","214 - Şekerbank","223 - Alternatif Bank","999 - Diğer / listede yok"]
         d=self._prompt_for_cari(cari_context, "Yeni Çek",[("yon","Yön","combo",["Alınan","Verilen"]),("banka","Banka adı ve kodu","combo",banks), ("cari","İlgili cari hesap","combo",names),
             ("cek_no","Çek No","entry",None),("taraf","Keşideci / Lehtar","entry",None),("vade","Vade (GG.AA.YYYY)","entry",None),("tutar","Tutar (TL)","entry",None),
-            ("durum","Durum","combo",["Bekliyor","Tahsil Edildi","Ödendi","İade","Karşılıksız"]),("notlar","Notlar","entry",None)])
+            ("durum","Durum","combo",list(CHEQUE_STATES)),("notlar","Notlar","entry",None)])
         if not d:return
         try:
             datetime.strptime(d["vade"],"%Y-%m-%d"); tutar=parse_amount(d["tutar"]);
@@ -3420,7 +3452,7 @@ class HoytasApp(tk.Tk):
             cari = c.execute("SELECT COUNT(*) FROM cari").fetchone()[0]
             gelir = c.execute("SELECT COALESCE(SUM(tutar),0) FROM hareket WHERE tur='Gelir'").fetchone()[0]
             gider = c.execute("SELECT COALESCE(SUM(tutar),0) FROM hareket WHERE tur='Gider'").fetchone()[0]
-            cek = c.execute("SELECT COALESCE(SUM(tutar),0) FROM cek WHERE durum='Bekliyor'").fetchone()[0]
+            cek = c.execute("SELECT COALESCE(SUM(tutar),0) FROM cek WHERE durum IN ('Bekliyor','Portföyde','Tahsilde')").fetchone()[0]
             stok = c.execute("SELECT COUNT(*) FROM stok").fetchone()[0]
             debt_rows = c.execute("SELECT cari_id,bakiye,toplam_alacak FROM cari_bakiye WHERE bakiye>0.005").fetchall()
             acik_borc = sum(safe_float(r[1]) for r in debt_rows)
@@ -3439,7 +3471,7 @@ class HoytasApp(tk.Tk):
         with connect() as c:
 
             self.fill_tree(self.hareket_tree, c.execute("""SELECT h.id,h.tarih,h.tur,h.kategori,COALESCE(c.unvan,''),h.aciklama,printf('%.2f',h.tutar),h.odeme_yontemi FROM hareket h LEFT JOIN cari c ON c.id=h.cari_id ORDER BY h.tarih ASC,h.id ASC""").fetchall())
-            self.fill_tree(self.cek_tree, c.execute("SELECT id,yon,COALESCE(banka,'') || CASE WHEN banka_kodu IS NULL OR banka_kodu='' THEN '' ELSE ' (' || banka_kodu || ')' END,cek_no,COALESCE((SELECT unvan FROM cari WHERE cari.id=cek.cari_id),kesideci_lehtar),vade,printf('%.2f',tutar),durum FROM cek ORDER BY vade ASC,id ASC").fetchall())
+            self._refresh_cheque_view(c)
             self.fill_tree(self.stok_tree, c.execute("SELECT id,kod,ad,birim,printf('%.2f',miktar),printf('%.2f',birim_fiyat),printf('%.2f',miktar*birim_fiyat) FROM stok ORDER BY ad").fetchall())
             self.fill_tree(self.personel_tree, c.execute("SELECT id,ad,gorev,telefon,printf('%.2f',maas),notlar FROM personel ORDER BY ad").fetchall())
             beton_rows = c.execute("""SELECT b.id,b.tarih,COALESCE(c.unvan,''),COALESCE(b.beton_cinsi,''),b.miktar_m3,
@@ -3770,7 +3802,7 @@ class HoytasApp(tk.Tk):
     def check_due_cheques(self):
         today=date.today(); soon=(today+timedelta(days=7)).isoformat(); today_s=today.isoformat()
         with connect() as c:
-            rows=c.execute("SELECT yon,COALESCE(cek_no,''),COALESCE(kesideci_lehtar,''),vade,tutar FROM cek WHERE durum='Bekliyor' AND vade<=? ORDER BY vade ASC,id ASC",(soon,)).fetchall()
+            rows=c.execute("SELECT yon,COALESCE(cek_no,''),COALESCE(kesideci_lehtar,''),vade,tutar FROM cek WHERE durum IN ('Bekliyor','Portföyde','Tahsilde') AND vade<=? ORDER BY vade ASC,id ASC",(soon,)).fetchall()
         if rows:
             lines=[]
             for yon,no,taraf,vade,tutar in rows[:15]:
