@@ -1,5 +1,5 @@
 Option Explicit
-Dim shell, files, folder, desktop, name, candidate, target, iconPath, file, oldLink, command
+Dim shell, files, folder, desktop, name, target, iconPath, file, selected, canonical
 Set shell = CreateObject("WScript.Shell")
 Set files = CreateObject("Scripting.FileSystemObject")
 folder = files.GetParentFolderName(WScript.ScriptFullName)
@@ -7,26 +7,52 @@ desktop = shell.SpecialFolders("Desktop")
 target = WScript.Arguments(0)
 iconPath = files.BuildPath(folder, "HOYTAS.ico")
 name = "HOYTA" & ChrW(350)
-If Not files.FileExists(target) Or Not files.FileExists(iconPath) Then WScript.Quit 1
+canonical = files.BuildPath(desktop, name & ".lnk")
 
+If Not files.FileExists(target) Or Not files.FileExists(iconPath) Then WScript.Quit 1
+If Not files.FileExists(files.BuildPath(folder, "HOYTAS.pyw")) Then WScript.Quit 1
+
+selected = ""
 For Each file In files.GetFolder(desktop).Files
     If LCase(files.GetExtensionName(file.Name)) = "lnk" Then
-        If InStr(1, file.Name, name, vbTextCompare) > 0 Or InStr(1, file.Name, "HOYTAS", vbTextCompare) > 0 Then
-            Set oldLink = shell.CreateShortcut(file.Path)
-            command = LCase(oldLink.TargetPath & " " & oldLink.Arguments)
-            If InStr(command, "windows_canli_baslat.cmd") > 0 Or InStr(command, "hoytas_sabit_baslatici.vbs") > 0 _
-               Or InStr(command, "hoytas.py") > 0 Or InStr(command, "baslat.vbs") > 0 Or InStr(command, "baslat.bat") > 0 Then
-                SaveLink file.Path
+        If IsHoytasLink(file.Path) Then
+            If selected = "" Then selected = file.Path
+            If StrComp(file.Path, canonical, vbTextCompare) = 0 Then
+                selected = file.Path
+                Exit For
             End If
         End If
     End If
 Next
 
-For Each candidate In Array(name & ".lnk", "HOYTAS.lnk", name & " v92.lnk", name & " Canl" & ChrW(305) & ".lnk")
-    If candidate = name & ".lnk" Or files.FileExists(files.BuildPath(desktop, candidate)) Then
-        SaveLink files.BuildPath(desktop, candidate)
+If selected = "" Then
+    If WScript.Arguments.Count > 1 Then
+        If WScript.Arguments(1) = "existing-only" Then WScript.Quit 0
     End If
-Next
+    If files.FileExists(canonical) Then WScript.Quit 3
+    selected = canonical
+End If
+SaveLink selected
+
+Function IsHoytasLink(path)
+    Dim link, label, command
+    Set link = shell.CreateShortcut(path)
+    label = files.GetBaseName(path)
+    command = LCase(link.TargetPath & " " & link.Arguments)
+    IsHoytasLink = False
+
+    If link.Description = "HOYTAS Finans ve Isletme Yonetimi" Then
+        IsHoytasLink = True
+        Exit Function
+    End If
+    If InStr(1, label, name, vbTextCompare) = 0 And InStr(1, label, "HOYTAS", vbTextCompare) = 0 Then Exit Function
+
+    IsHoytasLink = InStr(command, "hoytas.py") > 0 Or _
+        InStr(command, "windows_canli_baslat.cmd") > 0 Or _
+        InStr(command, "hoytas_sabit_baslatici.vbs") > 0 Or _
+        InStr(command, "hoytas_ac.cmd") > 0 Or _
+        InStr(command, "baslat.vbs") > 0 Or InStr(command, "baslat.bat") > 0
+End Function
 
 Sub SaveLink(ByVal path)
     Dim link, verified, args
