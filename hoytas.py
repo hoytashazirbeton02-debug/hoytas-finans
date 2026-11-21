@@ -25,8 +25,8 @@ from xml.sax.saxutils import escape
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
-TARGET_SCHEMA_VERSION = 51
-APP_VERSION = 100
+TARGET_SCHEMA_VERSION = 52
+APP_VERSION = 101
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 ISOLATED_PROFILE_DIR = os.environ.get("HOYTAS_PROFILE_DIR", "").strip()
 USER_DATA_DIR = ISOLATED_PROFILE_DIR or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
@@ -176,7 +176,7 @@ CREATE TABLE IF NOT EXISTS gelen_fatura_odeme (id INTEGER PRIMARY KEY AUTOINCREM
 CREATE TABLE IF NOT EXISTS nakit_kasa (id INTEGER PRIMARY KEY AUTOINCREMENT, tarih TEXT NOT NULL, yon TEXT NOT NULL, kaynak TEXT NOT NULL, aciklama TEXT, tutar REAL NOT NULL CHECK(tutar > 0), kullanici TEXT);
 CREATE TABLE IF NOT EXISTS stok_hareket (id INTEGER PRIMARY KEY AUTOINCREMENT, tarih TEXT NOT NULL, stok_id INTEGER NOT NULL, yon TEXT NOT NULL, miktar REAL NOT NULL CHECK(miktar>0), aciklama TEXT, FOREIGN KEY(stok_id) REFERENCES stok(id));
 CREATE TABLE IF NOT EXISTS maas_odeme (id INTEGER PRIMARY KEY AUTOINCREMENT, tarih TEXT NOT NULL, personel_id INTEGER NOT NULL, donem TEXT NOT NULL, tutar REAL NOT NULL CHECK(tutar>0), yontem TEXT, aciklama TEXT, FOREIGN KEY(personel_id) REFERENCES personel(id));
-CREATE TABLE IF NOT EXISTS banka_hareket (id INTEGER PRIMARY KEY AUTOINCREMENT, tarih TEXT NOT NULL, banka TEXT NOT NULL, hesap TEXT, yon TEXT NOT NULL, aciklama TEXT, tutar REAL NOT NULL CHECK(tutar>0));
+CREATE TABLE IF NOT EXISTS banka_hareket (id INTEGER PRIMARY KEY AUTOINCREMENT, tarih TEXT NOT NULL, banka TEXT NOT NULL, hesap TEXT, yon TEXT NOT NULL, aciklama TEXT, tutar REAL NOT NULL CHECK(tutar>0), karsi_taraf TEXT NOT NULL DEFAULT '');
 """
 
 def _verified_sqlite_backup(source_connection, prefix="hoytas_guvenlik"):
@@ -357,6 +357,7 @@ def connect(path=None):
         "cek": [("banka_kodu", "TEXT"), ("cari_id", "INTEGER")],
         "beton_satis": [("santiye_id", "INTEGER"), ("beton_cinsi", "TEXT NOT NULL DEFAULT ''"), ("pompa_ucreti", "REAL NOT NULL DEFAULT 0")],
         "kullanici": [("kurtarma_hash", "TEXT"), ("kurtarma_salt", "TEXT")],
+        "banka_hareket": [("karsi_taraf", "TEXT NOT NULL DEFAULT ''")],
         "maas_odeme": [("islem_turu", "TEXT NOT NULL DEFAULT 'Maaş'")],
         "fatura": [("fatura_turu", "TEXT NOT NULL DEFAULT 'Normal'"), ("tevkifat_oran", "REAL NOT NULL DEFAULT 0"), ("tevkifat_tutar", "REAL NOT NULL DEFAULT 0"), ("tahsil_edilecek", "REAL NOT NULL DEFAULT 0"), ("odenen", "REAL NOT NULL DEFAULT 0")],
     }
@@ -395,6 +396,9 @@ def connect(path=None):
                 if normalized and normalized != raw_date:
                     con.execute(f"UPDATE {table} SET {col}=? WHERE id=?", (normalized, row_id))
     # İşlem geçmişi ve tetikleyiciler tüm temel kayıt tablolarına kurulur.
+    if current_version < 52:
+        for action in ("insert", "update", "delete"):
+            con.execute(f"DROP TRIGGER IF EXISTS audit_banka_hareket_{action}")
     _install_audit_triggers(con)
     # Şema sürümünü ilan etmeden önce veritabanının fiziksel bütünlüğünü doğrula.
     integrity = con.execute("PRAGMA integrity_check").fetchone()
@@ -2704,7 +2708,7 @@ class HoytasApp(tk.Tk):
           "santiye":[("ad","Şantiye adı","entry",None),("adres","Adres","entry",None),("yetkili","Yetkili","entry",None),("telefon","Telefon","entry",None),("notlar","Notlar","entry",None)],
           "stok_hareket":[("tarih","Tarih","entry",None),("stok_id","Stok ID","entry",None),("yon","Yön","combo",["Giriş","Çıkış"]),("miktar","Miktar","entry",None),("aciklama","Açıklama","entry",None)],
           "maas_odeme":[("tarih","Tarih","entry",None),("personel_id","Personel ID","entry",None),("islem_turu","İşlem Türü","combo",["Maaş","Nakit Avans","Mesai","Kesinti"]),("donem","Dönem (YYYY-AA)","entry",None),("tutar","Tutar","entry",None),("yontem","Ödeme yöntemi","entry",None),("aciklama","Açıklama","entry",None)],
-          "banka_hareket":[("tarih","Tarih","entry",None),("banka","Banka","entry",None),("hesap","Hesap / IBAN sonu","entry",None),("yon","İşlem","combo",["Para Girişi","Para Çıkışı"]),("aciklama","Açıklama","entry",None),("tutar","Tutar","entry",None)]}
+          "banka_hareket":[("tarih","Tarih","entry",None),("banka","Banka","entry",None),("hesap","Hesap / IBAN sonu","entry",None),("yon","İşlem","combo",["Para Girişi","Para Çıkışı"]),("karsi_taraf","Gönderici / Alıcı Ad Soyad veya Ünvan","entry",None),("aciklama","Açıklama","entry",None),("tutar","Tutar","entry",None)]}
         if table not in specs: return messagebox.showinfo("Bilgi","Bu listedeki düzenleme henüz desteklenmiyor.",parent=self)
         cols=[f[0] for f in specs[table]]
         with connect() as c: row=c.execute("SELECT "+",".join(cols)+f" FROM {table} WHERE id=?",(rid,)).fetchone()
@@ -2808,7 +2812,7 @@ class HoytasApp(tk.Tk):
         bar=ttk.Frame(self.banka_tab); bar.pack(fill="x")
         ttk.Label(bar,text="Banka Giriş / Çıkış İşlemleri",font=("Segoe UI",15,"bold")).pack(side="left")
         ttk.Button(bar,text="Yeni Banka İşlemi",command=self.add_banka_hareket).pack(side="right")
-        self.banka_tree=self._tree(self.banka_tab,("id","tarih","banka","hesap","yon","aciklama","tutar"),("ID","Tarih","Banka","Hesap","İşlem","Açıklama","Tutar TL"),(45,110,180,140,110,300,130))
+        self.banka_tree=self._tree(self.banka_tab,("id","tarih","banka","hesap","yon","karsi_taraf","aciklama","tutar"),("ID","Tarih","Banka","Hesap","İşlem","Gönderici / Alıcı","Açıklama","Tutar TL"),(45,100,130,100,105,200,175,110))
         self.banka_ozet=ttk.Label(self.banka_tab,text="Banka net hareketi: 0,00 TL",font=("Segoe UI",11,"bold")); self.banka_ozet.pack(anchor="w",pady=5)
         row=ttk.Frame(self.banka_tab); row.pack(fill="x",pady=6)
         ttk.Button(row,text="Düzenle",command=lambda:self.edit_selected(self.banka_tree,"banka_hareket")).pack(side="left")
@@ -2871,12 +2875,12 @@ class HoytasApp(tk.Tk):
             messagebox.showerror("Personel işlemi kaydedilemedi", str(error), parent=self)
 
     def add_banka_hareket(self):
-        d=self.prompt("Banka İşlemi",[("tarih","Tarih (GG.AA.YYYY)","entry",None),("banka","Banka adı","entry",None),("hesap","Hesap / IBAN sonu","entry",None),("yon","İşlem","combo",["Para Girişi","Para Çıkışı"]),("aciklama","Açıklama","entry",None),("tutar","Tutar (TL)","entry",None)])
+        d=self.prompt("Banka İşlemi",[("tarih","Tarih (GG.AA.YYYY)","entry",None),("banka","Banka adı","entry",None),("hesap","Hesap / IBAN sonu","entry",None),("yon","İşlem","combo",["Para Girişi","Para Çıkışı"]),("karsi_taraf","Gönderici / Alıcı Ad Soyad veya Ünvan","entry",None),("aciklama","Açıklama","entry",None),("tutar","Tutar (TL)","entry",None)])
         if not d:return
         try:
             dt=d["tarih"] or date.today().isoformat(); datetime.strptime(dt,"%Y-%m-%d"); amount=parse_amount(d["tutar"])
             if not d["banka"].strip() or amount<=0:raise ValueError("Banka adı gerekli, tutar sıfırdan büyük olmalı.")
-            with connect() as c:c.insert_shared("INSERT INTO banka_hareket(tarih,banka,hesap,yon,aciklama,tutar) VALUES(?,?,?,?,?,?)",(dt,d["banka"],d["hesap"],d["yon"],d["aciklama"],amount))
+            with connect() as c:c.insert_shared("INSERT INTO banka_hareket(tarih,banka,hesap,yon,aciklama,tutar,karsi_taraf) VALUES(?,?,?,?,?,?,?)",(dt,d["banka"],d["hesap"],d["yon"],d["aciklama"],amount,d["karsi_taraf"]))
             self.refresh_all()
         except Exception as e:messagebox.showerror("Banka işlemi kaydedilemedi",str(e),parent=self)
 
@@ -3468,7 +3472,7 @@ class HoytasApp(tk.Tk):
             if hasattr(self,"maas_tree"):
                 self.fill_tree(self.maas_tree,c.execute("SELECT m.id,m.tarih,COALESCE(p.ad,''),COALESCE(m.islem_turu,'Maaş'),m.donem,printf('%.2f',m.tutar),COALESCE(m.yontem,''),COALESCE(m.aciklama,'') FROM maas_odeme m LEFT JOIN personel p ON p.id=m.personel_id ORDER BY m.tarih ASC,m.id ASC").fetchall())
             if hasattr(self,"banka_tree"):
-                self.fill_tree(self.banka_tree,c.execute("SELECT id,tarih,banka,COALESCE(hesap,''),yon,COALESCE(aciklama,''),printf('%.2f',tutar) FROM banka_hareket ORDER BY tarih ASC,id ASC").fetchall())
+                self.fill_tree(self.banka_tree,c.execute("SELECT id,tarih,banka,COALESCE(hesap,''),yon,karsi_taraf,COALESCE(aciklama,''),printf('%.2f',tutar) FROM banka_hareket ORDER BY tarih ASC,id ASC").fetchall())
                 banka_net=c.execute("SELECT COALESCE(SUM(CASE WHEN yon='Para Girişi' THEN tutar ELSE -tutar END),0) FROM banka_hareket").fetchone()[0]
                 self.banka_ozet.config(text=f"Banka net hareketi: {safe_float(banka_net):,.2f} TL")
             kasa_bakiye = c.execute("SELECT COALESCE(SUM(CASE WHEN yon='Para Girişi' THEN tutar ELSE -tutar END),0) FROM nakit_kasa").fetchone()[0]
