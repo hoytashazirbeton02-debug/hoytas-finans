@@ -52,6 +52,7 @@ def install_baseline(target, legacy, client, session, connect, relay):
             db.execute("PRAGMA defer_foreign_keys=ON")
             # Disable local auditing while importing the already committed shared state.
             db.execute("DROP TRIGGER IF EXISTS temp.hybrid_capture")
+            db.execute("DROP TRIGGER IF EXISTS temp.hoytas_operation_capture")
             triggers = db.execute("SELECT name,sql FROM sqlite_master WHERE type='trigger'").fetchall()
             for name, _ in triggers:
                 quoted = '"' + name.replace('"', '""') + '"'
@@ -115,6 +116,7 @@ def restore_enrolled_history(target, client, session, connect):
         if not db.execute("INSERT OR IGNORE INTO hybrid_history_restored VALUES (1)").rowcount:
             return
         db.execute("DROP TRIGGER IF EXISTS temp.hybrid_capture")
+        db.execute("DROP TRIGGER IF EXISTS temp.hoytas_operation_capture")
         triggers = db.execute("SELECT name,sql FROM sqlite_master WHERE type='trigger'").fetchall()
         for name, _ in triggers:
             db.execute('DROP TRIGGER "' + name.replace('"', '""') + '"')
