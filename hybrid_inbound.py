@@ -44,8 +44,8 @@ def _apply_event(db, table, record_id, action, old_values, new_values):
     if table not in TRACKED_TABLES or type(record_id) is not int or record_id <= 0:
         raise ValueError("Invalid table or record ID")
     columns = [row[1] for row in db.execute(f"PRAGMA table_info({table})")]
-    before = _snapshot(old_values, columns, record_id)
-    after = _snapshot(new_values, columns, record_id)
+    before = _snapshot(old_values, columns, record_id, table)
+    after = _snapshot(new_values, columns, record_id, table)
     states = {"INSERT": (False, True), "UPDATE": (True, True), "DELETE": (True, False)}
     if states.get(action) != (before is not None, after is not None):
         raise ValueError("Invalid operation snapshots")
@@ -69,10 +69,13 @@ def _apply_event(db, table, record_id, action, old_values, new_values):
         db.execute(f"DELETE FROM {table} WHERE id=?", (record_id,))
 
 
-def _snapshot(value, columns, record_id):
+def _snapshot(value, columns, record_id, table):
     if value is None:
         return None
     snapshot = json.loads(value)
+    if (table == "banka_hareket" and isinstance(snapshot, dict) and "karsi_taraf" in columns
+            and snapshot.keys() == set(columns) - {"karsi_taraf"}):
+        snapshot["karsi_taraf"] = ""
     if not isinstance(snapshot, dict) or snapshot.keys() != set(columns) or snapshot["id"] != record_id:
         raise ValueError("Invalid row snapshot")
     return snapshot
