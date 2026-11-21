@@ -1,11 +1,11 @@
 """HTTP endpoints for central membership. Relay credentials are separate."""
 from collections import OrderedDict
 from hmac import compare_digest
-import json
 from threading import Lock
 from time import monotonic
 
 from hybrid_membership import user_key
+from hybrid_request_error import RequestError
 from hybrid_enrollment import MAX_BASELINE_BYTES
 
 
@@ -50,10 +50,7 @@ class MembershipHTTP:
         try:
             data = {}
             if writing:
-                size = int(handler.headers.get("Content-Length", "0"))
-                if not 0 < size <= 4096:
-                    return 400, {"code": "invalid_request"}
-                data = json.loads(handler.rfile.read(size))
+                data = handler.read_json(4096)
                 if not isinstance(data, dict) or not isinstance(data.get("username"), str):
                     return 400, {"code": "invalid_request"}
             if path in ("/membership/request", "/membership/login", "/membership/setup") and not isinstance(data.get("password"), str):
@@ -77,6 +74,8 @@ class MembershipHTTP:
             if self.memberships.approve(token, data["username"]):
                 return 200, {"status": "active"}
             return 409, {"code": "not_pending"}
+        except RequestError as error:
+            return error.status, {"code": "invalid_request"}
         except PermissionError:
             return 403, {"code": "access_denied"}
         except (ValueError, TypeError, KeyError):
@@ -90,10 +89,7 @@ class MembershipHTTP:
             publishing = path == "/membership/baseline"
             if publishing and role != "admin":
                 raise PermissionError
-            size = int(handler.headers.get("Content-Length", "0"))
-            if not 0 < size <= (MAX_BASELINE_BYTES if publishing else 4096):
-                raise ValueError
-            data = json.loads(handler.rfile.read(size))
+            data = handler.read_json(MAX_BASELINE_BYTES if publishing else 4096)
             if publishing:
                 if self.enrollment.publish(token, data):
                     return 200, {"status": "ready"}
@@ -102,6 +98,8 @@ class MembershipHTTP:
             if result is None:
                 return 409, {"code": "baseline_unavailable"}
             return 200, result
+        except RequestError as error:
+            return error.status, {"code": "invalid_request"}
         except PermissionError:
             return 403, {"code": "access_denied"}
         except (ValueError, TypeError, KeyError):
