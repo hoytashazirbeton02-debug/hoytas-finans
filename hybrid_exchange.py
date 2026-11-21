@@ -23,14 +23,16 @@ def exchange_once(connect, relay, limit=20):
         cursor = db.execute("SELECT sequence FROM hybrid_exchange_cursor").fetchone()[0]
 
     received = 0
-    for sequence, batch_id, events in relay.pull(cursor, limit):
+    pull = getattr(relay, "pull_with_actors", relay.pull)
+    for sequence, batch_id, events, *metadata in pull(cursor, limit):
         if type(sequence) is not int or sequence <= cursor or received >= limit:
             raise ValueError("Invalid relay order or page size")
         with connect() as db:
             own_batch = db.execute("SELECT 1 FROM hybrid_capture_batch WHERE batch_id=? LIMIT 1",
                                    (batch_id,)).fetchone()
         if own_batch is None:
-            apply_batch(connect, batch_id, events)
+            actor = metadata[0] if metadata else None
+            apply_batch(connect, batch_id, events, actor=actor or "Uzak kullanıcı (bilinmiyor)")
         with connect() as db:
             if own_batch is not None:
                 db.execute("INSERT OR IGNORE INTO hybrid_sent_batch VALUES (?)", (batch_id,))
@@ -47,7 +49,17 @@ def exchange_once(connect, relay, limit=20):
         outgoing = pending_batches(db, limit, unsent_only=True)
     sent = 0
     for batch_id, events in outgoing:
-        if relay.push(batch_id, events) != batch_id:
+        send = getattr(relay, "push_with_actor", None)
+        if send is None:
+            acknowledgement = relay.push(batch_id, events)
+        else:
+            with connect() as db:
+                actors = db.execute("""SELECT DISTINCT a.actor FROM audit_log a
+                    JOIN hybrid_capture_batch b ON b.audit_id=a.id WHERE b.batch_id=?""",
+                    (batch_id,)).fetchall()
+            actor = actors[0][0] if len(actors) == 1 else None
+            acknowledgement = send(batch_id, events, actor)
+        if acknowledgement != batch_id:
             raise ValueError("Invalid relay acknowledgement")
         with connect() as db:
             db.execute("INSERT OR IGNORE INTO hybrid_sent_batch VALUES (?)", (batch_id,))

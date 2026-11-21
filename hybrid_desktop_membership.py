@@ -35,7 +35,7 @@ def sign_in(parent, client, *, setup_admin=False, prepare=None):
     window.resizable(False, False)
     frame = ttk.Frame(window, padding=24)
     frame.pack()
-    ttk.Label(frame, text="HOYTAŞ HAZIR BETON", font=("Segoe UI", 20, "bold")).grid(
+    ttk.Label(frame, text="HOYTAŞ Hazır Beton", font=("Segoe UI", 20, "bold")).grid(
         row=0, column=0, columnspan=2, pady=(0, 15))
     ttk.Label(frame, text="Kullanıcı adı").grid(row=1, column=0, sticky="w", pady=5)
     username = ttk.Entry(frame, width=28)

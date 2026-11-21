@@ -12,7 +12,7 @@ class ReplicaConflict(RuntimeError):
     """The recipient has a different state for a row in the batch."""
 
 
-def apply_batch(connect, batch_id, events):
+def apply_batch(connect, batch_id, events, *, actor=None):
     """Accept a full batch or roll it back, preserving local edits on conflict."""
     if not isinstance(batch_id, str) or not batch_id or not events:
         raise ValueError("Batch ID and events required")
@@ -32,6 +32,8 @@ def apply_batch(connect, batch_id, events):
 
         # Capture is connection-local. Keep the application audit history without re-queuing remote changes.
         db.execute("DROP TRIGGER IF EXISTS temp.hybrid_capture")
+        if actor is not None:
+            db.create_function("hoytas_actor", 0, lambda: actor)
         for _, table, record_id, action, old_values, new_values in events:
             _apply_event(db, table, record_id, action, old_values, new_values)
         db.execute("INSERT INTO hybrid_received_batch VALUES (?,?)", (batch_id, digest))

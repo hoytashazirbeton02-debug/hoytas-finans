@@ -1,0 +1,3 @@
+HOYTAŞ v97
+- Merkezi girişte HOYTAŞ Hazır Beton adı gösterilir.
+- Uzak işlemlerin doğrulanmış kullanıcı adı İşlem Geçmişi ekranına aktarılır.

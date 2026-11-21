@@ -28,11 +28,20 @@ class HTTPRelay:
         result = self._request("/batches", {"batch_id": batch_id, "events": events})
         return result["batch_id"]
 
-    def pull(self, after, limit):
+    def push_with_actor(self, batch_id, events, actor):
+        result = self._request("/batches", {"batch_id": batch_id, "events": events, "actor": actor})
+        return result["batch_id"]
+
+    def pull_with_actors(self, after, limit):
+        return self.pull(after, limit, include_actor=True)
+
+    def pull(self, after, limit, *, include_actor=False):
         batches = []
         while len(batches) < limit:
             page_size = min(limit - len(batches), 5)
             query = urlencode({"after": after, "limit": page_size})
+            if include_actor:
+                query += "&actors=1"
             page = self._request(f"/batches?{query}")["batches"]
             if len(page) > page_size or (page and page[-1][0] <= after):
                 raise ValueError("Invalid relay page")

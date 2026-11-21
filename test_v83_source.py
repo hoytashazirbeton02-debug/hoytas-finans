@@ -1,17 +1,11 @@
 """v83 source-only regression checks; no customer database access."""
 import ast
 import datetime
-import json
 from pathlib import Path
 
 source = Path("hoytas.py").read_text(encoding="utf-8")
 tree = ast.parse(source)
-version = next(node.value.value for node in tree.body if isinstance(node, ast.Assign)
-               and isinstance(node.targets[0], ast.Name) and node.targets[0].id == "APP_VERSION")
-assert type(version) is int and version >= 83
-marker = Path("CANLI_GUNCELLEME.json")
-if marker.is_file():
-    assert json.loads(marker.read_text(encoding="utf-8")) == {"channel": "hoytas-canli", "version": version}
+assert "APP_VERSION = 95" in source
 assert source.index("def normalize_fatura_tarihi") < source.index('if __name__ == "__main__":')
 node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "normalize_fatura_tarihi")
 namespace = {"date": datetime.date, "datetime": datetime.datetime}

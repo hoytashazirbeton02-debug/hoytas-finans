@@ -13,6 +13,7 @@ class PostgresRelay:
                 batch_id text NOT NULL UNIQUE,
                 events jsonb NOT NULL
             )""")
+            db.execute("ALTER TABLE hybrid_relay_batch ADD COLUMN IF NOT EXISTS actor text")
             db.execute("""CREATE TABLE IF NOT EXISTS hybrid_relay_record (
                 table_name text NOT NULL,
                 record_id bigint NOT NULL,
@@ -20,7 +21,7 @@ class PostgresRelay:
                 PRIMARY KEY (table_name, record_id)
             )""")
 
-    def push(self, batch_id, events):
+    def push(self, batch_id, events, *, actor=None):
         payload = json.dumps(events, ensure_ascii=False, allow_nan=False)
         with self.connect() as db:
             # Serialize append and commit order so a reader cannot skip a late commit.
@@ -49,14 +50,15 @@ class PostgresRelay:
                     DO UPDATE SET snapshot=EXCLUDED.snapshot
                 """, (table, record_id, after))
             db.execute("""
-                INSERT INTO hybrid_relay_batch (batch_id, events)
-                VALUES (%s, %s::jsonb)
-            """, (batch_id, payload))
+                INSERT INTO hybrid_relay_batch (batch_id, events, actor)
+                VALUES (%s, %s::jsonb, %s)
+            """, (batch_id, payload, actor))
         return batch_id
 
-    def pull(self, after, limit):
+    def pull(self, after, limit, *, include_actor=False):
+        projection = "sequence, batch_id, events, actor" if include_actor else "sequence, batch_id, events"
         with self.connect() as db:
-            return db.execute("""
-                SELECT sequence, batch_id, events FROM hybrid_relay_batch
+            return db.execute(f"""
+                SELECT {projection} FROM hybrid_relay_batch
                 WHERE sequence > %s ORDER BY sequence LIMIT %s
             """, (after, limit)).fetchall()

@@ -132,11 +132,13 @@ class EnrollmentTest(unittest.TestCase):
                     self.assertEqual(db.execute("SELECT unvan FROM cari").fetchone(), ("Son Cari",))
                     self.assertEqual(db.execute("SELECT COUNT(*) FROM kullanici").fetchone(), (0,))
                     self.assertEqual(db.execute("SELECT COUNT(*) FROM hybrid_capture_batch").fetchone(), (0,))
-                    db.execute("UPDATE cari SET unvan='Güncel Cari' WHERE id=?", (customer,))
+                    with patch.object(hoytas, "APP_CURRENT_USER", user):
+                        db.execute("UPDATE cari SET unvan='Güncel Cari' WHERE id=?", (customer,))
                 self.assertEqual(exchange_once(target_connect, employee_relay, limit=5), (0, 1))
                 self.assertEqual(exchange_once(host_connect, host_relay, limit=5), (2, 0))
                 with host_connect() as db:
                     self.assertEqual(db.execute("SELECT unvan FROM cari").fetchone(), ("Güncel Cari",))
+                    self.assertEqual(db.execute("SELECT actor FROM audit_log WHERE table_name='cari' ORDER BY id DESC LIMIT 1").fetchone(), (user,))
                     db.execute("UPDATE beton_satis SET pompa_ucreti=650,toplam=3700 WHERE id=?", (sale,))
                     hoytas.sync_beton_sale_cari_movement(db, sale)
                 exchange_once(host_connect, host_relay, limit=5)
