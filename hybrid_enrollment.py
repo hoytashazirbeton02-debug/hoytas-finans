@@ -74,6 +74,9 @@ def install_baseline(target, legacy, client, session, connect, relay):
             db.execute("INSERT INTO hybrid_exchange_cursor VALUES (1,?)", (baseline["cursor"],))
             for _, sql in triggers:
                 db.execute(sql)
+            if history:
+                db.execute("CREATE TABLE hybrid_history_restored (done INTEGER PRIMARY KEY)")
+                db.execute("INSERT INTO hybrid_history_restored VALUES (1)")
             if db.execute("PRAGMA integrity_check").fetchall() != [("ok",)] or db.execute("PRAGMA foreign_key_check").fetchone():
                 raise RuntimeError("Başlangıç kayıtları bütünlük kontrolünden geçmedi.")
         # Replay changes accepted after the snapshot before the employee can edit records.
@@ -84,3 +87,49 @@ def install_baseline(target, legacy, client, session, connect, relay):
         else:
             raise RuntimeError("Çok sayıda yeni kayıt var. Yönetici başlangıç kayıtlarını yeniden paylaşmalı.")
         os.link(candidate, target)
+
+
+def restore_enrolled_history(target, client, session, connect):
+    """Backfill history for workstations enrolled with an older desktop release."""
+    device_file = target.with_name("ortak-cihaz.txt")
+    if not device_file.is_file():
+        return
+    with connect(target) as db:
+        if db.execute("SELECT 1 FROM sqlite_master WHERE name='hybrid_history_restored'").fetchone():
+            return
+        slot = replica_slot(db)
+    baseline = client.enroll(session, device_file.read_text(encoding="ascii"))
+    if baseline["slot"] != slot:
+        raise RuntimeError("Cihaz kimliği başlangıç kayıtlarıyla uyuşmuyor.")
+    history = baseline.get("history")
+    if history is None:
+        return
+    if not isinstance(history, dict) or set(history) != set(BASELINE_HISTORY):
+        raise RuntimeError("Başlangıç geçmişi biçimi geçersiz.")
+    with connect(target) as db:
+        db.execute("BEGIN IMMEDIATE")
+        db.execute("PRAGMA defer_foreign_keys=ON")
+        db.execute("CREATE TABLE IF NOT EXISTS hybrid_history_restored (done INTEGER PRIMARY KEY)")
+        if not db.execute("INSERT OR IGNORE INTO hybrid_history_restored VALUES (1)").rowcount:
+            return
+        db.execute("DROP TRIGGER IF EXISTS temp.hybrid_capture")
+        triggers = db.execute("SELECT name,sql FROM sqlite_master WHERE type='trigger'").fetchall()
+        for name, _ in triggers:
+            db.execute('DROP TRIGGER "' + name.replace('"', '""') + '"')
+        for group in (("personel", "maas_odeme"), ("stok", "stok_hareket")):
+            if any(db.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone() for table in group):
+                continue
+            for table in group:
+                columns = [row[1] for row in db.execute(f"PRAGMA table_info({table})")]
+                db.executemany(f"INSERT INTO {table} ({','.join(columns)}) VALUES ({','.join('?' for _ in columns)})",
+                               ([row[column] for column in columns] for row in history[table]))
+        fields = ("changed_at", "actor", "table_name", "record_id", "action", "old_values", "new_values")
+        names = ",".join(fields)
+        existing = set(db.execute(f"SELECT {names} FROM audit_log"))
+        rows = [tuple(row[field] for field in fields) for row in history["audit_log"]]
+        db.executemany(f"INSERT INTO audit_log ({names}) VALUES (?,?,?,?,?,?,?)",
+                       (row for row in rows if row not in existing))
+        for _, sql in triggers:
+            db.execute(sql)
+        if db.execute("PRAGMA foreign_key_check").fetchone():
+            raise RuntimeError("Geçmiş kayıtları ilişki kontrolünden geçmedi.")
