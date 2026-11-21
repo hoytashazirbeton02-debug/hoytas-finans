@@ -3,6 +3,8 @@ from concurrent.futures import ThreadPoolExecutor
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
+from login_memory import LoginFields
+
 
 def run_request(window, controls, work, success):
     for control in controls:
@@ -38,25 +40,25 @@ def sign_in(parent, client, *, setup_admin=False, prepare=None):
     ttk.Label(frame, text="HOYTAŞ Hazır Beton", font=("Segoe UI", 20, "bold")).grid(
         row=0, column=0, columnspan=2, pady=(0, 15))
     ttk.Label(frame, text="Kullanıcı adı").grid(row=1, column=0, sticky="w", pady=5)
-    username = ttk.Entry(frame, width=28)
-    username.grid(row=1, column=1, padx=(10, 0))
     ttk.Label(frame, text="Şifre").grid(row=2, column=0, sticky="w", pady=5)
-    password = ttk.Entry(frame, width=28, show="*")
-    password.grid(row=2, column=1, padx=(10, 0))
+    fields = LoginFields(frame, 1, "merkezi")
+    username, password = fields.username, fields.password
     account = None
 
     def credentials():
         name, secret = username.get().strip(), password.get()
-        password.delete(0, "end")
+        password.configure(show="*")
         return name, secret
 
     def login():
         if login_button.instate(["disabled"]):
             return
         name, secret = credentials()
+        remember = fields.remember.get()
 
         def signed_in(result):
             nonlocal account
+            fields.save(name, secret, remember)
             account = result
             window.destroy()
 
@@ -90,11 +92,11 @@ def sign_in(parent, client, *, setup_admin=False, prepare=None):
     login_button = ttk.Button(frame, text="Giriş Yap", command=login)
     request_button = ttk.Button(frame, text="Yeni Üye Ol", command=request)
     controls = [login_button, request_button]
-    login_button.grid(row=3, column=0, pady=(14, 0))
-    request_button.grid(row=3, column=1, pady=(14, 0))
+    login_button.grid(row=4, column=0, pady=(14, 0))
+    request_button.grid(row=4, column=1, pady=(14, 0))
     if setup_admin:
         setup_button = ttk.Button(frame, text="İlk Yönetici Hesabını Oluştur", command=setup)
-        setup_button.grid(row=4, column=0, columnspan=2, pady=(8, 0))
+        setup_button.grid(row=5, column=0, columnspan=2, pady=(8, 0))
         controls.append(setup_button)
     password.bind("<Return>", lambda _: login())
     username.focus_set()
