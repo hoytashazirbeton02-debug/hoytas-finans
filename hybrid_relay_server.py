@@ -66,11 +66,12 @@ def handler_for(relay, token, membership=None):
                 self.reply(404, {})
                 return
             supplied = self.headers.get("Authorization", "").encode()
+            account = None
             if not hmac.compare_digest(supplied, expected):
                 try:
                     if membership is None or membership.enrollment is None or not supplied.startswith(b"Bearer "):
                         raise PermissionError
-                    membership.memberships.session_role(supplied[7:].decode())
+                    account, _ = membership.memberships.session_account(supplied[7:].decode())
                 except (PermissionError, UnicodeError):
                     self.reply(401, {})
                     return
@@ -82,7 +83,10 @@ def handler_for(relay, token, membership=None):
                     size = int(self.headers.get("Content-Length", "0"))
                     if not 0 < size <= MAX_BATCH_BYTES:
                         raise ValueError("Invalid body size")
-                    args = validate_batch(json.loads(self.rfile.read(size)))
+                    payload = json.loads(self.rfile.read(size))
+                    claimed_actor = payload.pop("actor", None) if isinstance(payload, dict) else None
+                    args = validate_batch(payload)
+                    actor = account if claimed_actor == account else None
                 else:
                     query = parse_qs(uri.query, strict_parsing=True)
                     after, limit = (int(query[name][0]) for name in ("after", "limit"))
@@ -93,7 +97,12 @@ def handler_for(relay, token, membership=None):
                 self.reply(400, {})
                 return
             try:
-                result = {"batch_id": relay.push(*args)} if writing else {"batches": relay.pull(*args)}
+                if writing:
+                    batch_id = relay.push(*args, actor=actor) if actor else relay.push(*args)
+                    result = {"batch_id": batch_id}
+                else:
+                    batches = relay.pull(*args, include_actor=True) if query.get("actors") == ["1"] else relay.pull(*args)
+                    result = {"batches": batches}
             except ValueError:
                 self.reply(409, {})
             except Exception:

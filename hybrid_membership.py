@@ -82,8 +82,11 @@ class Memberships:
         return token
 
     def session_role(self, token):
+        return self.session_account(token)[1]
+
+    def session_account(self, token):
         with self.connect() as db:
-            return self._session_account(db, token)[1]
+            return self._session_account(db, token)
 
     def pending(self, token):
         with self.connect() as db:
