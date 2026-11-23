@@ -1,12 +1,13 @@
 """Central sign-in and approval dialogs for the desktop application."""
 from concurrent.futures import ThreadPoolExecutor
+from threading import Thread
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
 from login_memory import LoginFields
 
 
-def run_request(window, controls, work, success):
+def run_request(window, controls, work, success, *, finished=None):
     for control in controls:
         control.state(["disabled"])
     worker = ThreadPoolExecutor(max_workers=1)
@@ -19,6 +20,8 @@ def run_request(window, controls, work, success):
             return
         for control in controls:
             control.state(["!disabled"])
+        if finished is not None:
+            finished()
         try:
             result = task.result()
         except (OSError, ValueError, RuntimeError, KeyError) as error:
@@ -32,7 +35,8 @@ def run_request(window, controls, work, success):
 def sign_in(parent, client, *, setup_admin=False, prepare=None):
     window = tk.Toplevel(parent)
     window.title("HOYTAŞ Hazır Beton - Merkezi Giriş")
-    window.transient(parent)
+    if parent.winfo_viewable():
+        window.transient(parent)
     window.grab_set()
     window.resizable(False, False)
     frame = ttk.Frame(window, padding=24)
@@ -44,6 +48,10 @@ def sign_in(parent, client, *, setup_admin=False, prepare=None):
     fields = LoginFields(frame, 1, "merkezi")
     username, password = fields.username, fields.password
     account = None
+    status = tk.StringVar(window, "")
+    ttk.Label(frame, textvariable=status, wraplength=320).grid(
+        row=6, column=0, columnspan=2, pady=(10, 0), sticky="w")
+    Thread(target=client.warm_up, name="HOYTAS-LoginWake", daemon=True).start()
 
     def credentials():
         name, secret = username.get().strip(), password.get()
@@ -54,7 +62,11 @@ def sign_in(parent, client, *, setup_admin=False, prepare=None):
         if login_button.instate(["disabled"]):
             return
         name, secret = credentials()
+        if not name or not secret:
+            status.set("Kullanıcı adı ve şifrenizi girin.")
+            return
         remember = fields.remember.get()
+        status.set("Merkezi sunucuya bağlanılıyor…")
 
         def signed_in(result):
             nonlocal account
@@ -62,13 +74,16 @@ def sign_in(parent, client, *, setup_admin=False, prepare=None):
             account = result
             window.destroy()
 
-        def authenticate():
-            result = client.login(name, secret)
-            if prepare is not None:
-                prepare(result)
-            return result
+        def authenticated(result):
+            if prepare is None:
+                signed_in(result)
+                return
+            status.set("Giriş onaylandı. Çalışma kayıtları hazırlanıyor…")
+            run_request(window, controls, lambda: prepare(result), lambda _: signed_in(result),
+                        finished=lambda: status.set(""))
 
-        run_request(window, controls, authenticate, signed_in)
+        run_request(window, controls, lambda: client.login(name, secret), authenticated,
+                    finished=lambda: status.set(""))
 
     def request():
         invitation = simpledialog.askstring("Yeni üyelik", "Yöneticiden aldığınız davet kodu",

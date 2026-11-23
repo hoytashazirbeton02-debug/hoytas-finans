@@ -1,6 +1,7 @@
 """Use the central membership endpoints without exposing relay credentials."""
 import json
-from urllib.error import HTTPError
+import re
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, build_opener
 
@@ -17,6 +18,16 @@ class MembershipClient:
         self.url = url.rstrip("/")
         self.opener = build_opener(NoRedirect())
 
+    def warm_up(self):
+        """Wake the service with an anonymous request while the form is open."""
+        try:
+            with self.opener.open(Request(self.url + "/"), timeout=75):
+                pass
+        except HTTPError as error:
+            error.close()
+        except OSError:
+            pass
+
     def request(self, username, password, invitation):
         return self._call("request", {"username": username, "password": password}, invitation)
 
@@ -24,7 +35,14 @@ class MembershipClient:
         return self._call("setup", {"username": username, "password": password}, code)
 
     def login(self, username, password):
-        return self._call("login", {"username": username, "password": password})
+        account = self._call("login", {"username": username, "password": password})
+        if (not isinstance(account.get("session"), str)
+                or not re.fullmatch(r"[A-Za-z0-9_-]{43}", account["session"])
+                or account.get("role") not in ("admin", "member")
+                or not isinstance(account.get("username"), str)
+                or not account["username"]):
+            raise RuntimeError("Sunucu geçerli bir giriş yanıtı vermedi.")
+        return account
 
     def pending(self, session):
         return self._call("pending", token=session)["pending"]
@@ -47,8 +65,19 @@ class MembershipClient:
             raise ValueError("Başlangıç kayıtları tek aktarım için fazla büyük.")
         command = Request(self.url + "/membership/" + path, data=payload, headers=headers)
         try:
-            with self.opener.open(command, timeout=20) as response:
-                return json.loads(response.read(MAX_BASELINE_BYTES + 1024 if path == "enroll" else 1024 * 1024))
+            limit = MAX_BASELINE_BYTES + 1024 if path == "enroll" else 1024 * 1024
+            # Free hosting may need roughly a minute to start after being idle.
+            with self.opener.open(command, timeout=75 if path == "login" else 20) as response:
+                raw = response.read(limit + 1)
+            if len(raw) > limit:
+                raise RuntimeError("Sunucu yanıtı izin verilen boyutu aştı.")
+            try:
+                result = json.loads(raw)
+            except ValueError:
+                raise RuntimeError("Sunucu hazır olmayabilir. Biraz bekleyip tekrar deneyin.") from None
+            if not isinstance(result, dict):
+                raise RuntimeError("Sunucu geçerli bir üyelik yanıtı vermedi.")
+            return result
         except HTTPError as error:
             with error:
                 code = error.code
@@ -64,3 +93,5 @@ class MembershipClient:
             if code == 409 and path == "enroll":
                 messages[409] = "Yönetici henüz başlangıç kayıtlarını paylaşmadı."
             raise RuntimeError(messages.get(code, "Üyelik servisine şu anda ulaşılamıyor.")) from None
+        except (URLError, TimeoutError, ConnectionError):
+            raise RuntimeError("Merkezi sunucuya bağlanılamadı. İnternet bağlantınızı kontrol edip tekrar deneyin.") from None

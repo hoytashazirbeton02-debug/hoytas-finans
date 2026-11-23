@@ -1,0 +1,4 @@
+HOYTAŞ v105
+- Merkezi giriş ekranı açıldığında sunucuya kimlik bilgisi göndermeden bağlantı başlatılır.
+- Giriş ve kayıt hazırlığı aşamaları ekranda görünür.
+- Üyelik sunucusunun giriş yanıtı ve yanıt boyutu doğrulanır.

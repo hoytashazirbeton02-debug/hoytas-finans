@@ -26,7 +26,7 @@ from xml.sax.saxutils import escape
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
 TARGET_SCHEMA_VERSION = 53
-APP_VERSION = 104
+APP_VERSION = 105
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 ISOLATED_PROFILE_DIR = os.environ.get("HOYTAS_PROFILE_DIR", "").strip()
 USER_DATA_DIR = ISOLATED_PROFILE_DIR or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
@@ -746,6 +746,7 @@ class HoytasApp(tk.Tk):
         if endpoint and ISOLATED_PROFILE_DIR:
             from hybrid_membership_client import MembershipClient
             self.membership_client = MembershipClient(endpoint)
+            self.withdraw()
             self._central_login()
         else:
             self._ensure_admin_and_login()
@@ -793,6 +794,8 @@ class HoytasApp(tk.Tk):
         for _i in range(1, 10):
             self.bind_all(f"<Alt-{_i}>", lambda e, i=_i: self._shortcut_tab(i))
         self.refresh_all()
+        if self.membership_client is not None:
+            self.deiconify()
         # Sunucu tanımlıysa açılışta sessizce yeni sürüm kontrolü yap.
         self.after(1800, self.check_for_updates_silent)
 
