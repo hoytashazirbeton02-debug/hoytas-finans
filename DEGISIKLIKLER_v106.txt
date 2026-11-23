@@ -1,0 +1,3 @@
+HOYTAŞ v106
+- Sekmelerdeki listelere ve Genel Bakış ekranına Yazdır düğmesi eklendi. Liste çıktısı ekrandaki arama ve filtre sonuçlarını kullanır.
+- PDF önizlemesine Yazdır, PDF Kaydet ve Kapat seçenekleri eklendi. Yazdır, Acrobat/Reader yazıcı seçim penceresini açar.

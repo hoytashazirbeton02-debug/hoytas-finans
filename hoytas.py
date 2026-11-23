@@ -2,6 +2,7 @@ import sqlite3
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from datetime import datetime, date, timedelta
+from contextlib import nullcontext
 import csv
 import os
 import sys
@@ -26,7 +27,7 @@ from xml.sax.saxutils import escape
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
 TARGET_SCHEMA_VERSION = 53
-APP_VERSION = 105
+APP_VERSION = 106
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 ISOLATED_PROFILE_DIR = os.environ.get("HOYTAS_PROFILE_DIR", "").strip()
 USER_DATA_DIR = ISOLATED_PROFILE_DIR or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
@@ -71,7 +72,7 @@ def normalize_dropbox_download_url(url):
     return url
 
 
-def open_pdf_in_viewer(path):
+def open_pdf_in_viewer(path, *, print_dialog=False):
     """PDF'yi Edge'e veya tarayıcıya yönlendirmeden Adobe Acrobat/Reader ile aç."""
     path = os.path.abspath(path)
     if not os.path.isfile(path) or not path.lower().endswith(".pdf"):
@@ -120,7 +121,8 @@ def open_pdf_in_viewer(path):
             if exe and exe not in seen and os.path.isfile(exe):
                 seen.add(exe)
                 try:
-                    subprocess.Popen([exe, path], close_fds=True)
+                    arguments = [exe, "/p", path] if print_dialog else [exe, path]
+                    subprocess.Popen(arguments, close_fds=True)
                     return "Adobe Acrobat / Reader"
                 except OSError:
                     continue
@@ -1730,6 +1732,8 @@ class HoytasApp(tk.Tk):
         ttk.Label(self.dashboard,
                   text="Cari: müşteri ve bakiye  •  Beton Satış: m³ ve şantiye  •  Borç Takip: kalan alacak  •  F5: tüm listeleri yenile",
                   foreground="#315B46", font=("Segoe UI", 10, "bold"), wraplength=1080).pack(anchor="w", pady=(0, 12))
+        if os.name == "nt":
+            ttk.Button(self.dashboard, text="Yazdır", command=self._print_dashboard).pack(anchor="w")
         self.metrics = ttk.Frame(self.dashboard)
         self.metrics.pack(fill="x", pady=4)
         self.metric_labels = {}
@@ -1778,7 +1782,35 @@ class HoytasApp(tk.Tk):
         # Sağ tık bağlam menüsü; sol tık ve çift tık davranışları korunur.
         tree.bind("<Button-3>", lambda event, w=tree: self._tree_context_menu(event, w))
         tree.bind("<Control-Button-1>", lambda event, w=tree: self._tree_context_menu(event, w))
+        if os.name == "nt":
+            if str(parent) in self.tabs.tabs():
+                title = self.tabs.tab(parent, "text").replace("\n", " ")
+            else:
+                title = parent.winfo_toplevel().title()
+            ttk.Button(searchbar, text="Yazdır", command=lambda: self._print_tree(tree, title)).pack(
+                side="left", padx=(8, 0))
         return tree
+
+    def _print_dashboard(self):
+        rows = [("Gösterge", "Değer")]
+        rows.extend((label.master.cget("text"), label.cget("text"))
+                    for label in self.metric_labels.values())
+        self._print_report_rows("Genel Bakış", rows)
+
+    def _print_tree(self, tree, title):
+        items = tree.get_children()
+        if not items:
+            return messagebox.showinfo("Yazdır", "Bu listede yazdırılacak kayıt yok.", parent=tree)
+        columns = tree["columns"]
+        rows = [tuple(tree.heading(column, "text") for column in columns)]
+        rows.extend(tuple(tree.item(item, "values")) for item in items)
+        self._print_report_rows(title, rows)
+
+    def _print_report_rows(self, title, rows):
+        try:
+            self._preview_then_save_pdf(title + " Listesi", rows=rows, print_dialog=True)
+        except (OSError, ValueError, RuntimeError, ImportError) as error:
+            messagebox.showerror("Yazdırma açılamadı", str(error), parent=self)
 
     def _tree_context_menu(self, event, tree):
         """Tablolarda sağ tıkla görüntüle/düzenle/sil işlemlerini aç."""
@@ -2049,23 +2081,69 @@ class HoytasApp(tk.Tk):
         cleaned = "".join(ch if ch.isalnum() or ch in " -_" else "_" for ch in str(value)).strip()
         return (cleaned[:60] or "Cari")
 
-    def _preview_then_save_pdf(self, report_type, final_path=None, cari_id=None):
+    def _pdf_preview_action(self, report_type, viewer, preview_path):
+        """Keep the preview available while the user prints or chooses to save."""
+        window = tk.Toplevel(self)
+        window.title("PDF Önizleme")
+        window.transient(self)
+        window.resizable(False, False)
+        frame = ttk.Frame(window, padding=18)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text=f"{report_type} önizlemesi {viewer} ile açıldı.",
+                  wraplength=450).pack(anchor="w", pady=(0, 12))
+        status = tk.StringVar(window)
+        ttk.Label(frame, textvariable=status, wraplength=450).pack(anchor="w")
+        buttons = ttk.Frame(frame)
+        buttons.pack(fill="x", pady=(8, 0))
+        save = False
+
+        def choose_save():
+            nonlocal save
+            save = True
+            window.destroy()
+
+        def print_pdf():
+            try:
+                open_pdf_in_viewer(preview_path, print_dialog=True)
+            except (OSError, RuntimeError) as error:
+                messagebox.showerror("Yazdırma açılamadı", str(error), parent=window)
+            else:
+                status.set("Acrobat'ta yazıcıyı ve kopya sayısını seçin. İşiniz bitince bu pencereyi kapatın.")
+
+        if os.name == "nt":
+            ttk.Button(buttons, text="Yazdır", command=print_pdf).pack(side="left", padx=(0, 8))
+        ttk.Button(buttons, text="PDF Kaydet", command=choose_save).pack(side="left", padx=(0, 8))
+        ttk.Button(buttons, text="Kapat", command=window.destroy).pack(side="right")
+        window.bind("<Escape>", lambda event: window.destroy())
+        previous_grab = self.grab_current()
+        window.grab_set()
+        try:
+            self.wait_window(window)
+        finally:
+            if previous_grab is not None and previous_grab.winfo_exists():
+                previous_grab.grab_set()
+        return save
+
+    def _preview_then_save_pdf(self, report_type, final_path=None, cari_id=None, *, rows=None, print_dialog=False):
         """Önce tek önizleme göster; kullanıcı onaylarsa bir kez hedef dosyayı seçtirip kaydet."""
         preview_path = None
         try:
             fd, preview_path = tempfile.mkstemp(prefix="HOYTAS_PDF_ONIZLEME_", suffix=".pdf")
             os.close(fd)
-            self.generate_pdf(report_type, preview_path, cari_id)
+            if rows is None:
+                self.generate_pdf(report_type, preview_path, cari_id)
+            else:
+                self.generate_pdf(report_type, preview_path, cari_id, display_rows=rows)
             with open(preview_path, "rb") as stream:
                 data = stream.read()
             if not data.startswith(b"%PDF-") or b"%%EOF" not in data[-2048:] or len(data) < 500:
                 raise RuntimeError("Önizleme PDF'si doğrulanamadı; hiçbir dosya kaydedilmedi.")
             try:
-                viewer = open_pdf_in_viewer(preview_path)
+                viewer = open_pdf_in_viewer(preview_path, print_dialog=print_dialog)
             except RuntimeError as exc:
                 messagebox.showerror("PDF önizlemesi açılamadı", f"PDF kaydedilmedi. Önce Adobe Acrobat/Reader ile önizleme açılmalıdır.\n\n{exc}", parent=self)
                 return False
-            if not messagebox.askyesno("PDF Kaydetme Onayı", f"{report_type} önizlemesi {viewer} ile açıldı.\n\nPDF'yi kaydetmek istiyor musunuz?", parent=self):
+            if not self._pdf_preview_action(report_type, viewer, preview_path):
                 return False
             if not final_path:
                 initial = "HOYTAS_" + report_type.replace(" ", "_").replace("/", "_") + "_" + datetime.now().strftime("%Y%m%d") + ".pdf"
@@ -3644,7 +3722,7 @@ class HoytasApp(tk.Tk):
         except Exception as e:
             messagebox.showerror("PDF hatası",str(e))
 
-    def generate_pdf(self, report_type, path, cari_id=None):
+    def generate_pdf(self, report_type, path, cari_id=None, *, display_rows=None):
         from reportlab.lib import colors
         from reportlab.lib.pagesizes import A4, landscape
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -3696,8 +3774,10 @@ class HoytasApp(tk.Tk):
             story.extend([Paragraph("HOYTAŞ HAZIR BETON - Finans ve İşletme Yönetimi",title_style),
                           Paragraph(escape(report_type), title_style), Spacer(1,8),
                           Paragraph("Rapor tarihi: "+datetime.now().strftime("%d.%m.%Y %H:%M"),normal),Spacer(1,12)])
-        with connect() as c:
-            if report_type=="Cari Hesap Ekstresi":
+        with (nullcontext() if display_rows is not None else connect()) as c:
+            if display_rows is not None:
+                rows = [[str(cell) for cell in row] for row in display_rows]
+            elif report_type=="Cari Hesap Ekstresi":
                 cari=c.execute("SELECT unvan,telefon,vergi_no FROM cari WHERE id=?",(cari_id,)).fetchone()
                 if not cari: raise ValueError("Cari hesap bulunamadı.")
                 moves=c.execute("SELECT id,tarih,tur,kategori,COALESCE(aciklama,''),COALESCE(odeme_yontemi,''),tutar FROM hareket WHERE cari_id=? AND tur IN ('Borç','Alacak') ORDER BY tarih ASC,id ASC",(cari_id,)).fetchall()
