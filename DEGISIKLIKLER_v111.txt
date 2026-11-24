@@ -1,0 +1,1 @@
+Puantajda günlük normal çalışma süresi 10 saattir. Kış düzeni 08.00–18.00, yaz düzeni 07.00–17.00 olarak seçilebilir. Mesai saati tarihin altında elle girilir ve aylık toplam, kullanıcının girdiği saatlik ücretle çarpılır.
