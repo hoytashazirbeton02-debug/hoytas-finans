@@ -2961,6 +2961,7 @@ class HoytasApp(tk.Tk):
         normal = tk.StringVar(win, "8")
         manual = tk.StringVar(win)
         current_day = tk.StringVar(win, "Tablodan bir gün seçin")
+        inline_entry = None
         period_label = tk.StringVar(win)
         summary = tk.StringVar(win)
         preview = tk.StringVar(win)
@@ -2982,6 +2983,8 @@ class HoytasApp(tk.Tk):
         navigation.pack(fill="x", pady=(0, 6))
         grid_area = ttk.Frame(left)
         grid_area.pack(fill="both", expand=True)
+        ttk.Label(left, text="Tarihin altına mesai saatini yazın ve Enter’a basın.").pack(
+            before=grid_area, anchor="w", pady=(0, 5))
         canvas = tk.Canvas(grid_area, highlightthickness=0, background="white")
         scroll = ttk.Scrollbar(grid_area, orient="vertical", command=canvas.yview)
         scroll.pack(side="right", fill="y")
@@ -3108,7 +3111,10 @@ class HoytasApp(tk.Tk):
 
         def daily_preview(*_):
             locked = selected and selected[0] in approved
-            manual_entry.configure(state="disabled" if locked or status.get() != "Çalıştı" else "normal")
+            state = "disabled" if locked or status.get() != "Çalıştı" else "normal"
+            manual_entry.configure(state=state)
+            if inline_entry is not None:
+                inline_entry.configure(state=state)
             try:
                 (_, _, net, overtime), _ = daily_durations()
                 preview.set(f"Net çalışma {minutes(net)}\nFazla mesai {minutes(overtime)}")
@@ -3117,7 +3123,7 @@ class HoytasApp(tk.Tk):
             except ArithmeticError:
                 preview.set("Saatleri ve mola süresini kontrol edin.")
 
-        def choose(pid, day):
+        def choose(pid, day, *, focus_cell=False):
             nonlocal selected
             previous_pid = selected[0] if selected else None
             if previous_pid is not None and previous_pid != pid:
@@ -3144,8 +3150,13 @@ class HoytasApp(tk.Tk):
             delete_button.configure(state="normal" if row and not locked else "disabled")
             show_summary()
             render()
+            if focus_cell and inline_entry is not None:
+                inline_entry.focus_set()
+                inline_entry.selection_range(0, "end")
 
         def render():
+            nonlocal inline_entry
+            inline_entry = None
             for child in grid.winfo_children():
                 child.destroy()
             days = list(range(week * 7 + 1, min(week * 7 + 7, day_range()) + 1))
@@ -3171,9 +3182,16 @@ class HoytasApp(tk.Tk):
                             label += f" + {minutes(row[6])}"
                         bg = "#DCEAFF" if row[6] else colors[row[0]]
                     active = (pid, day) == selected
-                    tk.Button(grid, text=label, wraplength=85, bg=bg, relief="solid" if active else "flat",
-                              bd=int(active), command=lambda p=pid, d=day: choose(p, d)).grid(
-                                  row=index, column=col, sticky="nsew", padx=1, pady=1, ipady=6)
+                    if active and pid not in approved and (not row or row[0] == "Çalıştı"):
+                        inline_entry = ttk.Entry(grid, textvariable=manual, width=6, justify="center")
+                        inline_entry.bind("<Return>", lambda event: record())
+                        inline_entry.bind("<KP_Enter>", lambda event: record())
+                        cell = inline_entry
+                    else:
+                        cell = tk.Button(grid, text=label, wraplength=85, bg=bg,
+                                         relief="solid" if active else "flat", bd=int(active),
+                                         command=lambda p=pid, d=day: choose(p, d, focus_cell=True))
+                    cell.grid(row=index, column=col, sticky="nsew", padx=1, pady=1, ipady=6)
                 tk.Label(grid, text=minutes(totals(pid)[4]), bg="#ECF1F8").grid(
                     row=index, column=len(days) + 1, sticky="nsew", pady=1)
 
