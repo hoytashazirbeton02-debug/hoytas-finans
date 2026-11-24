@@ -29,7 +29,7 @@ from xml.sax.saxutils import escape
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
 TARGET_SCHEMA_VERSION = 58
-APP_VERSION = 110
+APP_VERSION = 111
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 ISOLATED_PROFILE_DIR = os.environ.get("HOYTAS_PROFILE_DIR", "").strip()
 USER_DATA_DIR = ISOLATED_PROFILE_DIR or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
@@ -2955,10 +2955,14 @@ class HoytasApp(tk.Tk):
         rate = tk.StringVar(win)
         paid_days = tk.StringVar(win, "30")
         status = tk.StringVar(win, "Çalıştı")
-        start = tk.StringVar(win, "08:00")
-        end = tk.StringVar(win, "17:00")
-        pause = tk.StringVar(win, "60")
-        normal = tk.StringVar(win, "8")
+        schedules = {"Kış 08.00–18.00": ("08:00", "18:00"),
+                     "Yaz 07.00–17.00": ("07:00", "17:00")}
+        schedule = tk.StringVar(win, next(iter(schedules)))
+        default_start, default_end = schedules[schedule.get()]
+        start = tk.StringVar(win, default_start)
+        end = tk.StringVar(win, default_end)
+        pause = tk.StringVar(win, "0")
+        normal_hours = "10"
         manual = tk.StringVar(win)
         current_day = tk.StringVar(win, "Tablodan bir gün seçin")
         inline_entry = None
@@ -2973,6 +2977,10 @@ class HoytasApp(tk.Tk):
         toolbar = ttk.Frame(root)
         toolbar.pack(fill="x", pady=(0, 12))
         ttk.Label(toolbar, text="Personel Puantajı", font=("Segoe UI", 19, "bold")).pack(side="left")
+        schedule_box = ttk.Combobox(toolbar, textvariable=schedule, values=tuple(schedules),
+                                    state="readonly", width=19)
+        schedule_box.pack(side="right")
+        ttk.Label(toolbar, text="Çalışma düzeni").pack(side="right", padx=8)
         body = ttk.Frame(root)
         body.pack(fill="both", expand=True)
         panel = ttk.LabelFrame(body, text="Günlük Puantaj", padding=12)
@@ -3014,7 +3022,7 @@ class HoytasApp(tk.Tk):
         fields.pack(fill="x")
         for row, (title, variable) in enumerate((
             ("Durum", status), ("Başlangıç (SS:DD)", start), ("Bitiş (SS:DD)", end),
-            ("Mola (dk)", pause), ("Normal süre (saat)", normal),
+            ("Mola (dk)", pause),
             ("Manuel mesai (saat)", manual),
         )):
             ttk.Label(fields, text=title).grid(row=row, column=0, sticky="w", pady=5)
@@ -3025,6 +3033,7 @@ class HoytasApp(tk.Tk):
             widget.grid(row=row, column=1, padx=(6, 0), sticky="ew")
             if variable is manual:
                 manual_entry = widget
+        ttk.Label(panel, text="Normal çalışma süresi 10 saat").pack(anchor="w", pady=(4, 0))
         ttk.Label(panel, text="Mesai yoksa boş bırakın.",
                   wraplength=210).pack(anchor="w", pady=(4, 0))
         ttk.Label(panel, textvariable=preview, wraplength=210).pack(anchor="w", pady=12)
@@ -3106,7 +3115,7 @@ class HoytasApp(tk.Tk):
 
         def daily_durations():
             override = puantaj_manuel_mesai(manual.get()) if status.get() == "Çalıştı" else None
-            durations = puantaj_sureleri(status.get(), start.get(), end.get(), pause.get(), normal.get(), override or 0)
+            durations = puantaj_sureleri(status.get(), start.get(), end.get(), pause.get(), normal_hours, override or 0)
             return durations, override
 
         def daily_preview(*_):
@@ -3134,11 +3143,12 @@ class HoytasApp(tk.Tk):
                 rate.set(draft_rates.get(pid, ""))
             current_day.set(f"{roster[pid][0]} · {first.replace(day=day):%d.%m.%Y}")
             row = daily.get(selected)
-            if row:
-                values = (*row[:3], str(row[3]), str(Decimal(row[4]) / 60)) if row[0] == "Çalıştı" else (row[0], "08:00", "17:00", "60", "8")
+            default_start, default_end = schedules[schedule.get()]
+            if row and row[0] == "Çalıştı":
+                values = (*row[:3], str(row[3]))
             else:
-                values = ("Çalıştı", "08:00", "17:00", "60", "8")
-            for variable, value in zip((status, start, end, pause, normal), values):
+                values = (row[0] if row else "Çalıştı", default_start, default_end, "0")
+            for variable, value in zip((status, start, end, pause), values):
                 variable.set(value)
             stored_minutes = (row[7] if row[7] is not None else row[6]) if row else 0
             manual.set(str(Decimal(stored_minutes) / 60).replace(".", ",") if stored_minutes else "")
@@ -3342,7 +3352,15 @@ class HoytasApp(tk.Tk):
         approve_button.pack(side="right")
         revoke_button = ttk.Button(settings, text="Onayı Kaldır", command=lambda: approve(True))
         revoke_button.pack(side="right", padx=5)
-        for variable in (status, start, end, pause, normal, manual):
+        def apply_schedule(_event):
+            if selected and selected[0] in approved:
+                return
+            shift_start, shift_end = schedules[schedule.get()]
+            start.set(shift_start)
+            end.set(shift_end)
+
+        schedule_box.bind("<<ComboboxSelected>>", apply_schedule)
+        for variable in (status, start, end, pause, manual):
             variable.trace_add("write", daily_preview)
         for variable in (rate, paid_days):
             variable.trace_add("write", show_summary)
