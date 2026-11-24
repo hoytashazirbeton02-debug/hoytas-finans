@@ -28,8 +28,8 @@ from xml.sax.saxutils import escape
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
-TARGET_SCHEMA_VERSION = 56
-APP_VERSION = 108
+TARGET_SCHEMA_VERSION = 57
+APP_VERSION = 109
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 ISOLATED_PROFILE_DIR = os.environ.get("HOYTAS_PROFILE_DIR", "").strip()
 USER_DATA_DIR = ISOLATED_PROFILE_DIR or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
@@ -192,6 +192,7 @@ CREATE TABLE IF NOT EXISTS personel_puantaj (
     tarih TEXT NOT NULL, durum TEXT NOT NULL, baslangic TEXT NOT NULL,
     bitis TEXT NOT NULL, mola INTEGER NOT NULL, normal_dakika INTEGER NOT NULL,
     net_dakika INTEGER NOT NULL, mesai_dakika INTEGER NOT NULL,
+    manuel_mesai_dakika INTEGER,
     UNIQUE(personel_id,tarih)
 );
 CREATE INDEX IF NOT EXISTS idx_puantaj_tarih ON personel_puantaj(tarih,personel_id);
@@ -356,7 +357,19 @@ def _enable_hybrid_capture(con):
     return con
 
 
-def puantaj_sureleri(durum, baslangic, bitis, mola, normal):
+def puantaj_manuel_mesai(saat):
+    if not saat.strip():
+        return None
+    try:
+        hours = Decimal(saat.strip().replace(",", "."))
+    except ArithmeticError as error:
+        raise ValueError("Mesai saatini sayı olarak girin.") from error
+    if not hours.is_finite() or not 0 <= hours <= 24:
+        raise ValueError("Mesai saati 0 ile 24 arasında olmalı.")
+    return int((hours * 60).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def puantaj_sureleri(durum, baslangic, bitis, mola, normal, manuel_mesai=None):
     if durum in ("İzin", "Devamsız", "Tatil"):
         return 0, 0, 0, 0
     if durum != "Çalıştı":
@@ -370,6 +383,11 @@ def puantaj_sureleri(durum, baslangic, bitis, mola, normal):
     if not 0 <= pause < duration or not 0 <= regular <= 24 * 60:
         raise ValueError("Saatleri, molayı ve normal çalışma süresini kontrol edin.")
     net = duration - pause
+    if manuel_mesai is not None:
+        regular_worked = min(net, regular)
+        if regular_worked + manuel_mesai + pause > 24 * 60:
+            raise ValueError("Normal çalışma, mola ve mesai toplamı 24 saati aşamaz.")
+        return pause, regular, regular_worked + manuel_mesai, manuel_mesai
     return pause, regular, net, max(0, net - regular)
 
 
@@ -385,11 +403,20 @@ def puantaj_ucret_bol(maas, bolen):
     return salary / divisor
 
 
-def puantaj_mesai_tutari(maas, dakika, bolen, katsayi):
-    salary, divisor = _puantaj_ucret_degerleri(maas, bolen)
+def _puantaj_mesai_katsayisi(katsayi):
     factor = Decimal(str(katsayi).strip().replace(",", "."))
     if not factor.is_finite() or factor <= 0:
         raise ValueError("Mesai katsayısı sıfırdan büyük olmalı.")
+    return factor
+
+
+def puantaj_mesai_saat_ucreti(maas, bolen, katsayi):
+    return puantaj_ucret_bol(maas, bolen) * _puantaj_mesai_katsayisi(katsayi)
+
+
+def puantaj_mesai_tutari(maas, dakika, bolen, katsayi):
+    salary, divisor = _puantaj_ucret_degerleri(maas, bolen)
+    factor = _puantaj_mesai_katsayisi(katsayi)
     return (salary * dakika * factor / (divisor * 60)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
@@ -469,6 +496,7 @@ def connect(path=None):
         "banka_hareket": [("karsi_taraf", "TEXT NOT NULL DEFAULT ''")],
         "maas_odeme": [("islem_turu", "TEXT NOT NULL DEFAULT 'Maaş'")],
         "mastarci_hesap": [("musteri", "TEXT NOT NULL DEFAULT ''")],
+        "personel_puantaj": [("manuel_mesai_dakika", "INTEGER")],
         "fatura": [("fatura_turu", "TEXT NOT NULL DEFAULT 'Normal'"), ("tevkifat_oran", "REAL NOT NULL DEFAULT 0"), ("tevkifat_tutar", "REAL NOT NULL DEFAULT 0"), ("tahsil_edilecek", "REAL NOT NULL DEFAULT 0"), ("odenen", "REAL NOT NULL DEFAULT 0")],
     }
     for table, columns in migrations.items():
@@ -512,6 +540,9 @@ def connect(path=None):
     if current_version < 56:
         for action in ("insert", "update", "delete"):
             con.execute(f"DROP TRIGGER IF EXISTS audit_mastarci_hesap_{action}")
+    if current_version < 57:
+        for action in ("insert", "update", "delete"):
+            con.execute(f"DROP TRIGGER IF EXISTS audit_personel_puantaj_{action}")
     _install_audit_triggers(con)
     from operation_undo import create_journal
 
@@ -2906,6 +2937,7 @@ class HoytasApp(tk.Tk):
         end = tk.StringVar(win, "17:00")
         pause = tk.StringVar(win, "60")
         normal = tk.StringVar(win, "8")
+        manual = tk.StringVar(win)
         current_day = tk.StringVar(win, "Tablodan bir gün seçin")
         period_label = tk.StringVar(win)
         summary = tk.StringVar(win)
@@ -2961,6 +2993,7 @@ class HoytasApp(tk.Tk):
         for row, (title, variable) in enumerate((
             ("Durum", status), ("Başlangıç (SS:DD)", start), ("Bitiş (SS:DD)", end),
             ("Mola (dk)", pause), ("Normal süre (saat)", normal),
+            ("Manuel mesai (saat)", manual),
         )):
             ttk.Label(fields, text=title).grid(row=row, column=0, sticky="w", pady=5)
             if variable is status:
@@ -2968,6 +3001,10 @@ class HoytasApp(tk.Tk):
             else:
                 widget = ttk.Entry(fields, textvariable=variable, width=13)
             widget.grid(row=row, column=1, padx=(6, 0), sticky="ew")
+            if variable is manual:
+                manual_entry = widget
+        ttk.Label(panel, text="Boş bırakırsanız mesai saatlerden hesaplanır.",
+                  wraplength=210).pack(anchor="w", pady=(4, 0))
         ttk.Label(panel, textvariable=preview, wraplength=210).pack(anchor="w", pady=12)
 
         def minutes(value):
@@ -3016,12 +3053,24 @@ class HoytasApp(tk.Tk):
                 except (ValueError, ArithmeticError):
                     return "—"
 
+            try:
+                hourly = puantaj_mesai_saat_ucreti(salary, divisor, multiplier)
+            except (ValueError, ArithmeticError):
+                hourly = None
+
             if amount is None and overtime:
                 payment = "Fazla mesai tutarı için maaş, aylık saat böleni ve mesai katsayısı gerekli."
             else:
                 amount = amount if amount is not None else Decimal(0)
                 label = "Onaylı fazla mesai" if known else "Aylık fazla mesai ücreti"
-                payment = f"{label} {tl(amount)}  ·  Maaş + mesai {tl(Decimal(str(salary)) + amount)}"
+                formula = ""
+                if hourly is not None:
+                    displayed_rate = hourly.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                    displayed_total = (displayed_rate * overtime / 60).quantize(
+                        Decimal("0.01"), rounding=ROUND_HALF_UP)
+                    equals = "=" if displayed_total == amount else "≈"
+                    formula = f"{tl(hourly)} / sa × {minutes(overtime)} {equals} "
+                payment = f"{label}: {formula}{tl(amount)}\nMaaş + mesai {tl(Decimal(str(salary)) + amount)}"
             summary.set(
                 f"{name}  ·  Aylık maaş {tl(salary)}\n"
                 f"Toplam çalışma {minutes(net)}  ·  Fazla mesai {minutes(overtime)}\n"
@@ -3032,11 +3081,20 @@ class HoytasApp(tk.Tk):
             approve_button.configure(state="disabled" if known or not overtime else "normal")
             revoke_button.configure(state="normal" if known else "disabled")
 
+        def daily_durations():
+            override = puantaj_manuel_mesai(manual.get()) if status.get() == "Çalıştı" else None
+            durations = puantaj_sureleri(status.get(), start.get(), end.get(), pause.get(), normal.get(), override)
+            return durations, override
+
         def daily_preview(*_):
+            locked = selected and selected[0] in approved
+            manual_entry.configure(state="disabled" if locked or status.get() != "Çalıştı" else "normal")
             try:
-                _, _, net, overtime = puantaj_sureleri(status.get(), start.get(), end.get(), pause.get(), normal.get())
+                (_, _, net, overtime), _ = daily_durations()
                 preview.set(f"Net çalışma {minutes(net)}\nFazla mesai {minutes(overtime)}")
-            except (ValueError, ArithmeticError):
+            except ValueError as error:
+                preview.set(str(error))
+            except ArithmeticError:
                 preview.set("Saatleri ve mola süresini kontrol edin.")
 
         def choose(pid, day):
@@ -3057,6 +3115,7 @@ class HoytasApp(tk.Tk):
                 values = ("Çalıştı", "08:00", "17:00", "60", "8")
             for variable, value in zip((status, start, end, pause, normal), values):
                 variable.set(value)
+            manual.set(str(Decimal(row[7]) / 60).replace(".", ",") if row and row[7] is not None else "")
             locked = pid in approved
             if locked:
                 rate.set(approved[pid][1])
@@ -3109,7 +3168,7 @@ class HoytasApp(tk.Tk):
                     (personel_id, personel_id))}
                 daily = {(pid, date.fromisoformat(day).day): tuple(values)
                          for pid, day, *values in db.execute("""SELECT personel_id,tarih,durum,baslangic,bitis,mola,
-                             normal_dakika,net_dakika,mesai_dakika FROM personel_puantaj
+                             normal_dakika,net_dakika,mesai_dakika,manuel_mesai_dakika FROM personel_puantaj
                              WHERE tarih BETWEEN ? AND ?""", (first.isoformat(), until))}
                 approved = {pid: tuple(values) for pid, *values in db.execute("""
                     SELECT a.personel_id,a.maas,a.bolen,a.katsayi,m.tutar
@@ -3154,14 +3213,15 @@ class HoytasApp(tk.Tk):
                     if remove:
                         db.execute("DELETE FROM personel_puantaj WHERE personel_id=? AND tarih=?", (pid, day_key))
                     else:
-                        durations = puantaj_sureleri(status.get(), start.get(), end.get(), pause.get(), normal.get())
+                        durations, override = daily_durations()
                         times = (start.get(), end.get()) if status.get() == "Çalıştı" else ("", "")
                         db.execute("""INSERT INTO personel_puantaj
-                            (personel_id,tarih,durum,baslangic,bitis,mola,normal_dakika,net_dakika,mesai_dakika)
-                            VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(personel_id,tarih) DO UPDATE SET
+                            (personel_id,tarih,durum,baslangic,bitis,mola,normal_dakika,net_dakika,mesai_dakika,manuel_mesai_dakika)
+                            VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(personel_id,tarih) DO UPDATE SET
                             durum=excluded.durum,baslangic=excluded.baslangic,bitis=excluded.bitis,
                             mola=excluded.mola,normal_dakika=excluded.normal_dakika,net_dakika=excluded.net_dakika,
-                            mesai_dakika=excluded.mesai_dakika""", (pid, day_key, status.get(), *times, *durations))
+                            mesai_dakika=excluded.mesai_dakika, manuel_mesai_dakika=excluded.manuel_mesai_dakika""",
+                            (pid, day_key, status.get(), *times, *durations, override))
                 refresh()
             except (ValueError, ArithmeticError, sqlite3.Error) as error:
                 messagebox.showerror("Puantaj kaydedilemedi", str(error), parent=win)
@@ -3249,7 +3309,7 @@ class HoytasApp(tk.Tk):
         approve_button.pack(side="right")
         revoke_button = ttk.Button(settings, text="Onayı Kaldır", command=lambda: approve(True))
         revoke_button.pack(side="right", padx=5)
-        for variable in (status, start, end, pause, normal):
+        for variable in (status, start, end, pause, normal, manual):
             variable.trace_add("write", daily_preview)
         for variable in (rate, factor, paid_days):
             variable.trace_add("write", show_summary)

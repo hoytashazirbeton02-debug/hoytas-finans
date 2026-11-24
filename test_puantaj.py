@@ -5,7 +5,10 @@ import sqlite3
 import tempfile
 import unittest
 
-from hoytas import connect, puantaj_mesai_tutari, puantaj_sureleri, puantaj_ucret_bol, save_puantaj_approval
+from hoytas import (
+    connect, puantaj_manuel_mesai, puantaj_mesai_saat_ucreti, puantaj_mesai_tutari,
+    puantaj_sureleri, puantaj_ucret_bol, save_puantaj_approval,
+)
 
 
 class PuantajTests(unittest.TestCase):
@@ -25,6 +28,28 @@ class PuantajTests(unittest.TestCase):
         self.assertEqual(puantaj_ucret_bol("30000", "23,5"), Decimal("30000") / Decimal("23.5"))
         with self.assertRaises(ValueError):
             puantaj_ucret_bol("30000", "0")
+
+    def test_manual_overtime_replaces_automatic_and_drives_monthly_pay(self):
+        with tempfile.TemporaryDirectory() as folder, connect(Path(folder) / "puantaj.db") as db:
+            employee = db.execute("INSERT INTO personel(ad,maas) VALUES('Örnek Personel',36000)").lastrowid
+            for day, value in enumerate(("2", "3", "4", "6", "0"), start=1):
+                override = puantaj_manuel_mesai(value)
+                durations = puantaj_sureleri("Çalıştı", "08:00", "18:00", "60", "8", override)
+                self.assertEqual(durations, (60, 480, 480 + override, override))
+                db.execute("""INSERT INTO personel_puantaj
+                    (personel_id,tarih,durum,baslangic,bitis,mola,normal_dakika,net_dakika,
+                     mesai_dakika,manuel_mesai_dakika)
+                    VALUES(?,?,'Çalıştı','08:00','18:00',?,?,?,?,?)""",
+                    (employee, f"2026-11-{day:02}", *durations, override))
+            self.assertEqual(puantaj_mesai_saat_ucreti(36000, "225", "1,5"), Decimal("240"))
+            save_puantaj_approval(db, employee, date(2026, 11, 1), "225", "1,5")
+            self.assertEqual(db.execute("SELECT tutar FROM maas_odeme").fetchone(), (3600,))
+
+        self.assertIsNone(puantaj_manuel_mesai(" "))
+        self.assertEqual(puantaj_manuel_mesai("2,5"), 150)
+        for value in ("-1", "25", "nan", "saat"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                puantaj_manuel_mesai(value)
 
     def test_approval_is_monthly_and_does_not_duplicate_payment(self):
         with tempfile.TemporaryDirectory() as folder, connect(Path(folder) / "puantaj.db") as db:
