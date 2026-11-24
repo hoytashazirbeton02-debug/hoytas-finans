@@ -1,6 +1,8 @@
 import sqlite3
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
+from calendar import monthrange
+from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime, date, timedelta
 from contextlib import nullcontext
 import csv
@@ -26,8 +28,8 @@ from xml.sax.saxutils import escape
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
-TARGET_SCHEMA_VERSION = 53
-APP_VERSION = 107
+TARGET_SCHEMA_VERSION = 56
+APP_VERSION = 108
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 ISOLATED_PROFILE_DIR = os.environ.get("HOYTAS_PROFILE_DIR", "").strip()
 USER_DATA_DIR = ISOLATED_PROFILE_DIR or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
@@ -178,6 +180,39 @@ CREATE TABLE IF NOT EXISTS gelen_fatura_odeme (id INTEGER PRIMARY KEY AUTOINCREM
 CREATE TABLE IF NOT EXISTS nakit_kasa (id INTEGER PRIMARY KEY AUTOINCREMENT, tarih TEXT NOT NULL, yon TEXT NOT NULL, kaynak TEXT NOT NULL, aciklama TEXT, tutar REAL NOT NULL CHECK(tutar > 0), kullanici TEXT);
 CREATE TABLE IF NOT EXISTS stok_hareket (id INTEGER PRIMARY KEY AUTOINCREMENT, tarih TEXT NOT NULL, stok_id INTEGER NOT NULL, yon TEXT NOT NULL, miktar REAL NOT NULL CHECK(miktar>0), aciklama TEXT, FOREIGN KEY(stok_id) REFERENCES stok(id));
 CREATE TABLE IF NOT EXISTS maas_odeme (id INTEGER PRIMARY KEY AUTOINCREMENT, tarih TEXT NOT NULL, personel_id INTEGER NOT NULL, donem TEXT NOT NULL, tutar REAL NOT NULL CHECK(tutar>0), yontem TEXT, aciklama TEXT, FOREIGN KEY(personel_id) REFERENCES personel(id));
+CREATE TABLE IF NOT EXISTS mastarci_hesap (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, tarih TEXT NOT NULL, mastarci TEXT NOT NULL,
+    santiye TEXT NOT NULL, miktar_m3 TEXT NOT NULL, birim_fiyat TEXT NOT NULL,
+    hakedis_kurus INTEGER NOT NULL CHECK(hakedis_kurus>0),
+    odenen_kurus INTEGER NOT NULL DEFAULT 0 CHECK(odenen_kurus BETWEEN 0 AND hakedis_kurus),
+    aciklama TEXT NOT NULL, musteri TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS personel_puantaj (
+    id INTEGER PRIMARY KEY, personel_id INTEGER NOT NULL REFERENCES personel(id),
+    tarih TEXT NOT NULL, durum TEXT NOT NULL, baslangic TEXT NOT NULL,
+    bitis TEXT NOT NULL, mola INTEGER NOT NULL, normal_dakika INTEGER NOT NULL,
+    net_dakika INTEGER NOT NULL, mesai_dakika INTEGER NOT NULL,
+    UNIQUE(personel_id,tarih)
+);
+CREATE INDEX IF NOT EXISTS idx_puantaj_tarih ON personel_puantaj(tarih,personel_id);
+CREATE TABLE IF NOT EXISTS puantaj_onay (
+    id INTEGER PRIMARY KEY, personel_id INTEGER NOT NULL REFERENCES personel(id),
+    donem TEXT NOT NULL, odeme_id INTEGER NOT NULL UNIQUE REFERENCES maas_odeme(id),
+    maas TEXT NOT NULL, bolen TEXT NOT NULL, katsayi TEXT NOT NULL, mesai_dakika INTEGER NOT NULL,
+    UNIQUE(personel_id,donem)
+);
+CREATE TRIGGER IF NOT EXISTS puantaj_cift_mesai_ekleme BEFORE INSERT ON maas_odeme
+WHEN NEW.islem_turu='Mesai' AND EXISTS (
+    SELECT 1 FROM puantaj_onay WHERE personel_id=NEW.personel_id AND donem=NEW.donem)
+BEGIN SELECT RAISE(ABORT, 'Bu donemin mesaisi Puantaj ekraninda onaylandi.'); END;
+CREATE TRIGGER IF NOT EXISTS puantaj_cift_mesai_degistirme BEFORE UPDATE ON maas_odeme
+WHEN NEW.islem_turu='Mesai' AND EXISTS (
+    SELECT 1 FROM puantaj_onay WHERE personel_id=NEW.personel_id AND donem=NEW.donem AND odeme_id<>OLD.id)
+BEGIN SELECT RAISE(ABORT, 'Bu donemin mesaisi Puantaj ekraninda onaylandi.'); END;
+CREATE TRIGGER IF NOT EXISTS puantaj_odeme_koru BEFORE UPDATE ON maas_odeme
+WHEN EXISTS (SELECT 1 FROM puantaj_onay WHERE odeme_id=OLD.id)
+BEGIN SELECT RAISE(ABORT, 'Bu mesai kaydini Puantaj ekranindan duzenleyin.'); END;
+
 CREATE TABLE IF NOT EXISTS banka_hareket (id INTEGER PRIMARY KEY AUTOINCREMENT, tarih TEXT NOT NULL, banka TEXT NOT NULL, hesap TEXT, yon TEXT NOT NULL, aciklama TEXT, tutar REAL NOT NULL CHECK(tutar>0), karsi_taraf TEXT NOT NULL DEFAULT '');
 """
 
@@ -248,7 +283,7 @@ def _install_audit_triggers(con):
     con.execute("CREATE INDEX IF NOT EXISTS idx_audit_log_table ON audit_log(table_name, record_id)")
     from operation_undo import AUDITED_TABLES
 
-    for table in AUDITED_TABLES:
+    for table in (*AUDITED_TABLES, "personel_puantaj", "puantaj_onay", "mastarci_hesap"):
         columns = [row[1] for row in con.execute(f"PRAGMA table_info({table})")]
         if not columns or "id" not in columns:
             continue
@@ -321,6 +356,78 @@ def _enable_hybrid_capture(con):
     return con
 
 
+def puantaj_sureleri(durum, baslangic, bitis, mola, normal):
+    if durum in ("İzin", "Devamsız", "Tatil"):
+        return 0, 0, 0, 0
+    if durum != "Çalıştı":
+        raise ValueError("Bir çalışma durumu seçin.")
+    start, end = (datetime.strptime(value, "%H:%M") for value in (baslangic, bitis))
+    duration = int((end - start).total_seconds() // 60)
+    if duration < 0:
+        duration += 24 * 60
+    pause = int(mola)
+    regular = int((Decimal(normal.replace(",", ".")) * 60).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    if not 0 <= pause < duration or not 0 <= regular <= 24 * 60:
+        raise ValueError("Saatleri, molayı ve normal çalışma süresini kontrol edin.")
+    net = duration - pause
+    return pause, regular, net, max(0, net - regular)
+
+
+def _puantaj_ucret_degerleri(maas, bolen):
+    salary, divisor = (Decimal(str(value).strip().replace(",", ".")) for value in (maas, bolen))
+    if any(not value.is_finite() or value <= 0 for value in (salary, divisor)):
+        raise ValueError("Maaş ve ücret böleni sıfırdan büyük olmalı.")
+    return salary, divisor
+
+
+def puantaj_ucret_bol(maas, bolen):
+    salary, divisor = _puantaj_ucret_degerleri(maas, bolen)
+    return salary / divisor
+
+
+def puantaj_mesai_tutari(maas, dakika, bolen, katsayi):
+    salary, divisor = _puantaj_ucret_degerleri(maas, bolen)
+    factor = Decimal(str(katsayi).strip().replace(",", "."))
+    if not factor.is_finite() or factor <= 0:
+        raise ValueError("Mesai katsayısı sıfırdan büyük olmalı.")
+    return (salary * dakika * factor / (divisor * 60)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def save_puantaj_approval(db, personel_id, first, divisor, factor, *, revoke=False):
+    period = first.strftime("%Y-%m")
+    existing = db.execute("SELECT odeme_id FROM puantaj_onay WHERE personel_id=? AND donem=?",
+                          (personel_id, period)).fetchone()
+    if revoke:
+        if existing:
+            db.execute("DELETE FROM puantaj_onay WHERE personel_id=? AND donem=?", (personel_id, period))
+            db.execute("DELETE FROM maas_odeme WHERE id=?", existing)
+        return
+    if existing:
+        return
+    if db.execute("""SELECT 1 FROM maas_odeme WHERE personel_id=? AND donem=? AND islem_turu='Mesai'""",
+                  (personel_id, period)).fetchone():
+        raise ValueError("Bu dönem için mevcut bir mesai hareketi var. Önce o kaydı kontrol edin.")
+    last = first.replace(day=monthrange(first.year, first.month)[1])
+    overtime = db.execute("""SELECT COALESCE(SUM(mesai_dakika),0) FROM personel_puantaj
+        WHERE personel_id=? AND tarih BETWEEN ? AND ?""",
+        (personel_id, first.isoformat(), last.isoformat())).fetchone()[0]
+    employee = db.execute("SELECT maas FROM personel WHERE id=?", (personel_id,)).fetchone()
+    if employee is None:
+        raise ValueError("Personel kaydı bulunamadı.")
+    salary = employee[0]
+    amount = puantaj_mesai_tutari(salary, overtime, divisor, factor)
+    if amount <= 0:
+        raise ValueError("Onay için pozitif bir mesai tutarı olmalı.")
+    payment_id = db.execute("""INSERT INTO maas_odeme
+        (tarih,personel_id,donem,tutar,yontem,aciklama,islem_turu)
+        VALUES(?,?,?,?,'',?,'Mesai')""",
+        (date.today().isoformat(), personel_id, period, str(amount),
+         f"Puantaj · {overtime // 60} sa {overtime % 60} dk")).lastrowid
+    db.execute("""INSERT INTO puantaj_onay
+        (personel_id,donem,odeme_id,maas,bolen,katsayi,mesai_dakika)
+        VALUES(?,?,?,?,?,?,?)""", (personel_id, period, payment_id, str(salary), divisor, factor, overtime))
+
+
 def connect(path=None):
     path = DB_PATH if path is None else path
     existed = os.path.isfile(path) and os.path.getsize(path) > 0
@@ -361,6 +468,7 @@ def connect(path=None):
         "kullanici": [("kurtarma_hash", "TEXT"), ("kurtarma_salt", "TEXT")],
         "banka_hareket": [("karsi_taraf", "TEXT NOT NULL DEFAULT ''")],
         "maas_odeme": [("islem_turu", "TEXT NOT NULL DEFAULT 'Maaş'")],
+        "mastarci_hesap": [("musteri", "TEXT NOT NULL DEFAULT ''")],
         "fatura": [("fatura_turu", "TEXT NOT NULL DEFAULT 'Normal'"), ("tevkifat_oran", "REAL NOT NULL DEFAULT 0"), ("tevkifat_tutar", "REAL NOT NULL DEFAULT 0"), ("tahsil_edilecek", "REAL NOT NULL DEFAULT 0"), ("odenen", "REAL NOT NULL DEFAULT 0")],
     }
     for table, columns in migrations.items():
@@ -401,6 +509,9 @@ def connect(path=None):
     if current_version < 52:
         for action in ("insert", "update", "delete"):
             con.execute(f"DROP TRIGGER IF EXISTS audit_banka_hareket_{action}")
+    if current_version < 56:
+        for action in ("insert", "update", "delete"):
+            con.execute(f"DROP TRIGGER IF EXISTS audit_mastarci_hesap_{action}")
     _install_audit_triggers(con)
     from operation_undo import create_journal
 
@@ -456,9 +567,8 @@ def save_personel_iban(db, personel_id, iban):
         db.execute("DELETE FROM personel_odeme_bilgisi WHERE personel_id=?", (personel_id,))
 
 
-def parse_amount(value):
-    """Read Turkish/international numeric formats without losing financial precision."""
-    import math
+def normalize_amount_text(value):
+    """Normalize Turkish and international numeric formats."""
     raw = str(value if value is not None else "").replace("₺", "").replace("TL", "").replace("tl", "")
     raw = "".join(raw.split()).replace("\u200b", "")
     if not raw:
@@ -487,10 +597,30 @@ def parse_amount(value):
         normalized = raw.replace(",", ".")
     else:
         normalized = raw
-    amount = float(sign + normalized)
+    return sign + normalized
+
+
+def parse_amount(value):
+    import math
+    amount = float(normalize_amount_text(value))
     if not math.isfinite(amount):
         raise ValueError("Geçersiz tutar.")
     return amount
+
+
+def mastarci_hakedis(quantity, price):
+    quantity, price = (Decimal(normalize_amount_text(value)) for value in (quantity, price))
+    total = int((quantity * price * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    if quantity <= 0 or price <= 0 or not 0 < total < 2**63:
+        raise ValueError("Metreküp, birim fiyat ve hakediş tutarını kontrol edin.")
+    return quantity, price, total
+
+
+def mastarci_odeme_kurus(value):
+    amount = Decimal(normalize_amount_text(value)) * 100
+    if not 0 < amount < 2**63 or amount != amount.to_integral_value():
+        raise ValueError("Ödemeyi sıfırdan büyük ve en fazla iki ondalık hane ile girin.")
+    return int(amount)
 
 
 def safe_float(value, default=0.0):
@@ -1211,6 +1341,7 @@ class HoytasApp(tk.Tk):
         self.stok_tab = ttk.Frame(self.tabs, padding=12)
         self.personel_tab = ttk.Frame(self.tabs, padding=12)
         self.beton_tab = ttk.Frame(self.tabs, padding=12)
+        self.mastarci_tab = ttk.Frame(self.tabs, padding=12)
         self.fatura_tab = ttk.Frame(self.tabs, padding=12)
         self.gelen_fatura_tab = ttk.Frame(self.tabs, padding=12)
         self.kasa_tab = ttk.Frame(self.tabs, padding=12)
@@ -1223,7 +1354,7 @@ class HoytasApp(tk.Tk):
             (self.borc_takip_tab, "Borç\nTakip"), (self.alisveris_cari_tab, "Tedarikçi\nCari"),
             (self.hareket_tab, "Gelir /\nGider"), (self.cek_tab, "Çek\nİşlemleri"),
             (self.stok_tab, "Stok /\nDepo"), (self.personel_tab, "Personel\nİşlemleri"),
-            (self.beton_tab, "Beton\nSatış"), (self.fatura_tab, "Fatura /\nBelge"),
+            (self.beton_tab, "Beton\nSatış"), (self.mastarci_tab, "Mastarcı\nHesabı"), (self.fatura_tab, "Fatura /\nBelge"),
             (self.gelen_fatura_tab, "Alış\nFaturaları"), (self.kasa_tab, "Nakit\nKasa"),
             (self.stok_hareket_tab, "Stok\nHareketleri"), (self.maas_tab, "Maaş\nÖdemeleri"),
             (self.banka_tab, "Banka\nİşlemleri"),
@@ -1259,6 +1390,7 @@ class HoytasApp(tk.Tk):
         self._build_stok()
         self._build_personel()
         self._build_beton()
+        self._build_mastarci()
         self._build_fatura()
         self._build_gelen_faturalar()
         self._build_kasa()
@@ -2746,14 +2878,388 @@ class HoytasApp(tk.Tk):
 
         for label, kind in (("Maaş", "Maaş"), ("Avans", "Nakit Avans"), ("Mesai", "Mesai"), ("Kesinti", "Kesinti")):
             ttk.Button(bar, text=label, command=lambda selected_kind=kind: add(selected_kind)).pack(side="left", padx=(0, 6))
+        ttk.Button(bar, text="Puantaj", command=lambda: self.show_puantaj(personel_id, refresh)).pack(side="left")
         ttk.Button(bar, text="Yenile", command=refresh).pack(side="right")
         tree._undo_table = "maas_odeme"
         tree._after_undo = refresh
         refresh()
 
+    def show_puantaj(self, personel_id=None, after_change=None):
+        win = tk.Toplevel(self)
+        win.title("HOYTAŞ Finans | Personel Puantajı")
+        win.geometry("1150x620")
+        win.minsize(900, 530)
+        win.transient(self)
+        first = date.today().replace(day=1)
+        week = 0
+        selected = None
+        roster = {}
+        daily = {}
+        approved = {}
+        employee_rates = {}
+        draft_rates = {}
+        rate = tk.StringVar(win)
+        factor = tk.StringVar(win)
+        paid_days = tk.StringVar(win, "30")
+        status = tk.StringVar(win, "Çalıştı")
+        start = tk.StringVar(win, "08:00")
+        end = tk.StringVar(win, "17:00")
+        pause = tk.StringVar(win, "60")
+        normal = tk.StringVar(win, "8")
+        current_day = tk.StringVar(win, "Tablodan bir gün seçin")
+        period_label = tk.StringVar(win)
+        summary = tk.StringVar(win)
+        preview = tk.StringVar(win)
+        statuses = ("Çalıştı", "İzin", "Devamsız", "Tatil")
+        colors = {"Çalıştı": "#E2F3E5", "İzin": "#FFF0C6", "Devamsız": "#FADEE1", "Tatil": "#E9EDF3"}
+
+        root = ttk.Frame(win, padding=14)
+        root.pack(fill="both", expand=True)
+        toolbar = ttk.Frame(root)
+        toolbar.pack(fill="x", pady=(0, 12))
+        ttk.Label(toolbar, text="Personel Puantajı", font=("Segoe UI", 19, "bold")).pack(side="left")
+        body = ttk.Frame(root)
+        body.pack(fill="both", expand=True)
+        panel = ttk.LabelFrame(body, text="Günlük Puantaj", padding=12)
+        panel.pack(side="right", fill="y", padx=(12, 0))
+        left = ttk.Frame(body)
+        left.pack(side="left", fill="both", expand=True)
+        navigation = ttk.Frame(left)
+        navigation.pack(fill="x", pady=(0, 6))
+        grid_area = ttk.Frame(left)
+        grid_area.pack(fill="both", expand=True)
+        canvas = tk.Canvas(grid_area, highlightthickness=0, background="white")
+        scroll = ttk.Scrollbar(grid_area, orient="vertical", command=canvas.yview)
+        scroll.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        canvas.configure(yscrollcommand=scroll.set)
+        grid = tk.Frame(canvas, background="white")
+        grid_window = canvas.create_window(0, 0, window=grid, anchor="nw")
+        grid.bind("<Configure>", lambda event: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda event: canvas.itemconfigure(grid_window, width=event.width))
+
+        monthly = ttk.LabelFrame(left, text="Aylık Özet", padding=10)
+        monthly.pack(fill="x", pady=(10, 0))
+        ttk.Label(monthly, textvariable=summary, wraplength=620, justify="left").pack(anchor="w")
+        settings = ttk.Frame(monthly)
+        settings.pack(fill="x", pady=(8, 0))
+        ttk.Label(settings, text="Aylık saat böleni").pack(side="left")
+        rate_entry = ttk.Entry(settings, textvariable=rate, width=7)
+        rate_entry.pack(side="left", padx=5)
+        ttk.Label(settings, text="Mesai katsayısı").pack(side="left", padx=(8, 0))
+        factor_entry = ttk.Entry(settings, textvariable=factor, width=7)
+        factor_entry.pack(side="left", padx=5)
+        daily_settings = ttk.Frame(monthly)
+        daily_settings.pack(fill="x", pady=(5, 0))
+        ttk.Label(daily_settings, text="Günlük ücret için maaş gün böleni").pack(side="left")
+        ttk.Entry(daily_settings, textvariable=paid_days, width=7).pack(side="left", padx=5)
+
+        ttk.Label(panel, textvariable=current_day, font=("Segoe UI", 11, "bold"),
+                  wraplength=210).pack(anchor="w", pady=(0, 10))
+        fields = ttk.Frame(panel)
+        fields.pack(fill="x")
+        for row, (title, variable) in enumerate((
+            ("Durum", status), ("Başlangıç (SS:DD)", start), ("Bitiş (SS:DD)", end),
+            ("Mola (dk)", pause), ("Normal süre (saat)", normal),
+        )):
+            ttk.Label(fields, text=title).grid(row=row, column=0, sticky="w", pady=5)
+            if variable is status:
+                widget = ttk.Combobox(fields, textvariable=variable, values=statuses, state="readonly", width=11)
+            else:
+                widget = ttk.Entry(fields, textvariable=variable, width=13)
+            widget.grid(row=row, column=1, padx=(6, 0), sticky="ew")
+        ttk.Label(panel, textvariable=preview, wraplength=210).pack(anchor="w", pady=12)
+
+        def minutes(value):
+            hours, remainder = divmod(value, 60)
+            if not remainder:
+                return f"{hours} sa"
+            return f"{hours} sa {remainder} dk" if hours else f"{remainder} dk"
+
+        def day_range():
+            return monthrange(first.year, first.month)[1]
+
+        def month_key():
+            return first.strftime("%Y-%m")
+
+        def totals(pid):
+            rows = [row for (employee, _), row in daily.items() if employee == pid]
+            return (sum(row[0] == "Çalıştı" for row in rows), sum(row[0] == "İzin" for row in rows),
+                    sum(row[0] == "Devamsız" for row in rows), sum(row[5] for row in rows),
+                    sum(row[6] for row in rows))
+
+        def show_summary(*_):
+            if not selected:
+                summary.set("Aylık özeti görmek için bir personel seçin.")
+                return
+            pid = selected[0]
+            worked, leave, absent, net, overtime = totals(pid)
+            name, salary = roster[pid]
+            known = approved.get(pid)
+            divisor, multiplier = rate.get(), factor.get()
+            if known:
+                salary, divisor, multiplier, amount = known
+                amount = Decimal(str(amount))
+            else:
+                try:
+                    amount = puantaj_mesai_tutari(salary, overtime, divisor, multiplier)
+                except (ValueError, ArithmeticError):
+                    amount = None
+
+            def tl(value):
+                rounded = Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                return f"{rounded:,.2f}".translate(str.maketrans(",.", ".,")) + " TL"
+
+            def rate_label(divisor, unit):
+                try:
+                    return tl(puantaj_ucret_bol(salary, divisor)) + f" / {unit}"
+                except (ValueError, ArithmeticError):
+                    return "—"
+
+            if amount is None and overtime:
+                payment = "Fazla mesai tutarı için maaş, aylık saat böleni ve mesai katsayısı gerekli."
+            else:
+                amount = amount if amount is not None else Decimal(0)
+                label = "Onaylı fazla mesai" if known else "Aylık fazla mesai ücreti"
+                payment = f"{label} {tl(amount)}  ·  Maaş + mesai {tl(Decimal(str(salary)) + amount)}"
+            summary.set(
+                f"{name}  ·  Aylık maaş {tl(salary)}\n"
+                f"Toplam çalışma {minutes(net)}  ·  Fazla mesai {minutes(overtime)}\n"
+                f"Çalışma {worked} gün  ·  İzin {leave} gün  ·  Devamsızlık {absent} gün\n"
+                f"Günlük ücret {rate_label(paid_days.get(), 'gün')}  ·  Saatlik ücret {rate_label(divisor, 'sa')}\n"
+                f"{payment}"
+            )
+            approve_button.configure(state="disabled" if known or not overtime else "normal")
+            revoke_button.configure(state="normal" if known else "disabled")
+
+        def daily_preview(*_):
+            try:
+                _, _, net, overtime = puantaj_sureleri(status.get(), start.get(), end.get(), pause.get(), normal.get())
+                preview.set(f"Net çalışma {minutes(net)}\nFazla mesai {minutes(overtime)}")
+            except (ValueError, ArithmeticError):
+                preview.set("Saatleri ve mola süresini kontrol edin.")
+
+        def choose(pid, day):
+            nonlocal selected
+            previous_pid = selected[0] if selected else None
+            if previous_pid is not None and previous_pid != pid:
+                draft_rates[previous_pid] = (rate.get(), factor.get())
+            selected = (pid, day)
+            if previous_pid != pid:
+                divisor, multiplier = draft_rates.get(pid, employee_rates.get(pid, ("", "")))
+                rate.set(divisor)
+                factor.set(multiplier)
+            current_day.set(f"{roster[pid][0]} · {first.replace(day=day):%d.%m.%Y}")
+            row = daily.get(selected)
+            if row:
+                values = (*row[:3], str(row[3]), str(Decimal(row[4]) / 60)) if row[0] == "Çalıştı" else (row[0], "08:00", "17:00", "60", "8")
+            else:
+                values = ("Çalıştı", "08:00", "17:00", "60", "8")
+            for variable, value in zip((status, start, end, pause, normal), values):
+                variable.set(value)
+            locked = pid in approved
+            if locked:
+                rate.set(approved[pid][1])
+                factor.set(approved[pid][2])
+            for entry in (rate_entry, factor_entry):
+                entry.configure(state="readonly" if locked else "normal")
+            save_button.configure(state="disabled" if locked else "normal")
+            delete_button.configure(state="normal" if row and not locked else "disabled")
+            show_summary()
+            render()
+
+        def render():
+            for child in grid.winfo_children():
+                child.destroy()
+            days = list(range(week * 7 + 1, min(week * 7 + 7, day_range()) + 1))
+            months = ("Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran",
+                      "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık")
+            period_label.set(f"{days[0]}–{days[-1]} {months[first.month - 1]} {first.year}")
+            for col in range(9):
+                grid.columnconfigure(col, weight=0, minsize=0)
+            headings = ["Personel", *(f"{day:02}" for day in days), "Aylık Mesai"]
+            for col, title in enumerate(headings):
+                grid.columnconfigure(col, weight=2 if col == 0 else 1, minsize=64 if col else 146)
+                tk.Label(grid, text=title, bg="#102D53", fg="white", pady=8).grid(
+                    row=0, column=col, sticky="nsew", padx=1, pady=1)
+            for index, (pid, (name, _)) in enumerate(roster.items(), 1):
+                tk.Label(grid, text=name, anchor="w", padx=7, bg="#ECF1F8", wraplength=145).grid(
+                    row=index, column=0, sticky="nsew", pady=1)
+                for col, day in enumerate(days, 1):
+                    row = daily.get((pid, day))
+                    label, bg = "—", "#F3F6FA"
+                    if row:
+                        label = row[0] if row[0] != "Çalıştı" else minutes(row[5] - row[6])
+                        if row[6]:
+                            label += f" + {minutes(row[6])}"
+                        bg = "#DCEAFF" if row[6] else colors[row[0]]
+                    active = (pid, day) == selected
+                    tk.Button(grid, text=label, wraplength=85, bg=bg, relief="solid" if active else "flat",
+                              bd=int(active), command=lambda p=pid, d=day: choose(p, d)).grid(
+                                  row=index, column=col, sticky="nsew", padx=1, pady=1, ipady=6)
+                tk.Label(grid, text=minutes(totals(pid)[4]), bg="#ECF1F8").grid(
+                    row=index, column=len(days) + 1, sticky="nsew", pady=1)
+
+        def refresh():
+            nonlocal roster, daily, approved, selected, employee_rates
+            until = first.replace(day=day_range()).isoformat()
+            with connect() as db:
+                roster = {pid: (name, salary) for pid, name, salary in db.execute(
+                    "SELECT id,ad,maas FROM personel WHERE ? IS NULL OR id=? ORDER BY ad",
+                    (personel_id, personel_id))}
+                daily = {(pid, date.fromisoformat(day).day): tuple(values)
+                         for pid, day, *values in db.execute("""SELECT personel_id,tarih,durum,baslangic,bitis,mola,
+                             normal_dakika,net_dakika,mesai_dakika FROM personel_puantaj
+                             WHERE tarih BETWEEN ? AND ?""", (first.isoformat(), until))}
+                approved = {pid: tuple(values) for pid, *values in db.execute("""
+                    SELECT a.personel_id,a.maas,a.bolen,a.katsayi,m.tutar
+                    FROM puantaj_onay a JOIN maas_odeme m ON m.id=a.odeme_id WHERE a.donem=?""", (month_key(),))}
+                employee_rates = {pid: (divisor, multiplier) for pid, divisor, multiplier in db.execute(
+                    "SELECT personel_id,bolen,katsayi FROM puantaj_onay WHERE donem<=? ORDER BY donem", (month_key(),))}
+            if roster:
+                pid = selected[0] if selected and selected[0] in roster else next(iter(roster))
+                day = min(week * 7 + 7, day_range(), max(week * 7 + 1, selected[1] if selected else date.today().day))
+                choose(pid, day)
+            else:
+                selected = None
+                current_day.set("Personel kaydı bulunamadı")
+                for button in (save_button, delete_button, approve_button, revoke_button):
+                    button.configure(state="disabled")
+                render()
+                show_summary()
+
+        def move_month(delta):
+            nonlocal first, week, selected
+            target = first + timedelta(days=day_range() if delta > 0 else -1)
+            first, week, selected = target.replace(day=1), 0, None
+            draft_rates.clear()
+            refresh()
+
+        def move_week(delta):
+            nonlocal week
+            week = max(0, min((day_range() - 1) // 7, week + delta))
+            refresh()
+
+        def record(remove=False):
+            if not selected:
+                return
+            pid, day = selected
+            day_key = first.replace(day=day).isoformat()
+            try:
+                with connect() as db:
+                    db.execute("BEGIN IMMEDIATE")
+                    if db.execute("SELECT 1 FROM puantaj_onay WHERE personel_id=? AND donem=?",
+                                  (pid, month_key())).fetchone():
+                        raise ValueError("Dönem onaylandı. Düzenlemek için önce mesai onayını kaldırın.")
+                    if remove:
+                        db.execute("DELETE FROM personel_puantaj WHERE personel_id=? AND tarih=?", (pid, day_key))
+                    else:
+                        durations = puantaj_sureleri(status.get(), start.get(), end.get(), pause.get(), normal.get())
+                        times = (start.get(), end.get()) if status.get() == "Çalıştı" else ("", "")
+                        db.execute("""INSERT INTO personel_puantaj
+                            (personel_id,tarih,durum,baslangic,bitis,mola,normal_dakika,net_dakika,mesai_dakika)
+                            VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(personel_id,tarih) DO UPDATE SET
+                            durum=excluded.durum,baslangic=excluded.baslangic,bitis=excluded.bitis,
+                            mola=excluded.mola,normal_dakika=excluded.normal_dakika,net_dakika=excluded.net_dakika,
+                            mesai_dakika=excluded.mesai_dakika""", (pid, day_key, status.get(), *times, *durations))
+                refresh()
+            except (ValueError, ArithmeticError, sqlite3.Error) as error:
+                messagebox.showerror("Puantaj kaydedilemedi", str(error), parent=win)
+
+        def approve(revoke=False):
+            if not selected:
+                return
+            pid = selected[0]
+            if not messagebox.askyesno("Mesai onayı", "Onay ve bağlı maaş mesai kaydı kaldırılsın mı?" if revoke
+                                      else "Hesaplanan fazla mesai maaş işlemlerine eklensin mi?", parent=win):
+                return
+            try:
+                with connect() as db:
+                    db.execute("BEGIN IMMEDIATE")
+                    save_puantaj_approval(db, pid, first, rate.get(), factor.get(), revoke=revoke)
+                refresh()
+                self.refresh_all()
+                if after_change:
+                    after_change()
+            except (ValueError, ArithmeticError, sqlite3.Error) as error:
+                messagebox.showerror("Mesai onayı tamamlanamadı", str(error), parent=win)
+
+        def report(kind):
+            rows = [("Personel", "Tarih", "Durum", "Başlangıç", "Bitiş", "Net", "Fazla mesai")]
+            for (pid, day), row in sorted(daily.items(), key=lambda item: (item[0][1], item[0][0])):
+                if pid in roster:
+                    rows.append((roster[pid][0], f"{first.replace(day=day):%d.%m.%Y}", *row[:3],
+                                 minutes(row[5]), minutes(row[6])))
+            for pid, (name, salary) in roster.items():
+                worked, leave, absent, net, overtime = totals(pid)
+                known = approved.get(pid)
+                if known:
+                    amount = f"Onaylı {known[3]:.2f} TL"
+                else:
+                    try:
+                        divisor, multiplier = ((rate.get(), factor.get()) if selected and selected[0] == pid
+                                               else draft_rates.get(pid, employee_rates.get(pid, ("", ""))))
+                        amount = f"Taslak {puantaj_mesai_tutari(salary, overtime, divisor, multiplier):.2f} TL"
+                    except (ValueError, ArithmeticError):
+                        amount = ""
+                rows.append((name, "Aylık toplam", f"{worked} çalışma / {leave} izin", f"{absent} devamsız",
+                             amount, minutes(net), minutes(overtime)))
+            title = f"Personel Puantajı {month_key()}"
+            try:
+                if kind == "Yazdır":
+                    self._print_report_rows(title, rows)
+                elif kind == "PDF":
+                    self._preview_then_save_pdf(title, rows=rows)
+                else:
+                    from openpyxl import Workbook
+                    path = filedialog.asksaveasfilename(parent=win, defaultextension=".xlsx",
+                                                        filetypes=[("Excel", "*.xlsx")],
+                                                        initialfile=f"HOYTAS_Puantaj_{month_key()}.xlsx")
+                    if path:
+                        book = Workbook()
+                        sheet = book.active
+                        sheet.title = "Puantaj"
+                        sheet.freeze_panes = "B2"
+                        for values in rows:
+                            sheet.append(values)
+                            for cell in sheet[sheet.max_row]:
+                                if cell.data_type == "f":
+                                    cell.data_type = "s"
+                        for column in "ABCDEFG":
+                            sheet.column_dimensions[column].width = 24
+                        book.save(path)
+            except (OSError, ValueError, RuntimeError, ImportError) as error:
+                messagebox.showerror("Puantaj raporu oluşturulamadı", str(error), parent=win)
+
+        for label, command in (("Önceki Ay", lambda: move_month(-1)), ("Sonraki Ay", lambda: move_month(1)),
+                               ("Yenile", refresh)):
+            ttk.Button(toolbar, text=label, command=command).pack(side="left", padx=(8, 0))
+        for kind in ("Yazdır", "PDF", "Excel"):
+            ttk.Button(toolbar, text=kind, command=lambda output=kind: report(output)).pack(side="right", padx=3)
+        ttk.Button(navigation, text="‹ Önceki Hafta", command=lambda: move_week(-1)).pack(side="left")
+        ttk.Button(navigation, text="Sonraki Hafta ›", command=lambda: move_week(1)).pack(side="right")
+        ttk.Label(navigation, textvariable=period_label, font=("Segoe UI", 12, "bold")).pack()
+        save_button = ttk.Button(panel, text="Kaydet", command=record)
+        save_button.pack(fill="x")
+        delete_button = ttk.Button(panel, text="Günü Sil", command=lambda: (
+            messagebox.askyesno("Puantaj", "Günlük kayıt silinsin mi?", parent=win) and record(True)))
+        delete_button.pack(fill="x", pady=5)
+        ttk.Button(panel, text="İptal", command=lambda: selected and choose(*selected)).pack(fill="x")
+        approve_button = ttk.Button(settings, text="Mesaiyi Onayla", command=approve)
+        approve_button.pack(side="right")
+        revoke_button = ttk.Button(settings, text="Onayı Kaldır", command=lambda: approve(True))
+        revoke_button.pack(side="right", padx=5)
+        for variable in (status, start, end, pause, normal):
+            variable.trace_add("write", daily_preview)
+        for variable in (rate, factor, paid_days):
+            variable.trace_add("write", show_summary)
+        week = (date.today().day - 1) // 7
+        refresh()
+
     def _build_personel(self):
         bar = ttk.Frame(self.personel_tab); bar.pack(fill="x")
         ttk.Label(bar, text="Personel", font=("Segoe UI", 16, "bold")).pack(side="left")
+        ttk.Button(bar, text="Puantaj", command=self.show_puantaj).pack(side="left", padx=12)
         ttk.Button(bar, text="Personel Ekle", command=self.add_personel).pack(side="right")
         self.personel_tree = self._tree(self.personel_tab, ("id","ad","gorev","telefon","maas","notlar"),
             ("ID","Ad Soyad","Görev","Telefon","Aylık Maaş (TL)","Notlar"), (50,220,180,140,150,300))
@@ -2762,6 +3268,109 @@ class HoytasApp(tk.Tk):
         ttk.Button(row, text="Personel Kartını Aç", command=self.show_personel_karti).pack(side="left", padx=(0, 8))
         ttk.Button(row,text="Seçili Personeli Düzenle",command=lambda:self.edit_selected(self.personel_tree,"personel")).pack(side="left")
         ttk.Button(row, text="Seçili Personeli Sil", command=lambda: self.delete_selected(self.personel_tree,"personel")).pack(side="right")
+
+    def _build_mastarci(self):
+        bar = ttk.Frame(self.mastarci_tab)
+        bar.pack(fill="x")
+        ttk.Label(bar, text="Mastarcı Hesabı", font=("Segoe UI", 16, "bold")).pack(side="left")
+        ttk.Button(bar, text="Yeni Mastar İşi", command=self._edit_mastarci).pack(side="right")
+        ttk.Label(self.mastarci_tab, text="Dışarıdan alınan mastar işleri, hakediş ve ödemeler",
+                  foreground="#315B46").pack(anchor="w", pady=(2, 8))
+        self.mastarci_total = ttk.Label(self.mastarci_tab, font=("Segoe UI", 11, "bold"))
+        self.mastarci_total.pack(anchor="w", pady=6)
+        actions = ttk.Frame(self.mastarci_tab)
+        actions.pack(fill="x", side="bottom", pady=(8, 0))
+        ttk.Button(actions, text="Düzenle", command=lambda: self._edit_mastarci("edit")).pack(side="left")
+        ttk.Button(actions, text="Ödeme Ekle", command=lambda: self._edit_mastarci("pay")).pack(side="left", padx=6)
+        ttk.Button(actions, text="Yenile", command=self.refresh_all).pack(side="left")
+        ttk.Button(actions, text="Sil", command=lambda: self._edit_mastarci("delete")).pack(side="right")
+        self.mastarci_tree = self._tree(self.mastarci_tab,
+            ("id", "tarih", "mastarci", "musteri", "santiye", "m3", "fiyat", "hakedis", "odenen", "kalan", "aciklama"),
+            ("ID", "İş Tarihi", "Mastarcı / Ekip", "Müşteri", "Şantiye", "Miktar (m³)", "TL / m³",
+             "Hakediş (TL)", "Ödenen (TL)", "Kalan (TL)", "Açıklama"),
+            (38, 96, 144, 147, 125, 90, 90, 106, 102, 102, 136))
+        self.mastarci_tree.bind("<Double-1>", lambda _event: self._edit_mastarci("edit"))
+        self.mastarci_tree.unbind("<Button-3>")
+        self.mastarci_tree.unbind("<Control-Button-1>")
+
+    def _edit_mastarci(self, action="add"):
+        tree = self.mastarci_tree
+        record_id = None
+        try:
+            if action != "add":
+                selected = tree.selection()
+                if not selected:
+                    return messagebox.showinfo("İş seçin", "Önce listeden bir mastar işi seçin.", parent=self)
+                record_id = int(tree.item(selected[0], "values")[0])
+                with connect() as db:
+                    row = db.execute("""SELECT tarih,mastarci,santiye,miktar_m3,birim_fiyat,hakedis_kurus,
+                        odenen_kurus,aciklama,musteri FROM mastarci_hesap WHERE id=?""", (record_id,)).fetchone()
+                if row is None:
+                    return self.refresh_all()
+            if action == "delete":
+                if not messagebox.askyesno("Mastar işini sil", "Seçili iş ve ödeme bilgisi silinsin mi?", parent=self):
+                    return
+                with connect() as db:
+                    db.execute("DELETE FROM mastarci_hesap WHERE id=?", (record_id,))
+            elif action == "pay":
+                remaining = Decimal(row[5] - row[6]) / 100
+                if remaining <= 0:
+                    return messagebox.showinfo("Ödeme tamamlandı", "Bu işin kalan bakiyesi yok.", parent=self)
+                data = self.prompt(f"Mastarcı Ödemesi · Kalan {remaining:.2f} TL",
+                                   [("tutar", "Ödeme (TL)", "entry", None)])
+                if not data:
+                    return
+                amount = mastarci_odeme_kurus(data["tutar"])
+                with connect() as db:
+                    changed = db.execute("""UPDATE mastarci_hesap SET odenen_kurus=odenen_kurus+?
+                        WHERE id=? AND odenen_kurus+?<=hakedis_kurus""", (amount, record_id, amount))
+                    if changed.rowcount != 1:
+                        raise ValueError("Ödeme güncel kalan bakiyeyi aşamaz.")
+            else:
+                with connect() as db:
+                    names = [name for name, in db.execute(
+                        "SELECT DISTINCT mastarci FROM mastarci_hesap ORDER BY mastarci")]
+                    customers = [name for name, in db.execute("""SELECT unvan FROM cari
+                        WHERE tur='Müşteri' AND TRIM(unvan)<>''
+                        UNION SELECT musteri FROM mastarci_hesap WHERE TRIM(musteri)<>''
+                        ORDER BY 1""")]
+                fields = [
+                    ("tarih", "İş tarihi (GG.AA.YYYY)", "entry", None),
+                    ("mastarci", "Mastarcı / Ekip", "combo_edit", names),
+                    ("musteri", "Müşteri", "combo_edit", customers),
+                    ("santiye", "Şantiye", "entry", None),
+                    ("m3", "Miktar (m³)", "entry", None),
+                    ("fiyat", "Birim fiyat (TL/m³)", "entry", None),
+                    ("aciklama", "Açıklama", "entry", None),
+                ]
+                initial = {"tarih": date.today().isoformat()}
+                if record_id is not None:
+                    initial = dict(zip(("tarih", "mastarci", "santiye", "m3", "fiyat", "aciklama", "musteri"),
+                                       (*row[:5], row[7], row[8])))
+                data = self.prompt("Mastarcı İşi", fields, initial)
+                if not data:
+                    return
+                if not data["mastarci"]:
+                    raise ValueError("Mastarcı veya ekip adı girin.")
+                if not data["musteri"] or not data["tarih"]:
+                    raise ValueError("Müşteri adı ve iş tarihi girin.")
+                quantity, price, total = mastarci_hakedis(data["m3"], data["fiyat"])
+                values = (data["tarih"], data["mastarci"], data["santiye"], str(quantity), str(price),
+                          total, data["aciklama"], data["musteri"])
+                with connect() as db:
+                    if record_id is None:
+                        db.execute("""INSERT INTO mastarci_hesap
+                            (tarih,mastarci,santiye,miktar_m3,birim_fiyat,hakedis_kurus,aciklama,musteri)
+                            VALUES(?,?,?,?,?,?,?,?)""", values)
+                    else:
+                        changed = db.execute("""UPDATE mastarci_hesap SET tarih=?,mastarci=?,santiye=?,
+                            miktar_m3=?,birim_fiyat=?,hakedis_kurus=?,aciklama=?,musteri=?
+                            WHERE id=? AND odenen_kurus<=?""", (*values, record_id, total))
+                        if changed.rowcount != 1:
+                            raise ValueError("Hakediş güncel ödenen tutarın altına inemez.")
+            self.refresh_all()
+        except (ValueError, ArithmeticError, sqlite3.Error) as error:
+            messagebox.showerror("Mastarcı işlemi kaydedilemedi", str(error), parent=self)
 
     def _build_beton(self):
         bar = ttk.Frame(self.beton_tab); bar.pack(fill="x")
@@ -3632,6 +4241,13 @@ class HoytasApp(tk.Tk):
             shown = [r for r in shown if name_term in normalize_search_text(r[1])]
             total = sum(safe_float(r[4]) for r in shown)
             self.borc_total_label.config(text=f"Toplam kalan borç: {total:,.2f} TL   |   Borçlu cari: {len(shown)}")
+        if tree is getattr(self, "mastarci_tree", None):
+            volume, earned, paid = (sum(Decimal(row[index].replace(",", ".")) for row in shown)
+                                    for index in (5, 7, 8))
+            self.mastarci_total.configure(text=(
+                f"Listelenen işler {len(shown)}   |   Toplam {volume:f} m³   |   "
+                f"Hakediş {earned:.2f} TL   |   Ödenen {paid:.2f} TL   |   Kalan {earned - paid:.2f} TL"
+            ).replace(".", ","))
         row_tags = getattr(tree, "_row_tags", {})
         signature = (tuple(tuple(r) for r in shown), tuple(sorted(row_tags.items())))
         children = tree.get_children()
@@ -3679,6 +4295,14 @@ class HoytasApp(tk.Tk):
 
             self.fill_tree(self.hareket_tree, c.execute("""SELECT h.id,h.tarih,h.tur,h.kategori,COALESCE(c.unvan,''),h.aciklama,printf('%.2f',h.tutar),h.odeme_yontemi FROM hareket h LEFT JOIN cari c ON c.id=h.cari_id ORDER BY h.tarih ASC,h.id ASC""").fetchall())
             self._refresh_cheque_view(c)
+            mastar_rows = c.execute("""SELECT id,tarih,mastarci,musteri,santiye,miktar_m3,birim_fiyat,
+                hakedis_kurus,odenen_kurus,aciklama FROM mastarci_hesap ORDER BY tarih,id""")
+            self.fill_tree(self.mastarci_tree, [
+                (rid, day, name, customer, site, format(Decimal(qty).normalize(), "f").replace(".", ","),
+                 format(Decimal(price).normalize(), "f").replace(".", ","),
+                 *(f"{Decimal(cents) / 100:.2f}".replace(".", ",") for cents in (total, paid, total - paid)), note)
+                for rid, day, name, customer, site, qty, price, total, paid, note in mastar_rows
+            ])
             self.fill_tree(self.stok_tree, c.execute("SELECT id,kod,ad,birim,printf('%.2f',miktar),printf('%.2f',birim_fiyat),printf('%.2f',miktar*birim_fiyat) FROM stok ORDER BY ad").fetchall())
             self.fill_tree(self.personel_tree, c.execute("SELECT id,ad,gorev,telefon,printf('%.2f',maas),notlar FROM personel ORDER BY ad").fetchall())
             beton_rows = c.execute("""SELECT b.id,b.tarih,COALESCE(c.unvan,''),COALESCE(b.beton_cinsi,''),b.miktar_m3,
@@ -3767,6 +4391,7 @@ class HoytasApp(tk.Tk):
         # Türkçe karakterleri destekleyen Windows yazı tipini bul; Helvetica son çare.
         font_name="Helvetica"
         font_paths=[os.path.join(APP_DIR,"fonts","DejaVuSans.ttf"),
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
                     r"C:\Windows\Fonts\arial.ttf",r"C:\Windows\Fonts\Arial.ttf",
                     r"C:\Windows\Fonts\calibri.ttf",r"C:\Windows\Fonts\tahoma.ttf",
                     r"C:\Windows\Fonts\segoeui.ttf"]

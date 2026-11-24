@@ -1,0 +1,6 @@
+HOYTAŞ v108
+
+- Personel Puantajı: günlük çalışma, mola, izin ve devamsızlık kayıtları; aylık çalışma ve fazla mesai toplamları; Excel ve PDF çıktısı.
+- Aylık ücret özeti: günlük ve saatlik ücret, fazla mesai tutarı ve maaş + mesai toplamı. Onaylanan mesai maaş işlemlerine bir kez eklenir.
+- Mastarcı Hesabı: dış ekip, müşteri, iş tarihi, şantiye, metreküp ve birim fiyat; otomatik hakediş, ödeme ve kalan tutar.
+- Şema yükseltmesinden önce doğrulanmış veritabanı yedeği alınır. Yeni kayıtlar bilgisayarın yerel profiline yazılır.
