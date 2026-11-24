@@ -1,0 +1,4 @@
+HOYTAŞ v107
+• Toplu cari kontrolünde her cari ayrı seçilir ve onarımı ayrı onaylanır.
+• Borç kontrolünde beton hareket bağlantıları bir kez taranır.
+• Mevcut bilgisayarlarda eski kayıtların aktarımı giriş ekranını bekletmeden arka planda yürür.

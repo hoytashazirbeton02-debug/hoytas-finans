@@ -27,7 +27,7 @@ from xml.sax.saxutils import escape
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
 TARGET_SCHEMA_VERSION = 53
-APP_VERSION = 106
+APP_VERSION = 107
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 ISOLATED_PROFILE_DIR = os.environ.get("HOYTAS_PROFILE_DIR", "").strip()
 USER_DATA_DIR = ISOLATED_PROFILE_DIR or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
@@ -640,18 +640,29 @@ def sync_beton_sale_cari_movement(db, sale_id):
 
 
 
-def audit_beton_cari_amounts(db, cari_id):
+def index_beton_movements(db):
+    linked, legacy = {}, set()
+    for row in db.execute("""SELECT id,cari_id,tarih,tutar,COALESCE(aciklama,'')
+        FROM hareket WHERE tur='Borç' AND kategori='Satış' ORDER BY id"""):
+        sale_id = linked_beton_sale_id(row[4])
+        if sale_id is None:
+            legacy.add(row[1])
+        else:
+            linked.setdefault(sale_id, []).append(row)
+    return linked, legacy
+
+
+def audit_beton_cari_amounts(db, cari_id, movement_index=None):
     """Read-only reconciliation: distinguish absent, mismatched and ambiguous links.
 
     A sale with a linked zero-amount movement is NOT a missing sale.
     Never infer that an unrelated manual debit belongs to a sale.
     """
     sales = db.execute("SELECT id,tarih,toplam FROM beton_satis WHERE cari_id=? ORDER BY tarih,id", (cari_id,)).fetchall()
-    movements = db.execute("""SELECT id,cari_id,tarih,tutar,COALESCE(aciklama,'')
-        FROM hareket WHERE tur='Borç' AND kategori='Satış' ORDER BY id""").fetchall()
+    linked, legacy = index_beton_movements(db) if movement_index is None else movement_index
     missing, mismatched, ambiguous = [], [], []
     for sale_id, date, amount in sales:
-        matches = [m for m in movements if linked_beton_sale_id(m[4]) == sale_id]
+        matches = linked.get(sale_id, ())
         if len(matches) == 1:
             m = matches[0]
             if m[1] != cari_id or m[2] != date or abs(safe_float(m[3])-safe_float(amount)) > .009:
@@ -659,8 +670,7 @@ def audit_beton_cari_amounts(db, cari_id):
         elif len(matches) > 1:
             ambiguous.append((sale_id, date, safe_float(amount), 'Çoklu bağlantı'))
         else:
-            candidates = [m for m in movements if m[1] == cari_id and linked_beton_sale_id(m[4]) is None]
-            if candidates:
+            if cari_id in legacy:
                 ambiguous.append((sale_id, date, safe_float(amount), 'Kimliği belirsiz eski hareket'))
             else:
                 missing.append((sale_id, date, safe_float(amount)))
@@ -673,20 +683,28 @@ def find_missing_beton_movements(db, cari_id):
     return missing, [row[:3] for row in ambiguous]
 
 
+def audit_cari(db, cid, name, movement_index=None):
+    missing, wrong, ambiguous = audit_beton_cari_amounts(db, cid, movement_index)
+    debt, credit = db.execute("""SELECT COALESCE(SUM(CASE WHEN tur='Borç' THEN tutar ELSE 0 END),0),
+        COALESCE(SUM(CASE WHEN tur='Alacak' THEN tutar ELSE 0 END),0)
+        FROM hareket WHERE cari_id=?""", (cid,)).fetchone()
+    view = db.execute("SELECT toplam_borc,toplam_alacak,bakiye FROM cari_bakiye WHERE cari_id=?", (cid,)).fetchone()
+    balance_error = not view or any(abs(safe_float(a)-safe_float(b)) > .009
+        for a,b in zip(view or (), (debt,credit,debt-credit)))
+    delta = round(sum(x[2] for x in missing)+sum(x[2]-x[4] for x in wrong), 2)
+    return cid, name, missing, wrong, ambiguous, balance_error, delta
+
+
 def audit_all_cari(db):
     """Read-only bulk audit, including closed and credit-balance accounts."""
-    results = []
-    for cid, name in db.execute("SELECT id,unvan FROM cari ORDER BY unvan,id").fetchall():
-        missing, wrong, ambiguous = audit_beton_cari_amounts(db, cid)
-        debt, credit = db.execute("""SELECT COALESCE(SUM(CASE WHEN tur='Borç' THEN tutar ELSE 0 END),0),
-            COALESCE(SUM(CASE WHEN tur='Alacak' THEN tutar ELSE 0 END),0)
-            FROM hareket WHERE cari_id=?""", (cid,)).fetchone()
-        view = db.execute("SELECT toplam_borc,toplam_alacak,bakiye FROM cari_bakiye WHERE cari_id=?", (cid,)).fetchone()
-        balance_error = not view or any(abs(safe_float(a)-safe_float(b)) > .009
-            for a,b in zip(view or (), (debt,credit,debt-credit)))
-        results.append((cid,name,missing,wrong,ambiguous,balance_error,
-                        round(sum(x[2] for x in missing)+sum(x[2]-x[4] for x in wrong),2)))
-    return results
+    movement_index = index_beton_movements(db)
+    return [audit_cari(db, cid, name, movement_index)
+            for cid, name in db.execute("SELECT id,unvan FROM cari ORDER BY unvan,id")]
+
+
+def repairable_cari_movements(audit):
+    cid, _, _, wrong, _, balance_error, _ = audit
+    return [movement for movement in wrong if movement[5] == cid and not balance_error]
 
 
 def normalize_date(value):
@@ -903,7 +921,7 @@ class HoytasApp(tk.Tk):
         from hybrid_desktop_membership import sign_in
 
         from pathlib import Path
-        from hybrid_enrollment import install_baseline, restore_enrolled_history
+        from hybrid_enrollment import install_baseline
         from hybrid_identity import replica_slot
         from hybrid_start_live import readonly
 
@@ -920,11 +938,6 @@ class HoytasApp(tk.Tk):
                 session = account["session"]
                 relay = HTTPRelay(self.membership_client.url, session)
                 install_baseline(database, legacy, self.membership_client, session, connect, relay)
-            elif not setup_admin:
-                try:
-                    restore_enrolled_history(database, self.membership_client, account["session"], connect)
-                except (OSError, ValueError, RuntimeError, sqlite3.Error) as error:
-                    self._log_update_error(error)
             with connect() as db:
                 if replica_slot(db) is None:
                     raise RuntimeError("Canlı profil kimliği bulunamadı.")
@@ -2370,43 +2383,64 @@ class HoytasApp(tk.Tk):
             ttk.Label(win,text=f"{len(rows)} cari kontrol edildi; {len(issues)} inceleme gerekli.").pack(anchor="w",padx=12,pady=8)
             frame=ttk.Frame(win); frame.pack(fill="both",expand=True,padx=12)
             cols=("name","missing","wrong","ambiguous","balance","delta")
-            tree=ttk.Treeview(frame,columns=cols,show="headings")
+            tree=ttk.Treeview(frame,columns=cols,show="headings",selectmode="browse")
             for col,label,width in zip(cols,("Cari","Eksik","Tutar hatası","Belirsiz","Bakiye hatası","Olası fark TL"),(260,80,100,85,100,130)):
                 tree.heading(col,text=label); tree.column(col,width=width)
             scroll=ttk.Scrollbar(frame,orient="vertical",command=tree.yview)
             tree.configure(yscrollcommand=scroll.set)
             scroll.pack(side="right",fill="y"); tree.pack(fill="both",expand=True)
-            for cid,name,missing,wrong,ambiguous,err,delta in issues:
-                tree.insert("","end",values=(name,len(missing),len(wrong),len(ambiguous),"Var" if err else "Yok",f"{delta:,.2f}"))
-            ttk.Label(footer,text="Yalnızca tekil, aynı cariye bağlı tutar hataları toplu onarılır. Eksik, belirsiz ve diğer hatalar elle incelenir.",wraplength=620).pack(anchor="w",pady=4)
-            def eligible(data):
-                return [(r[0],x) for r in data if not r[5] for x in r[3] if x[5]==r[0]]
-            planned=eligible(rows)
+            by_id = {str(row[0]): row for row in issues}
+            for cid, name, missing, wrong, ambiguous, err, delta in issues:
+                tree.insert("", "end", iid=str(cid),
+                            values=(name, len(missing), len(wrong), len(ambiguous),
+                                    "Var" if err else "Yok", f"{delta:,.2f}"))
+            ttk.Label(footer, text="Bir cari seçin. Kesin tutar ve tarih hataları seçili cari için onarılır. "
+                      "Eksik, belirsiz ve diğer hatalar elle incelenir.",
+                      wraplength=620).pack(anchor="w", pady=4)
+
             def repair():
+                selection = tree.selection()
+                if not selection:
+                    return
+                selected = by_id[selection[0]]
+                cid, name = selected[:2]
+                planned = repairable_cari_movements(selected)
                 if not planned:
-                    return messagebox.showinfo("Onarım","Kesin tutar hatası yok; diğer kayıtları ayrı inceleyin.",parent=win)
-                if not messagebox.askyesno("Yedekli onarım",f"{len(planned)} bağlı hareket düzeltilecek. Net borç farkı: {sum(x[2]-x[4] for _,x in planned):,.2f} TL. Onaylıyor musunuz?",parent=win):
+                    return
+                difference = sum(row[2] - row[4] for row in planned)
+                if not messagebox.askyesno(
+                    "Seçili cari için yedekli onarım",
+                    f"{name}\n\nDüzeltilecek hareket: {len(planned)}\n"
+                    f"Net borç farkı: {difference:,.2f} TL\n\nOnaylıyor musunuz?",
+                    parent=win,
+                ):
                     return
                 try:
                     with connect() as db:
-                        backup=_verified_sqlite_backup(db,"toplu_cari_v89")
+                        backup = _verified_sqlite_backup(db, "cari_onarim_v107")
                         db.execute("BEGIN IMMEDIATE")
-                        try:
-                            if eligible(audit_all_cari(db)) != planned:
-                                raise RuntimeError("Kayıtlar değişti. Kontrolü yeniden çalıştırın.")
-                            for cid,x in planned:
-                                db.execute("UPDATE hareket SET tutar=?,tarih=? WHERE id=? AND cari_id=?",(x[2],x[1],x[3],cid))
-                            db.commit()
-                        except Exception:
-                            db.rollback()
-                            raise
+                        current = db.execute("SELECT unvan FROM cari WHERE id=?", (cid,)).fetchone()
+                        if current != (name,) or repairable_cari_movements(audit_cari(db, cid, name)) != planned:
+                            raise RuntimeError("Seçilen carinin kayıtları değişti. Kontrolü yeniden çalıştırın.")
+                        for _, date, amount, movement_id, _ in planned:
+                            db.execute("UPDATE hareket SET tutar=?,tarih=? WHERE id=? AND cari_id=?",
+                                       (amount, date, movement_id, cid))
                     win.destroy()
                     self.refresh_all()
-                    messagebox.showinfo("Onarım",f"{len(planned)} hareket düzeltildi. Yedek: {backup}",parent=self)
+                    messagebox.showinfo("Onarım", f"{name} için {len(planned)} hareket düzeltildi.\nYedek: {backup}",
+                                        parent=self)
                     self.bulk_cari_audit()
                 except Exception as exc:
-                    messagebox.showerror("Onarım hatası",str(exc),parent=self)
-            ttk.Button(footer,text="Kesin tutar hatalarını onar",command=repair).pack(side="left",padx=12,pady=8)
+                    messagebox.showerror("Onarım hatası", str(exc), parent=self)
+
+            def update_repair_button(_event):
+                selection = tree.selection()
+                enabled = selection and repairable_cari_movements(by_id[selection[0]])
+                repair_button.state(["!disabled" if enabled else "disabled"])
+
+            repair_button = ttk.Button(footer, text="Seçili Cariyi Onar", command=repair, state="disabled")
+            repair_button.pack(side="left", padx=12, pady=8)
+            tree.bind("<<TreeviewSelect>>", update_repair_button)
             ttk.Button(footer,text="Kapat",command=win.destroy).pack(side="right",padx=12,pady=8)
         except Exception as exc:
             messagebox.showerror("Cari kontrol hatası",str(exc),parent=self)

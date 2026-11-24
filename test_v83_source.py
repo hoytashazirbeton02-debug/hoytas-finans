@@ -42,7 +42,7 @@ assert section.count('INSERT INTO banka_hareket(') == 1
 # v88: exact legacy IDs, mismatched values and ambiguous legacy rows.
 import sqlite3, re
 ns = {"re": re, "safe_float": float}
-for name in ("linked_beton_sale_id", "audit_beton_cari_amounts", "sync_beton_sale_cari_movement"):
+for name in ("linked_beton_sale_id", "index_beton_movements", "audit_beton_cari_amounts", "sync_beton_sale_cari_movement"):
     fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
     exec(compile(ast.Module(body=[fn], type_ignores=[]), "v88", "exec"), ns)
 ns["format_beton_aciklama"] = lambda *a, **k: "Beton"
@@ -64,8 +64,9 @@ db.execute("UPDATE hareket SET aciklama='Eski kayit',tutar=111200 WHERE id=1")
 assert audit(db,1)[0] == [] and len(audit(db,1)[2]) == 1
 print("v88 reconciliation checks passed")
 
-fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "audit_all_cari")
-exec(compile(ast.Module(body=[fn],type_ignores=[]),"v89","exec"),ns)
+for name in ("audit_cari", "audit_all_cari", "repairable_cari_movements"):
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
+    exec(compile(ast.Module(body=[fn], type_ignores=[]), "bulk_cari_audit", "exec"), ns)
 db.executescript("""
 CREATE TABLE cari(id INTEGER,unvan TEXT);
 INSERT INTO cari VALUES(1,'A'),(2,'B');

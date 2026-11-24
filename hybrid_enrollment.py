@@ -137,3 +137,5 @@ def restore_enrolled_history(target, client, session, connect):
             db.execute(sql)
         if db.execute("PRAGMA foreign_key_check").fetchone():
             raise RuntimeError("Geçmiş kayıtları ilişki kontrolünden geçmedi.")
+
+    return True
