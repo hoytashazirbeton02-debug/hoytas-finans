@@ -31,7 +31,7 @@ class PuantajTests(unittest.TestCase):
 
     def test_manual_overtime_replaces_automatic_and_drives_monthly_pay(self):
         with tempfile.TemporaryDirectory() as folder, connect(Path(folder) / "puantaj.db") as db:
-            employee = db.execute("INSERT INTO personel(ad,maas) VALUES('Örnek Personel',36000)").lastrowid
+            employee = db.execute("INSERT INTO personel(ad,maas) VALUES('Örnek Personel',70000)").lastrowid
             for day, value in enumerate(("2", "3", "4", "6", "0"), start=1):
                 override = puantaj_manuel_mesai(value)
                 durations = puantaj_sureleri("Çalıştı", "08:00", "18:00", "60", "8", override)
@@ -42,7 +42,10 @@ class PuantajTests(unittest.TestCase):
                     VALUES(?,?,'Çalıştı','08:00','18:00',?,?,?,?,?)""",
                     (employee, f"2026-11-{day:02}", *durations, override))
             self.assertEqual(puantaj_mesai_saat_ucreti(36000, "225", "1,5"), Decimal("240"))
-            save_puantaj_approval(db, employee, date(2026, 11, 1), "225", "1,5")
+            with self.assertRaises(ValueError):
+                save_puantaj_approval(db, employee, date(2026, 11, 1), hourly="")
+            save_puantaj_approval(db, employee, date(2026, 11, 1), hourly="240")
+            self.assertEqual(db.execute("SELECT saatlik_mesai_ucreti FROM puantaj_onay").fetchone(), ("240",))
             self.assertEqual(db.execute("SELECT tutar FROM maas_odeme").fetchone(), (3600,))
 
         self.assertIsNone(puantaj_manuel_mesai(" "))

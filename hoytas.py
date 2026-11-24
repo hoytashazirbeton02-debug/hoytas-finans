@@ -28,8 +28,8 @@ from xml.sax.saxutils import escape
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
-TARGET_SCHEMA_VERSION = 57
-APP_VERSION = 109
+TARGET_SCHEMA_VERSION = 58
+APP_VERSION = 110
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 ISOLATED_PROFILE_DIR = os.environ.get("HOYTAS_PROFILE_DIR", "").strip()
 USER_DATA_DIR = ISOLATED_PROFILE_DIR or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
@@ -200,6 +200,7 @@ CREATE TABLE IF NOT EXISTS puantaj_onay (
     id INTEGER PRIMARY KEY, personel_id INTEGER NOT NULL REFERENCES personel(id),
     donem TEXT NOT NULL, odeme_id INTEGER NOT NULL UNIQUE REFERENCES maas_odeme(id),
     maas TEXT NOT NULL, bolen TEXT NOT NULL, katsayi TEXT NOT NULL, mesai_dakika INTEGER NOT NULL,
+    saatlik_mesai_ucreti TEXT,
     UNIQUE(personel_id,donem)
 );
 CREATE TRIGGER IF NOT EXISTS puantaj_cift_mesai_ekleme BEFORE INSERT ON maas_odeme
@@ -420,7 +421,22 @@ def puantaj_mesai_tutari(maas, dakika, bolen, katsayi):
     return (salary * dakika * factor / (divisor * 60)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
-def save_puantaj_approval(db, personel_id, first, divisor, factor, *, revoke=False):
+def puantaj_girilen_saat_ucreti(value):
+    try:
+        rate = Decimal(str(value).strip().replace(",", "."))
+        if rate.is_finite() and rate > 0 and rate == rate.quantize(Decimal("0.01")):
+            return rate
+    except ArithmeticError:
+        pass
+    raise ValueError("Saatlik mesai ücretini TL olarak girin (ör. 240 veya 240,50).")
+
+
+def puantaj_girilen_mesai_tutari(saatlik, dakika):
+    return (puantaj_girilen_saat_ucreti(saatlik) * dakika / 60).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def save_puantaj_approval(db, personel_id, first, divisor="", factor="", *, hourly=None, revoke=False):
     period = first.strftime("%Y-%m")
     existing = db.execute("SELECT odeme_id FROM puantaj_onay WHERE personel_id=? AND donem=?",
                           (personel_id, period)).fetchone()
@@ -442,7 +458,11 @@ def save_puantaj_approval(db, personel_id, first, divisor, factor, *, revoke=Fal
     if employee is None:
         raise ValueError("Personel kaydı bulunamadı.")
     salary = employee[0]
-    amount = puantaj_mesai_tutari(salary, overtime, divisor, factor)
+    if hourly is None:
+        amount = puantaj_mesai_tutari(salary, overtime, divisor, factor)
+    else:
+        hourly = str(puantaj_girilen_saat_ucreti(hourly))
+        amount = puantaj_girilen_mesai_tutari(hourly, overtime)
     if amount <= 0:
         raise ValueError("Onay için pozitif bir mesai tutarı olmalı.")
     payment_id = db.execute("""INSERT INTO maas_odeme
@@ -451,8 +471,8 @@ def save_puantaj_approval(db, personel_id, first, divisor, factor, *, revoke=Fal
         (date.today().isoformat(), personel_id, period, str(amount),
          f"Puantaj · {overtime // 60} sa {overtime % 60} dk")).lastrowid
     db.execute("""INSERT INTO puantaj_onay
-        (personel_id,donem,odeme_id,maas,bolen,katsayi,mesai_dakika)
-        VALUES(?,?,?,?,?,?,?)""", (personel_id, period, payment_id, str(salary), divisor, factor, overtime))
+        (personel_id,donem,odeme_id,maas,bolen,katsayi,mesai_dakika,saatlik_mesai_ucreti)
+        VALUES(?,?,?,?,?,?,?,?)""", (personel_id, period, payment_id, str(salary), divisor, factor, overtime, hourly))
 
 
 def connect(path=None):
@@ -497,6 +517,7 @@ def connect(path=None):
         "maas_odeme": [("islem_turu", "TEXT NOT NULL DEFAULT 'Maaş'")],
         "mastarci_hesap": [("musteri", "TEXT NOT NULL DEFAULT ''")],
         "personel_puantaj": [("manuel_mesai_dakika", "INTEGER")],
+        "puantaj_onay": [("saatlik_mesai_ucreti", "TEXT")],
         "fatura": [("fatura_turu", "TEXT NOT NULL DEFAULT 'Normal'"), ("tevkifat_oran", "REAL NOT NULL DEFAULT 0"), ("tevkifat_tutar", "REAL NOT NULL DEFAULT 0"), ("tahsil_edilecek", "REAL NOT NULL DEFAULT 0"), ("odenen", "REAL NOT NULL DEFAULT 0")],
     }
     for table, columns in migrations.items():
@@ -543,6 +564,9 @@ def connect(path=None):
     if current_version < 57:
         for action in ("insert", "update", "delete"):
             con.execute(f"DROP TRIGGER IF EXISTS audit_personel_puantaj_{action}")
+    if current_version < 58:
+        for action in ("insert", "update", "delete"):
+            con.execute(f"DROP TRIGGER IF EXISTS audit_puantaj_onay_{action}")
     _install_audit_triggers(con)
     from operation_undo import create_journal
 
@@ -2927,10 +2951,8 @@ class HoytasApp(tk.Tk):
         roster = {}
         daily = {}
         approved = {}
-        employee_rates = {}
         draft_rates = {}
         rate = tk.StringVar(win)
-        factor = tk.StringVar(win)
         paid_days = tk.StringVar(win, "30")
         status = tk.StringVar(win, "Çalıştı")
         start = tk.StringVar(win, "08:00")
@@ -2975,12 +2997,9 @@ class HoytasApp(tk.Tk):
         ttk.Label(monthly, textvariable=summary, wraplength=620, justify="left").pack(anchor="w")
         settings = ttk.Frame(monthly)
         settings.pack(fill="x", pady=(8, 0))
-        ttk.Label(settings, text="Aylık saat böleni").pack(side="left")
+        ttk.Label(settings, text="Saatlik mesai ücreti (TL)").pack(side="left")
         rate_entry = ttk.Entry(settings, textvariable=rate, width=7)
         rate_entry.pack(side="left", padx=5)
-        ttk.Label(settings, text="Mesai katsayısı").pack(side="left", padx=(8, 0))
-        factor_entry = ttk.Entry(settings, textvariable=factor, width=7)
-        factor_entry.pack(side="left", padx=5)
         daily_settings = ttk.Frame(monthly)
         daily_settings.pack(fill="x", pady=(5, 0))
         ttk.Label(daily_settings, text="Günlük ücret için maaş gün böleni").pack(side="left")
@@ -3003,7 +3022,7 @@ class HoytasApp(tk.Tk):
             widget.grid(row=row, column=1, padx=(6, 0), sticky="ew")
             if variable is manual:
                 manual_entry = widget
-        ttk.Label(panel, text="Boş bırakırsanız mesai saatlerden hesaplanır.",
+        ttk.Label(panel, text="Mesai yoksa boş bırakın.",
                   wraplength=210).pack(anchor="w", pady=(4, 0))
         ttk.Label(panel, textvariable=preview, wraplength=210).pack(anchor="w", pady=12)
 
@@ -3033,13 +3052,19 @@ class HoytasApp(tk.Tk):
             worked, leave, absent, net, overtime = totals(pid)
             name, salary = roster[pid]
             known = approved.get(pid)
-            divisor, multiplier = rate.get(), factor.get()
+            hourly = None
             if known:
-                salary, divisor, multiplier, amount = known
+                salary, divisor, multiplier, amount, saved_hourly = known
                 amount = Decimal(str(amount))
+                try:
+                    hourly = (Decimal(saved_hourly) if saved_hourly is not None
+                              else puantaj_mesai_saat_ucreti(salary, divisor, multiplier))
+                except (ValueError, ArithmeticError):
+                    pass
             else:
                 try:
-                    amount = puantaj_mesai_tutari(salary, overtime, divisor, multiplier)
+                    hourly = puantaj_girilen_saat_ucreti(rate.get())
+                    amount = puantaj_girilen_mesai_tutari(hourly, overtime)
                 except (ValueError, ArithmeticError):
                     amount = None
 
@@ -3053,13 +3078,8 @@ class HoytasApp(tk.Tk):
                 except (ValueError, ArithmeticError):
                     return "—"
 
-            try:
-                hourly = puantaj_mesai_saat_ucreti(salary, divisor, multiplier)
-            except (ValueError, ArithmeticError):
-                hourly = None
-
             if amount is None and overtime:
-                payment = "Fazla mesai tutarı için maaş, aylık saat böleni ve mesai katsayısı gerekli."
+                payment = "Aylık mesai tutarı için saatlik mesai ücretini girin."
             else:
                 amount = amount if amount is not None else Decimal(0)
                 label = "Onaylı fazla mesai" if known else "Aylık fazla mesai ücreti"
@@ -3075,15 +3095,15 @@ class HoytasApp(tk.Tk):
                 f"{name}  ·  Aylık maaş {tl(salary)}\n"
                 f"Toplam çalışma {minutes(net)}  ·  Fazla mesai {minutes(overtime)}\n"
                 f"Çalışma {worked} gün  ·  İzin {leave} gün  ·  Devamsızlık {absent} gün\n"
-                f"Günlük ücret {rate_label(paid_days.get(), 'gün')}  ·  Saatlik ücret {rate_label(divisor, 'sa')}\n"
+                f"Günlük ücret {rate_label(paid_days.get(), 'gün')}\n"
                 f"{payment}"
             )
-            approve_button.configure(state="disabled" if known or not overtime else "normal")
+            approve_button.configure(state="disabled" if known or not overtime or amount is None else "normal")
             revoke_button.configure(state="normal" if known else "disabled")
 
         def daily_durations():
             override = puantaj_manuel_mesai(manual.get()) if status.get() == "Çalıştı" else None
-            durations = puantaj_sureleri(status.get(), start.get(), end.get(), pause.get(), normal.get(), override)
+            durations = puantaj_sureleri(status.get(), start.get(), end.get(), pause.get(), normal.get(), override or 0)
             return durations, override
 
         def daily_preview(*_):
@@ -3101,12 +3121,11 @@ class HoytasApp(tk.Tk):
             nonlocal selected
             previous_pid = selected[0] if selected else None
             if previous_pid is not None and previous_pid != pid:
-                draft_rates[previous_pid] = (rate.get(), factor.get())
+                if previous_pid not in approved:
+                    draft_rates[previous_pid] = rate.get()
             selected = (pid, day)
             if previous_pid != pid:
-                divisor, multiplier = draft_rates.get(pid, employee_rates.get(pid, ("", "")))
-                rate.set(divisor)
-                factor.set(multiplier)
+                rate.set(draft_rates.get(pid, ""))
             current_day.set(f"{roster[pid][0]} · {first.replace(day=day):%d.%m.%Y}")
             row = daily.get(selected)
             if row:
@@ -3115,13 +3134,12 @@ class HoytasApp(tk.Tk):
                 values = ("Çalıştı", "08:00", "17:00", "60", "8")
             for variable, value in zip((status, start, end, pause, normal), values):
                 variable.set(value)
-            manual.set(str(Decimal(row[7]) / 60).replace(".", ",") if row and row[7] is not None else "")
+            stored_minutes = (row[7] if row[7] is not None else row[6]) if row else 0
+            manual.set(str(Decimal(stored_minutes) / 60).replace(".", ",") if stored_minutes else "")
             locked = pid in approved
             if locked:
-                rate.set(approved[pid][1])
-                factor.set(approved[pid][2])
-            for entry in (rate_entry, factor_entry):
-                entry.configure(state="readonly" if locked else "normal")
+                rate.set(approved[pid][4] or "")
+            rate_entry.configure(state="readonly" if locked else "normal")
             save_button.configure(state="disabled" if locked else "normal")
             delete_button.configure(state="normal" if row and not locked else "disabled")
             show_summary()
@@ -3160,7 +3178,7 @@ class HoytasApp(tk.Tk):
                     row=index, column=len(days) + 1, sticky="nsew", pady=1)
 
         def refresh():
-            nonlocal roster, daily, approved, selected, employee_rates
+            nonlocal roster, daily, approved, selected
             until = first.replace(day=day_range()).isoformat()
             with connect() as db:
                 roster = {pid: (name, salary) for pid, name, salary in db.execute(
@@ -3171,10 +3189,8 @@ class HoytasApp(tk.Tk):
                              normal_dakika,net_dakika,mesai_dakika,manuel_mesai_dakika FROM personel_puantaj
                              WHERE tarih BETWEEN ? AND ?""", (first.isoformat(), until))}
                 approved = {pid: tuple(values) for pid, *values in db.execute("""
-                    SELECT a.personel_id,a.maas,a.bolen,a.katsayi,m.tutar
+                    SELECT a.personel_id,a.maas,a.bolen,a.katsayi,m.tutar,a.saatlik_mesai_ucreti
                     FROM puantaj_onay a JOIN maas_odeme m ON m.id=a.odeme_id WHERE a.donem=?""", (month_key(),))}
-                employee_rates = {pid: (divisor, multiplier) for pid, divisor, multiplier in db.execute(
-                    "SELECT personel_id,bolen,katsayi FROM puantaj_onay WHERE donem<=? ORDER BY donem", (month_key(),))}
             if roster:
                 pid = selected[0] if selected and selected[0] in roster else next(iter(roster))
                 day = min(week * 7 + 7, day_range(), max(week * 7 + 1, selected[1] if selected else date.today().day))
@@ -3236,7 +3252,7 @@ class HoytasApp(tk.Tk):
             try:
                 with connect() as db:
                     db.execute("BEGIN IMMEDIATE")
-                    save_puantaj_approval(db, pid, first, rate.get(), factor.get(), revoke=revoke)
+                    save_puantaj_approval(db, pid, first, hourly=rate.get(), revoke=revoke)
                 refresh()
                 self.refresh_all()
                 if after_change:
@@ -3257,9 +3273,8 @@ class HoytasApp(tk.Tk):
                     amount = f"Onaylı {known[3]:.2f} TL"
                 else:
                     try:
-                        divisor, multiplier = ((rate.get(), factor.get()) if selected and selected[0] == pid
-                                               else draft_rates.get(pid, employee_rates.get(pid, ("", ""))))
-                        amount = f"Taslak {puantaj_mesai_tutari(salary, overtime, divisor, multiplier):.2f} TL"
+                        hourly = rate.get() if selected and selected[0] == pid else draft_rates.get(pid, "")
+                        amount = f"Taslak {puantaj_girilen_mesai_tutari(hourly, overtime):.2f} TL"
                     except (ValueError, ArithmeticError):
                         amount = ""
                 rows.append((name, "Aylık toplam", f"{worked} çalışma / {leave} izin", f"{absent} devamsız",
@@ -3311,7 +3326,7 @@ class HoytasApp(tk.Tk):
         revoke_button.pack(side="right", padx=5)
         for variable in (status, start, end, pause, normal, manual):
             variable.trace_add("write", daily_preview)
-        for variable in (rate, factor, paid_days):
+        for variable in (rate, paid_days):
             variable.trace_add("write", show_summary)
         week = (date.today().day - 1) // 7
         refresh()

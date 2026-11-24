@@ -1,0 +1,1 @@
+Puantajda günlük mesai saati ve saatlik mesai ücreti kullanıcı tarafından girilir. Aylık özet girilen değerleri çarpar.
