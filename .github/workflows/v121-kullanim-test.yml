@@ -1,7 +1,7 @@
 name: HOYTAS v121 smoke test
 on:
-  push:
-    branches: [v121-kullanim-test]
+  pull_request:
+    branches: [menu-ok-duzenleme]
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -9,10 +9,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
       - name: Install test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-tk xvfb xauth
+          sudo apt-get install -y python3-tk python3-venv xvfb xauth
           python3 -m venv --system-site-packages .test-venv
           .test-venv/bin/pip install pillow reportlab openpyxl
       - name: Migration, user interface and finance tests
@@ -85,3 +86,10 @@ jobs:
           app.destroy()
           PY
           .test-venv/bin/python -m unittest discover -q
+      - name: Verify public source archive
+        env:
+          RELEASE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          curl -fLSs --retry 3 "https://github.com/hoytashazirbeton02-debug/hoytas-finans/archive/$RELEASE_SHA.zip" -o /tmp/hoytas-v121.zip
+          python3 -m zipfile -t /tmp/hoytas-v121.zip
+          sha256sum /tmp/hoytas-v121.zip
