@@ -82,5 +82,5 @@ assert 'footer=ttk.Frame(win,padding=8)' in source
 assert 'self._adapt_action_rows(self)' in source
 assert 'tree.yview_moveto(scroll_position)' in source
 
-assert 'w.pack_configure(before=first)' in source
+assert 'pack_configure(side="bottom", before=first)' in source
 assert 'show="headings", height=6' in source
