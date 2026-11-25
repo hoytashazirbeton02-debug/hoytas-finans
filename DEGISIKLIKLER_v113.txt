@@ -1,0 +1,3 @@
+HOYTAŞ Finans v113
+Cari karta bağlı fatura taslağı ve PDF belge bilgileri.
+VUK 230 alanları, KDV ve tevkifat dökümü, yazıyla ödenecek tutar.

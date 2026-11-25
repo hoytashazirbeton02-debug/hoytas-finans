@@ -28,8 +28,8 @@ from xml.sax.saxutils import escape
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
-TARGET_SCHEMA_VERSION = 58
-APP_VERSION = 112
+TARGET_SCHEMA_VERSION = 59
+APP_VERSION = 113
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 ISOLATED_PROFILE_DIR = os.environ.get("HOYTAS_PROFILE_DIR", "").strip()
 USER_DATA_DIR = ISOLATED_PROFILE_DIR or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
@@ -518,7 +518,7 @@ def connect(path=None):
         "mastarci_hesap": [("musteri", "TEXT NOT NULL DEFAULT ''")],
         "personel_puantaj": [("manuel_mesai_dakika", "INTEGER")],
         "puantaj_onay": [("saatlik_mesai_ucreti", "TEXT")],
-        "fatura": [("fatura_turu", "TEXT NOT NULL DEFAULT 'Normal'"), ("tevkifat_oran", "REAL NOT NULL DEFAULT 0"), ("tevkifat_tutar", "REAL NOT NULL DEFAULT 0"), ("tahsil_edilecek", "REAL NOT NULL DEFAULT 0"), ("odenen", "REAL NOT NULL DEFAULT 0")],
+        "fatura": [("belge_bilgileri", "TEXT NOT NULL DEFAULT '{}'"), ("fatura_turu", "TEXT NOT NULL DEFAULT 'Normal'"), ("tevkifat_oran", "REAL NOT NULL DEFAULT 0"), ("tevkifat_tutar", "REAL NOT NULL DEFAULT 0"), ("tahsil_edilecek", "REAL NOT NULL DEFAULT 0"), ("odenen", "REAL NOT NULL DEFAULT 0")],
     }
     for table, columns in migrations.items():
         existing = {row[1] for row in con.execute(f"PRAGMA table_info({table})")}
@@ -567,6 +567,9 @@ def connect(path=None):
     if current_version < 58:
         for action in ("insert", "update", "delete"):
             con.execute(f"DROP TRIGGER IF EXISTS audit_puantaj_onay_{action}")
+    if current_version < 59:
+        for action in ("insert", "update", "delete"):
+            con.execute(f"DROP TRIGGER IF EXISTS audit_fatura_{action}")
     _install_audit_triggers(con)
     from operation_undo import create_journal
 
@@ -1364,12 +1367,16 @@ class HoytasApp(tk.Tk):
         bar=ttk.Frame(self.fatura_tab); bar.pack(fill="x")
         ttk.Label(bar,text="Fatura / Belge Taslakları",font=("Segoe UI",16,"bold")).pack(side="left")
         ttk.Button(bar,text="Yeni Fatura Taslağı",command=self.add_fatura).pack(side="right")
-        ttk.Label(self.fatura_tab,text="Normal ve tevkifatlı fatura taslaklarında m³, KDV, tevkifat ve tahsil edilecek tutar hesaplanır. EDM üzerinden resmî gönderim yapılmadıkça bu kayıt taslaktır.",foreground="#7a4b00",wraplength=1000).pack(anchor="w",pady=(8,0))
+        ttk.Label(self.fatura_tab, text="Satış faturası taslakları cari karta bağlıdır. Resmî düzenleme EDM üzerinden yapılır.",
+                  foreground="#7a4b00", wraplength=900).pack(anchor="w", pady=(8, 0))
+        row = ttk.Frame(self.fatura_tab)
+        row.pack(fill="x", pady=8)
         self.fatura_tree=self._tree(self.fatura_tab,("id","tarih","cari","belge","miktar","ara","kdv","toplam","tevkifat","net","odenen","kalan","durum"),("ID","Tarih","Cari","Belge No","m³","Ara Toplam TL","KDV TL","Genel Toplam TL","Tevkifat TL","Net TL","Tahsil TL","Kalan TL","Durum"),(45,100,200,120,70,120,100,120,110,110,110,110,125))
-        row=ttk.Frame(self.fatura_tab); row.pack(fill="x",pady=8)
-        ttk.Button(row,text="Fatura Tahsilatı (Koruma)",command=self.tahsilat_fatura).pack(side="left",padx=(0,8))
-        ttk.Button(row,text="Seçili Taslağı Düzenle",command=lambda:self.edit_selected(self.fatura_tree,"fatura")).pack(side="left")
-        ttk.Button(row,text="Seçili Taslağı Sil",command=lambda:self.delete_selected(self.fatura_tree,"fatura")).pack(side="right")
+        ttk.Button(row, text="Taslak PDF", command=lambda: self.selected_invoice_document(self.fatura_tree)).pack(side="left", padx=(0, 8))
+        ttk.Button(row, text="Belge Bilgileri", command=lambda: self.selected_invoice_document(self.fatura_tree, edit=True)).pack(side="left", padx=(0, 8))
+        ttk.Button(row, text="Taslağı Düzenle", command=lambda: self.edit_selected(self.fatura_tree, "fatura")).pack(side="left", padx=(0, 8))
+        ttk.Button(row, text="Fatura Tahsilatı (Koruma)", command=self.tahsilat_fatura).pack(side="left")
+        ttk.Button(row, text="Taslağı Sil", command=lambda: self.delete_selected(self.fatura_tree, "fatura")).pack(side="right")
 
     def _build(self):
         header = tk.Frame(self, bg="#1F3028", height=78)
@@ -2240,6 +2247,12 @@ class HoytasApp(tk.Tk):
                 ORDER BY 3, 2, 4""", (cari_id, cari_id)).fetchall()
         invoice_frame = ttk.Frame(nb, padding=6)
         nb.add(invoice_frame, text="Faturalar")
+        invoice_actions = ttk.Frame(invoice_frame)
+        invoice_actions.pack(fill="x", pady=(0, 6))
+        ttk.Button(invoice_actions, text="Satış Taslağı PDF",
+                   command=lambda: self.selected_invoice_document(invoice_tree)).pack(side="left", padx=(0, 8))
+        ttk.Button(invoice_actions, text="Belge Bilgileri",
+                   command=lambda: self.selected_invoice_document(invoice_tree, edit=True)).pack(side="left")
         invoice_tree = self._tree(invoice_frame, ("id", "tur", "tarih", "belge", "toplam", "odenen", "kalan", "durum", "aciklama"),
                                   ("ID", "Tür", "Tarih", "Belge No", "Toplam TL", "Ödenen TL", "Kalan TL", "Durum", "Açıklama"),
                                   (55, 75, 95, 115, 115, 115, 115, 110, 225), show_id=False)
@@ -2407,6 +2420,12 @@ class HoytasApp(tk.Tk):
             ):
                 with connect() as db:
                     record = db.execute("SELECT unvan FROM cari WHERE id=?", (cari_id,)).fetchone()
+                if record:
+                    customer = record[0]
+            if cari_id is not None and report_type == "Fatura Taslağı PDF":
+                with connect() as db:
+                    record = db.execute("""SELECT c.unvan FROM fatura f JOIN cari c ON c.id=f.cari_id
+                        WHERE f.id=?""", (cari_id,)).fetchone()
                 if record:
                     customer = record[0]
             title = f"{report_type} – {customer}" if customer else report_type
@@ -4004,6 +4023,59 @@ class HoytasApp(tk.Tk):
         with connect() as c: c.insert_shared("INSERT INTO santiye(ad,adres,yetkili,telefon,notlar) VALUES(?,?,?,?,?)",(d["ad"],d["adres"],d["yetkili"],d["telefon"],d["notlar"]))
         self.refresh_all()
 
+    def selected_invoice_document(self, tree, *, edit=False):
+        selection = tree.selection()
+        if not selection:
+            return messagebox.showinfo("Fatura seçin", "Önce bir satış faturası taslağı seçin.", parent=tree)
+        values = tree.item(selection[0], "values")
+        if tree["columns"][1] == "tur" and values[1] != "Satış":
+            return messagebox.showinfo("Satış taslağı", "Bu işlem için bir satış faturası taslağı seçin.", parent=tree)
+        invoice_id = int(values[0])
+        if not edit:
+            try:
+                return self._preview_then_save_pdf("Fatura Taslağı PDF", cari_id=invoice_id)
+            except (OSError, ValueError, RuntimeError, ImportError) as exc:
+                return messagebox.showerror("Fatura PDF açılamadı", str(exc), parent=tree)
+
+        with connect() as db:
+            invoice = db.execute("""SELECT f.cari_id, f.belge_bilgileri, c.unvan FROM fatura f
+                LEFT JOIN cari c ON c.id=f.cari_id WHERE f.id=?""", (invoice_id,)).fetchone()
+        if not invoice:
+            return messagebox.showinfo("Fatura bulunamadı", "Seçili taslak artık kayıtlı değil.", parent=tree)
+        customer_id, stored, customer = invoice
+        fields = [
+            ("satici_unvan", "Satıcı ticaret unvanı", "entry", None),
+            ("satici_adres", "Satıcı iş adresi", "entry", None),
+            ("satici_daire", "Satıcı vergi dairesi", "entry", None),
+            ("satici_vkn", "Satıcı VKN / TCKN", "entry", None),
+            ("alici_adres", "Alıcı fatura adresi", "entry", None),
+            ("alici_daire", "Alıcı vergi dairesi (varsa)", "entry", None),
+            ("teslim", "Teslim tarihi (GG.AA.YYYY)", "entry", None),
+            ("irsaliye", "İrsaliye numarası", "entry", None),
+            ("tevkifat_kodu", "Tevkifat kodu ve işlem adı (varsa)", "entry", None),
+        ]
+        initial = invoice_document_details(stored, customer_id)
+        initial.setdefault("satici_unvan", "HOYTAŞ Hazır Beton")
+        values = self.prompt(f"Fatura Belge Bilgileri | {customer or 'Cari seçilmemiş'}", fields, initial)
+        if not values:
+            return
+        try:
+            if values["teslim"]:
+                values["teslim"] = normalize_fatura_tarihi(values["teslim"])
+            tax_id = values["satici_vkn"]
+            if tax_id and not re.fullmatch(r"[0-9]{10,11}", tax_id):
+                raise ValueError("Satıcı VKN 10, TCKN 11 rakam olmalıdır.")
+        except ValueError as exc:
+            return messagebox.showerror("Belge bilgileri", str(exc), parent=tree)
+        values["cari_id"] = customer_id
+        with connect() as db:
+            result = db.execute("""UPDATE fatura SET belge_bilgileri=?
+                WHERE id=? AND cari_id IS ? AND belge_bilgileri=?""",
+                (json.dumps(values, ensure_ascii=False), invoice_id, customer_id, stored))
+        if not result.rowcount:
+            return messagebox.showwarning("Taslak değişti", "Faturayı yenileyin ve belge bilgilerini tekrar açın.", parent=tree)
+        messagebox.showinfo("Belge bilgileri", "Fatura belge bilgileri kaydedildi.", parent=tree)
+
     def add_fatura(self, cari_context=None):
         """Yerel taslak: m³, KDV ve seçilen tevkifat oranından net tahsilatı hesapla."""
         with connect() as c:
@@ -4043,7 +4115,9 @@ class HoytasApp(tk.Tk):
                 tevkifat_oran = pay / payda
             else:
                 tevkifat_oran = 0.0
-            cari_id = int(d["cari"].split(" - ", 1)[0])
+            if d["cari"] not in names and cari_context is None:
+                raise ValueError("Listeden kayıtlı bir cari hesap seçin.")
+            cari_id = cari_context[0] if cari_context is not None else int(d["cari"].split(" - ", 1)[0])
             ara = round(miktar * fiyat, 2)
             kdv_tutar = round(ara * kdv_oran / 100, 2)
             toplam = round(ara + kdv_tutar, 2)
@@ -4052,6 +4126,8 @@ class HoytasApp(tk.Tk):
             if not d["belge"].strip():
                 raise ValueError("Belge numarası boş bırakılamaz.")
             with connect() as c:
+                if not c.execute("SELECT 1 FROM cari WHERE id=?", (cari_id,)).fetchone():
+                    raise ValueError("Seçilen cari hesap bulunamadı.")
                 if c.execute("SELECT 1 FROM fatura WHERE cari_id=? AND belge_no=?",
                              (cari_id, d["belge"].strip())).fetchone():
                     raise ValueError("Bu cariye ait aynı belge numarası zaten kayıtlı.")
@@ -4596,6 +4672,7 @@ class HoytasApp(tk.Tk):
         normal=ParagraphStyle("HoytasNormal",parent=styles["BodyText"],fontName=font_name,fontSize=8,leading=10)
         logo_path=os.path.join(APP_DIR, "hoytas_logo.png")
         story=[]
+        invoice_footer = []
         beton_summary_rows=None
         cari_summary_rows=None
         if os.path.exists(logo_path):
@@ -4609,7 +4686,7 @@ class HoytasApp(tk.Tk):
                 Paragraph("Rapor Tarihi: "+datetime.now().strftime("%d.%m.%Y %H:%M"),normal),
                 Spacer(1,8)
             ])
-        else:
+        elif report_type != "Fatura Taslağı PDF":
             story.extend([Paragraph("HOYTAŞ HAZIR BETON - Finans ve İşletme Yönetimi",title_style),
                           Paragraph(escape(report_type), title_style), Spacer(1,8),
                           Paragraph("Rapor tarihi: "+datetime.now().strftime("%d.%m.%Y %H:%M"),normal),Spacer(1,12)])
@@ -4714,14 +4791,53 @@ class HoytasApp(tk.Tk):
                 for r in checks:
                     rows.append([r[0],r[1],r[2],r[3],Paragraph(escape(r[4]),normal),display_date(r[5]),f"{r[6]:,.2f}",r[7],Paragraph(escape(r[8]),normal)])
                 rows.append(["","","","","TOPLAM",f"{len(checks)} adet",f"{sum(r[6] for r in checks):,.2f}","",""])
-            elif report_type=="Fatura Taslağı PDF":
-                invoice=c.execute("SELECT f.tarih,COALESCE(c.unvan,''),COALESCE(c.telefon,''),COALESCE(c.vergi_no,''),COALESCE(f.belge_no,''),COALESCE(f.aciklama,''),f.miktar_m3,f.birim_fiyat,f.ara_toplam,f.kdv_oran,f.kdv_tutar,f.genel_toplam,f.durum FROM fatura f LEFT JOIN cari c ON c.id=f.cari_id WHERE f.id=?",(cari_id,)).fetchone()
-                if not invoice: raise ValueError("Fatura taslağı bulunamadı.")
-                labels=[("Tarih",display_date(invoice[0])),("Cari / Ünvan",invoice[1]),("Telefon",invoice[2] or "-"),("Vergi No",invoice[3] or "-"),("Belge No",invoice[4] or "Taslak"),("Açıklama",invoice[5] or "-"),("Belge durumu",invoice[12])]
-                for label,value in labels: story.append(Paragraph(f"<b>{escape(label)}:</b> {escape(str(value))}",normal)); story.append(Spacer(1,4))
-                story.append(Spacer(1,10))
-                rows=[["Ürün / Hizmet","Miktar (m³)","Birim Fiyat (TL)","Ara Toplam (TL)"],["Hazır beton",format_m3(invoice[6]),f"{invoice[7]:,.2f}",f"{invoice[8]:,.2f}"]]
-                rows.extend([["","","KDV (%g)" % invoice[9],f"{invoice[10]:,.2f}"],["","","GENEL TOPLAM",f"{invoice[11]:,.2f}"]])
+            elif report_type == "Fatura Taslağı PDF":
+                invoice = c.execute("""SELECT f.tarih, f.belge_no, f.aciklama, f.miktar_m3, f.birim_fiyat,
+                    f.ara_toplam, f.kdv_oran, f.kdv_tutar, f.genel_toplam, f.fatura_turu,
+                    f.tevkifat_oran, f.tevkifat_tutar, f.tahsil_edilecek, f.belge_bilgileri,
+                    f.cari_id, c.unvan, c.vergi_no FROM fatura f LEFT JOIN cari c ON c.id=f.cari_id
+                    WHERE f.id=?""", (cari_id,)).fetchone()
+                if not invoice:
+                    raise ValueError("Fatura taslağı bulunamadı.")
+                (day, number, description, quantity, price, base, vat_rate, vat, gross,
+                 kind, withholding_rate, withholding, payable, stored, customer_id, customer, tax_id) = invoice
+                info = invoice_document_details(stored, customer_id)
+                story.extend([
+                    Paragraph("SATIŞ FATURASI TASLAĞI", cari_title_style),
+                    Paragraph("Resmî belge yerine kullanılamaz.", normal),
+                    Spacer(1, 12),
+                ])
+                for label, value in (
+                    ("Satıcı", info.get("satici_unvan") or "HOYTAŞ Hazır Beton"),
+                    ("Satıcı adresi", info.get("satici_adres")),
+                    ("Satıcı vergi dairesi / VKN veya TCKN", " / ".join(
+                        value for value in (info.get("satici_daire"), info.get("satici_vkn")) if value)),
+                    ("Alıcı", customer), ("Alıcı adresi", info.get("alici_adres")),
+                    ("Alıcı vergi dairesi / VKN veya TCKN", " / ".join(
+                        value for value in (info.get("alici_daire"), tax_id) if value)),
+                    ("Düzenleme tarihi", display_date(day)), ("Seri ve sıra numarası", number),
+                    ("Teslim tarihi", display_date(info["teslim"]) if info.get("teslim") else ""),
+                    ("İrsaliye numarası", info.get("irsaliye")), ("Fatura türü", kind),
+                    ("Tevkifat kodu ve işlem adı", info.get("tevkifat_kodu") if withholding_rate else ""),
+                ):
+                    if label != "Tevkifat kodu ve işlem adı" or withholding_rate:
+                        story.append(Paragraph(f"{escape(label)}: {escape(str(value or '—'))}", normal))
+                story.append(Spacer(1, 12))
+                rows = [["Mal / Hizmet", "Miktar (m³)", "Birim Fiyat (TL)", "Tutar (TL)"],
+                        [f"Hazır beton\n{description}" if description else "Hazır beton",
+                         format_m3(quantity), invoice_money(price), invoice_money(base)],
+                        ["", "", "KDV Matrahı", invoice_money(base)],
+                        ["", "", f"Hesaplanan KDV (%{vat_rate:g})", invoice_money(vat)],
+                        ["", "", "Vergiler Dahil Toplam", invoice_money(gross)]]
+                if withholding_rate:
+                    rows.append(["", "", f"KDV Tevkifatı ({withholding_rate * 10:.0f}/10)",
+                                 invoice_money(withholding)])
+                rows.append(["", "", "Ödenecek Tutar", invoice_money(payable)])
+                invoice_footer = [
+                    f"Yalnız {invoice_amount_in_words(payable)}",
+                    "Fatura bilgileri: 213 sayılı Vergi Usul Kanunu, madde 230.",
+                    "Elektronik belge düzenleme: 509 Sıra No.lu Vergi Usul Kanunu Genel Tebliği.",
+                ]
             elif report_type=="Gelen Alış Faturaları":
                 rows=[["Fatura Tarihi","Vade","Tedarikçi","Belge No","Açıklama","Genel Toplam (TL)","Ödenen (TL)","Kalan (TL)","Durum"]]
                 for r in c.execute("SELECT gf.tarih,COALESCE(gf.vade,''),COALESCE(c.unvan,''),gf.belge_no,COALESCE(gf.aciklama,''),gf.genel_toplam,gf.odenen,gf.genel_toplam-gf.odenen,gf.durum FROM gelen_fatura gf LEFT JOIN cari c ON c.id=gf.cari_id ORDER BY COALESCE(NULLIF(gf.vade,''),gf.tarih) ASC,gf.id ASC"):
@@ -4801,6 +4917,9 @@ class HoytasApp(tk.Tk):
             ("VALIGN",(0,0),(-1,-1),"TOP"),("ROWBACKGROUNDS",(0,1),(-1,-1),[colors.white,alternate]),
             ("LEFTPADDING",(0,0),(-1,-1),4),("RIGHTPADDING",(0,0),(-1,-1),4),("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),4)]))
         story.append(table)
+        if invoice_footer:
+            story.append(Spacer(1, 10))
+            story.extend(Paragraph(escape(line), normal) for line in invoice_footer)
         if cari_summary_rows:
             story.extend([Spacer(1,12), Paragraph("CARİ HESAP ÖZETİ", title_style), Spacer(1,5)])
             summary_table=Table(cari_summary_rows,colWidths=[page_width*0.58,page_width*0.42],hAlign="LEFT")
@@ -5014,6 +5133,42 @@ class HoytasApp(tk.Tk):
     def show_db_path(self):
         messagebox.showinfo("Veritabanı",f"Veriler burada saklanıyor:\n{DB_PATH}\n\nEski veriler ilk açılışta bu konuma kopyalanır; yedekleri düzenli alın.")
 
+
+
+def invoice_document_details(stored, customer_id):
+    details = json.loads(stored or "{}")
+    if details.get("cari_id") != customer_id:
+        details.pop("alici_adres", None)
+        details.pop("alici_daire", None)
+    return details
+
+
+def invoice_money(value):
+    return f"{value:,.2f}".translate(str.maketrans(",.", ".,"))
+
+
+def invoice_amount_in_words(value):
+    units = ("", "Bir", "İki", "Üç", "Dört", "Beş", "Altı", "Yedi", "Sekiz", "Dokuz")
+    tens = ("", "On", "Yirmi", "Otuz", "Kırk", "Elli", "Altmış", "Yetmiş", "Seksen", "Doksan")
+    scales = ("", "Bin", "Milyon", "Milyar", "Trilyon", "Katrilyon")
+
+    def words(number):
+        if number >= 1000 ** len(scales):
+            return f"{number:,}".replace(",", ".")
+        groups = []
+        for scale in scales:
+            number, group = divmod(number, 1000)
+            if not group:
+                continue
+            hundreds, remainder = divmod(group, 100)
+            prefix = (units[hundreds] if hundreds > 1 else "") + ("Yüz" if hundreds else "")
+            triplet = prefix + tens[remainder // 10] + units[remainder % 10]
+            groups.append("Bin" if scale == "Bin" and group == 1 else triplet + scale)
+        return "".join(reversed(groups)) or "Sıfır"
+
+    cents = int((Decimal(str(value)) * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    lira, kurus = divmod(abs(cents), 100)
+    return f"{'Eksi ' if cents < 0 else ''}{words(lira)} Türk Lirası {words(kurus)} Kuruş"
 
 
 def normalize_fatura_tarihi(value):
