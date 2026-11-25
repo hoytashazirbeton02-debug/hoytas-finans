@@ -1,0 +1,2 @@
+HOYTAŞ Finans v119
+Açık modül sekmelerindeki kapatma düğmelerinin görünürlüğü düzeltildi.
