@@ -31,7 +31,7 @@ from hybrid_branding import set_brand_logo
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
 TARGET_SCHEMA_VERSION = 59
-APP_VERSION = 117
+APP_VERSION = 118
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 ISOLATED_PROFILE_DIR = os.environ.get("HOYTAS_PROFILE_DIR", "").strip()
 USER_DATA_DIR = ISOLATED_PROFILE_DIR or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
@@ -940,6 +940,10 @@ def _restore_desktop_shortcut_after_update(program_dir):
 
 class HoytasApp(tk.Tk):
     def __init__(self):
+        if os.name == "nt":
+            import ctypes
+
+            ctypes.windll.user32.SetProcessDPIAware()
         super().__init__()
         self.title(f"HOYTAŞ Hazır Beton | Finans ve İşletme Yönetimi v{APP_VERSION}")
         icon = os.path.join(APP_DIR, "HOYTAS.ico")
@@ -1388,12 +1392,13 @@ class HoytasApp(tk.Tk):
         ttk.Button(row, text="Taslağı Sil", command=lambda: self.delete_selected(self.fatura_tree, "fatura")).pack(side="right")
 
     def _build(self):
-        header = tk.Frame(self, bg="#F7FAF1", height=88)
+        header = tk.Frame(self, bg="#F7FAF1", height=100)
         header.pack(fill="x")
         header.pack_propagate(False)
         logo = ttk.Label(header, text="HOYTAŞ", style="Brand.TLabel")
-        set_brand_logo(logo, max_size=72)
-        logo.pack(side="left", padx=(20, 14), pady=8)
+        set_brand_logo(logo, max_size=82)
+        logo.pack(side="left", padx=(20, 14), pady=6)
+        header.configure(height=max(100, logo.winfo_reqheight() + 12))
         tk.Frame(header, bg="#FFB800", width=3).pack(side="left", fill="y", pady=16, padx=(0, 14))
         tk.Label(header, text="Finans ve İşletme Yönetimi", bg="#F7FAF1", fg="#19220E",
                  font=("Segoe UI", 13, "bold")).pack(side="left", pady=20)
@@ -1402,8 +1407,9 @@ class HoytasApp(tk.Tk):
         tk.Label(header, text=user_text, bg="#F7FAF1", fg="#28341C",
                  font=("Segoe UI", 9)).pack(side="right", padx=24)
         tk.Frame(self, bg="#56BA00", height=3).pack(fill="x")
-        self.tabs = ttk.Notebook(self)
-        self.tabs.pack(fill="both", expand=True, padx=10, pady=(8, 6))
+        self.style.layout("Workspace.TNotebook.Tab", [])
+        self.tabs = ttk.Notebook(self, style="Workspace.TNotebook")
+        self.tabs.pack(fill="both", expand=True, padx=10, pady=(0, 6))
         self.dashboard = ttk.Frame(self.tabs, padding=18)
         self.cari_tab = ttk.Frame(self.tabs, padding=12)
         self.borc_takip_tab = ttk.Frame(self.tabs, padding=12)
@@ -1455,13 +1461,30 @@ class HoytasApp(tk.Tk):
             button.pack(side="left", padx=(0, 6))
             nav_groups.update((str(frame), button) for frame in frames)
 
-        close_tab = ttk.Button(nav, text="Sekmeyi kapat", command=self._close_module)
-        close_tab.pack(side="right")
+        self.module_strip = ttk.Frame(self)
+        self.module_strip.pack(fill="x", before=self.tabs, padx=10, pady=(8, 0))
+        self.module_controls = {}
+        for frame, title in modules.items():
+            tab = ttk.Frame(self.module_strip)
+            select = ttk.Button(tab, text=title, style="Workspace.TButton",
+                                command=lambda page=frame: self._open_module(page))
+            select.pack(side="left")
+            close = None
+            if frame != self.dashboard:
+                close = ttk.Button(tab, text="×", width=2, style="Workspace.TButton",
+                                   command=lambda page=frame: self._close_module(page=page))
+                close.pack(side="left")
+            self.module_controls[str(frame)] = (tab, select, close)
+        self.style.configure("Workspace.TButton", padding=(8, 5), background="#E5EEDB", foreground="#263519")
+        self.style.configure("Current.Workspace.TButton", padding=(8, 5), background="#315C16", foreground="#FFFFFF")
+        self.style.map("Workspace.TButton", background=[("active", "#D6EAC5")])
+        self.style.map("Current.Workspace.TButton", background=[("active", "#264810")])
+        self.module_strip.bind("<Configure>", self._layout_workspace_tabs)
         self.bind("<Control-w>", self._close_module, add="+")
 
         def highlight_module(_event=None):
             current_group = nav_groups.get(self.tabs.select())
-            close_tab.state(["disabled" if current_group is overview else "!disabled"])
+            self._layout_workspace_tabs()
             for button in set(nav_groups.values()):
                 base_style = button.winfo_class()
                 button.configure(style=f"Selected.{base_style}" if button is current_group else base_style)
@@ -1505,14 +1528,42 @@ class HoytasApp(tk.Tk):
                              ("İşlem Geçmişi", self.show_audit_log)])
         self._action_menu(bottom, "Sistem", settings).pack(side="left")
 
+    def _layout_workspace_tabs(self, _event=None):
+        width = self.module_strip.winfo_width()
+        if width <= 1:
+            return
+        selected = self.tabs.select()
+        x = y = row_height = 0
+        for page, (tab, select, close) in self.module_controls.items():
+            if self.tabs.tab(page, "state") == "hidden":
+                tab.place_forget()
+                continue
+            style = "Current.Workspace.TButton" if page == selected else "Workspace.TButton"
+            select.configure(style=style)
+            if close is not None:
+                close.configure(style=style)
+            tab_width = select.winfo_reqwidth() + (close.winfo_reqwidth() if close else 0)
+            tab_height = select.winfo_reqheight()
+            if x and x + tab_width > width:
+                y += row_height + 4
+                x = row_height = 0
+            tab.place(x=x, y=y, width=tab_width, height=tab_height)
+            x += tab_width + 5
+            row_height = max(row_height, tab_height)
+        height = y + row_height + 4
+        if int(self.module_strip.cget("height")) != height:
+            self.module_strip.configure(height=height)
+
     def _open_module(self, page):
         self.tabs.add(page)
         self.tabs.select(page)
+        self._layout_workspace_tabs()
 
-    def _close_module(self, _event=None):
-        selected = self.tabs.select()
-        if selected and selected != str(self.dashboard):
-            self.tabs.hide(selected)
+    def _close_module(self, _event=None, *, page=None):
+        page = str(page) if page is not None else self.tabs.select()
+        if page and page != str(self.dashboard):
+            self.tabs.hide(page)
+            self._layout_workspace_tabs()
         return "break"
 
     def _action_menu(self, parent, text, actions):

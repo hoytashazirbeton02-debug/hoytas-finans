@@ -1,0 +1,2 @@
+HOYTAŞ Finans v118
+Sekmeler kendi çarpı düğmeleriyle kapanır. Windows ekran ölçeği ve logo görüntüsü iyileştirildi.
