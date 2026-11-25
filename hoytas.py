@@ -2,7 +2,7 @@ import sqlite3
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from calendar import monthrange
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from datetime import datetime, date, timedelta
 from contextlib import nullcontext
 import csv
@@ -1015,8 +1015,6 @@ class HoytasApp(tk.Tk):
         self.bind_all("<Control-R>", self._refresh_from_button)
         for _i in range(1, 10):
             self.bind_all(f"<Alt-{_i}>", lambda e, i=_i: self._shortcut_tab(i))
-        self._view_observer = sqlite3.connect(DB_PATH, timeout=0.1)
-        self.bind("<Destroy>", self._close_view_observer, add="+")
         self.refresh_all()
         if self.membership_client is not None:
             self.deiconify()
@@ -1078,21 +1076,13 @@ class HoytasApp(tk.Tk):
             self.after_cancel(pending)
         self._tab_refresh_job = self.after(180, self._run_tab_refresh)
 
-    def _close_view_observer(self, event):
-        if event.widget is self:
-            self._view_observer.close()
-
-    def _database_view_version(self):
-        return self._view_observer.execute("PRAGMA data_version").fetchone()[0]
-
     def _run_tab_refresh(self):
         self._tab_refresh_job = None
         if getattr(self, "_refreshing_tab_change", False):
             return
         self._refreshing_tab_change = True
         try:
-            if self._database_view_version() != self._loaded_view_version:
-                self.refresh_all()
+            self._refresh_selected_module()
         except Exception as exc:
             messagebox.showerror("Senkronizasyon yapılamadı", f"Sekmeler yenilenirken hata oluştu:\n{exc}", parent=self)
         finally:
@@ -1402,7 +1392,7 @@ class HoytasApp(tk.Tk):
         ttk.Button(row, text="Taslak PDF", command=lambda: self.selected_invoice_document(self.fatura_tree)).pack(side="left", padx=(0, 8))
         ttk.Button(row, text="Belge Bilgileri", command=lambda: self.selected_invoice_document(self.fatura_tree, edit=True)).pack(side="left", padx=(0, 8))
         ttk.Button(row, text="Taslağı Düzenle", command=lambda: self.edit_selected(self.fatura_tree, "fatura")).pack(side="left", padx=(0, 8))
-        ttk.Button(row, text="Fatura Tahsilatı", command=self.tahsilat_fatura).pack(side="left")
+        ttk.Button(row, text="Tahsilat Al", command=self.tahsilat_fatura).pack(side="left")
         ttk.Button(row, text="Taslağı Sil", command=lambda: self.delete_selected(self.fatura_tree, "fatura")).pack(side="right")
 
     def _build(self):
@@ -1630,6 +1620,12 @@ class HoytasApp(tk.Tk):
         frame.pack(fill="both", expand=True)
         ttk.Label(frame, text="Yayın sunucusu (manifest) HTTPS adresi", font=("Segoe UI", 10, "bold")).pack(anchor="w")
         ttk.Label(frame, text="Buraya ZIP adresi değil, manifest.json dosyasının doğrudan HTTPS adresi yazılır.", wraplength=540).pack(anchor="w", pady=(5, 10))
+        source = "HOYTAŞ Canlı" if ISOLATED_PROFILE_DIR else ("HTTPS manifesti" if current_url or DEFAULT_UPDATE_MANIFEST_URL else "GitHub Releases")
+        ttk.Label(frame, text=f"Kanal: {source}   |   Kurulu sürüm: v{APP_VERSION}").pack(anchor="w", pady=(0, 8))
+        if ISOLATED_PROFILE_DIR:
+            ttk.Label(frame, text=LIVE_UPDATE_MANIFEST_URL, wraplength=540).pack(anchor="w", pady=(0, 8))
+            ttk.Button(frame, text="Güncellemeleri Denetle", command=self.check_for_updates).pack(anchor="w")
+            return
         url_var = tk.StringVar(value=current_url)
         entry = ttk.Entry(frame, textvariable=url_var, width=82)
         entry.pack(fill="x", pady=(0, 12))
@@ -4362,15 +4358,18 @@ class HoytasApp(tk.Tk):
         if not d: return
         try:
             tarih = normalize_fatura_tarihi(d["tarih"])
-            tutar = parse_amount(d["tutar"])
-            if tutar <= 0: raise ValueError("Tutar sıfırdan büyük olmalı.")
+            amount = Decimal(str(parse_amount(d["tutar"]))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            if not amount.is_finite() or amount <= 0:
+                raise ValueError("Tutar sıfırdan büyük olmalı.")
+            tutar = float(amount)
             if d["yontem"] == "Çek":
                 vade = d["vade"] or tarih
                 vade = normalize_fatura_tarihi(vade)
-        except ValueError:
+        except (ValueError, InvalidOperation):
             return messagebox.showerror("Hatalı bilgi", "Tarih/vade GG.AA.YYYY biçiminde, tutar sıfırdan büyük olmalıdır.", parent=self)
         aciklama = (d["aciklama"] or f"{cari_unvan} cari tahsilatı")
-        fatura_id = int(d["fatura"].split(" - ", 1)[0]) if d.get("fatura", "").split(" - ", 1)[0].isdigit() else None
+        selected_id = d.get("fatura", "").split(" - ", 1)[0]
+        fatura_id = invoice_id if invoice_id is not None else (int(selected_id) if selected_id.isdigit() else None)
         with connect() as c:
             if fatura_id is not None:
                 updated = c.execute("""UPDATE fatura SET odenen=odenen+?
@@ -4405,8 +4404,12 @@ class HoytasApp(tk.Tk):
         selected = self.cari_tree.selection()
         if not selected:
             return messagebox.showinfo("Cari seçin", "Önce bir cari hesap seçin.", parent=self)
-        cari_id = int(self.cari_tree.item(selected[0], "values")[0])
+        values = self.cari_tree.item(selected[0], "values")
+        cari_id = int(values[0])
         archived = int(self.cari_arsiv_goster.get())
+        action = "arşivden çıkarılsın" if archived else "arşive alınsın"
+        if not messagebox.askyesno("Cari arşivi", f"{values[2]} {action} mı? Cari geçmişi korunur.", parent=self):
+            return
         with connect() as db:
             db.execute("UPDATE cari SET arsivli=? WHERE id=? AND arsivli=?", (1-archived, cari_id, archived))
         self.refresh_cari()
@@ -4737,13 +4740,25 @@ class HoytasApp(tk.Tk):
         if hasattr(self, "debt_alert_label"):
             self.debt_alert_label.config(text=f"⚠ ÖDEME BEKLEYEN CARİ: {odemesiz} hesapta hiç tahsilat yok. Toplam açık cari bakiyesi: {acik_borc:,.2f} TL. Cari Hesaplar sekmesinde kırmızı/turuncu uyarılarla işaretlenir.")
 
-    def refresh_all(self):
-        view_version = self._database_view_version()
-        started = time.monotonic()
+    def _refresh_selected_module(self):
+        page = self.tabs.select()
         with connect() as c:
+            self._refresh_module_tables(c, page)
+        if page == str(self.cari_tab):
+            self.refresh_cari()
+        if page == str(self.borc_takip_tab):
+            self.refresh_borc_takip()
+        if page == str(self.dashboard):
+            self.refresh_dashboard()
+        if page == str(self.alisveris_cari_tab):
+            self.refresh_alisveris_cari()
 
+    def _refresh_module_tables(self, c, page=None):
+        if page is None or page == str(self.hareket_tab):
             self.fill_tree(self.hareket_tree, c.execute("""SELECT h.id,h.tarih,h.tur,h.kategori,COALESCE(c.unvan,''),h.aciklama,printf('%.2f',h.tutar),h.odeme_yontemi FROM hareket h LEFT JOIN cari c ON c.id=h.cari_id ORDER BY h.tarih ASC,h.id ASC""").fetchall())
+        if page is None or page == str(self.cek_tab):
             self._refresh_cheque_view(c)
+        if page is None or page == str(self.mastarci_tab):
             mastar_rows = c.execute("""SELECT id,tarih,mastarci,musteri,santiye,miktar_m3,birim_fiyat,
                 hakedis_kurus,odenen_kurus,aciklama FROM mastarci_hesap ORDER BY tarih,id""")
             self.fill_tree(self.mastarci_tree, [
@@ -4752,8 +4767,11 @@ class HoytasApp(tk.Tk):
                  *(f"{Decimal(cents) / 100:.2f}".replace(".", ",") for cents in (total, paid, total - paid)), note)
                 for rid, day, name, customer, site, qty, price, total, paid, note in mastar_rows
             ])
+        if page is None or page == str(self.stok_tab):
             self.fill_tree(self.stok_tree, c.execute("SELECT id,kod,ad,birim,printf('%.2f',miktar),printf('%.2f',birim_fiyat),printf('%.2f',miktar*birim_fiyat) FROM stok ORDER BY ad").fetchall())
+        if page is None or page == str(self.personel_tab):
             self.fill_tree(self.personel_tree, c.execute("SELECT id,ad,gorev,telefon,printf('%.2f',maas),notlar FROM personel ORDER BY ad").fetchall())
+        if page is None or page == str(self.beton_tab):
             beton_rows = c.execute("""SELECT b.id,b.tarih,COALESCE(c.unvan,''),COALESCE(b.beton_cinsi,''),b.miktar_m3,
                 b.birim_fiyat,COALESCE(b.pompa_ucreti,0),b.toplam,b.odeme_durumu,COALESCE(b.aciklama,''),COALESCE(s.ad,'')
                 FROM beton_satis b LEFT JOIN cari c ON c.id=b.cari_id LEFT JOIN santiye s ON s.id=b.santiye_id ORDER BY b.tarih ASC,b.id ASC""").fetchall()
@@ -4768,6 +4786,7 @@ class HoytasApp(tk.Tk):
                         self.fill_tree(self.santiye_tree,c.execute("SELECT id,ad,COALESCE(adres,''),COALESCE(yetkili,''),COALESCE(telefon,''),COALESCE(notlar,'') FROM santiye ORDER BY ad").fetchall())
                 except tk.TclError:
                     pass
+        if page is None or page == str(self.fatura_tab):
             self.fill_tree(self.fatura_tree,c.execute("""SELECT f.id,f.tarih,COALESCE(c.unvan,''),COALESCE(f.belge_no,''),f.miktar_m3,
                 printf('%.2f',f.ara_toplam),printf('%.2f',f.kdv_tutar),printf('%.2f',f.genel_toplam),
                 printf('%.2f',f.tevkifat_tutar),printf('%.2f',f.tahsil_edilecek),
@@ -4775,28 +4794,37 @@ class HoytasApp(tk.Tk):
                 CASE WHEN f.tahsil_edilecek-f.odenen<=0.005 THEN 'Tahsil edildi'
                      WHEN f.odenen>0 THEN 'Kısmi tahsilat' ELSE 'Tahsil edilmedi' END
                 FROM fatura f LEFT JOIN cari c ON c.id=f.cari_id ORDER BY f.tarih ASC,f.id ASC""").fetchall())
+        if page is None or page == str(self.gelen_fatura_tab):
             if hasattr(self,"gelen_fatura_tree"):
                 self.fill_tree(self.gelen_fatura_tree,c.execute("SELECT gf.id,gf.tarih,COALESCE(gf.vade,''),COALESCE(c.unvan,''),gf.belge_no,printf('%.2f',gf.ara_toplam),printf('%.2f',gf.kdv_tutar),printf('%.2f',gf.genel_toplam),printf('%.2f',gf.odenen),printf('%.2f',gf.genel_toplam-gf.odenen),gf.durum FROM gelen_fatura gf LEFT JOIN cari c ON c.id=gf.cari_id ORDER BY CASE WHEN gf.vade IS NULL OR gf.vade='' THEN gf.tarih ELSE gf.vade END ASC,gf.id ASC").fetchall())
+        if page is None or page == str(self.kasa_tab):
             if hasattr(self, "kasa_tree"):
                 self.fill_tree(self.kasa_tree,c.execute("SELECT id,tarih,yon,kaynak,COALESCE(aciklama,''),printf('%.2f',tutar),COALESCE(kullanici,'') FROM nakit_kasa ORDER BY tarih ASC,id ASC").fetchall())
+            kasa_bakiye = c.execute("SELECT COALESCE(SUM(CASE WHEN yon='Para Girişi' THEN tutar ELSE -tutar END),0) FROM nakit_kasa").fetchone()[0]
+            if hasattr(self, "kasa_ozet"):
+                self.kasa_ozet.config(text=f"Kasa bakiyesi: {safe_float(kasa_bakiye):,.2f} TL")
+        if page is None or page == str(self.stok_hareket_tab):
             if hasattr(self,"stok_hareket_tree"):
                 self.fill_tree(self.stok_hareket_tree,c.execute("SELECT sh.id,sh.tarih,COALESCE(s.ad,''),sh.yon,printf('%.2f',sh.miktar),COALESCE(sh.aciklama,'') FROM stok_hareket sh LEFT JOIN stok s ON s.id=sh.stok_id ORDER BY sh.tarih ASC,sh.id ASC").fetchall())
+        if page is None or page == str(self.maas_tab):
             if hasattr(self,"maas_tree"):
                 self.fill_tree(self.maas_tree,c.execute("SELECT m.id,m.tarih,COALESCE(p.ad,''),COALESCE(m.islem_turu,'Maaş'),m.donem,printf('%.2f',m.tutar),COALESCE(m.yontem,''),COALESCE(m.aciklama,'') FROM maas_odeme m LEFT JOIN personel p ON p.id=m.personel_id ORDER BY m.tarih ASC,m.id ASC").fetchall())
+        if page is None or page == str(self.banka_tab):
             if hasattr(self,"banka_tree"):
                 self.fill_tree(self.banka_tree,c.execute("SELECT id,tarih,banka,COALESCE(hesap,''),yon,karsi_taraf,COALESCE(aciklama,''),printf('%.2f',tutar) FROM banka_hareket ORDER BY tarih ASC,id ASC").fetchall())
                 banka_net=c.execute("SELECT COALESCE(SUM(CASE WHEN yon='Para Girişi' THEN tutar ELSE -tutar END),0) FROM banka_hareket").fetchone()[0]
                 self.banka_ozet.config(text=f"Banka net hareketi: {safe_float(banka_net):,.2f} TL")
-            kasa_bakiye = c.execute("SELECT COALESCE(SUM(CASE WHEN yon='Para Girişi' THEN tutar ELSE -tutar END),0) FROM nakit_kasa").fetchone()[0]
-        if hasattr(self, "kasa_ozet"):
-            self.kasa_ozet.config(text=f"Kasa bakiyesi: {safe_float(kasa_bakiye):,.2f} TL")
+
+    def refresh_all(self):
+        started = time.monotonic()
+        with connect() as c:
+            self._refresh_module_tables(c)
         self.refresh_cari()
         self.refresh_borc_takip()
         self.refresh_dashboard()
 
         if hasattr(self, 'alisveris_tree'):
             self.refresh_alisveris_cari()
-        self._loaded_view_version = view_version
         elapsed = time.monotonic() - started
         if elapsed > 1.0:
             try:
