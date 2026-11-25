@@ -1458,6 +1458,8 @@ class HoytasApp(tk.Tk):
             button = self._action_menu(nav, label, [
                 (modules[frame], lambda page=frame: self._open_module(page)) for frame in frames
             ])
+            button.configure(direction="below")
+            button.bind("<ButtonPress-1>", self._module_menu_press)
             button.pack(side="left", padx=(0, 6))
             nav_groups.update((str(frame), button) for frame in frames)
 
@@ -1573,6 +1575,14 @@ class HoytasApp(tk.Tk):
             self.tabs.hide(page)
             self._layout_workspace_tabs()
         return "break"
+
+    def _module_menu_press(self, event):
+        """Only the arrow side posts the module menu; keyboard bindings stay native."""
+        button = event.widget
+        arrow_area = round(button.winfo_fpixels("20p"))
+        if event.x < button.winfo_width() - arrow_area:
+            return "break"
+        return None
 
     def _action_menu(self, parent, text, actions):
         button = ttk.Menubutton(parent, text=text)
