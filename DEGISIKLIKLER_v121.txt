@@ -1,0 +1,2 @@
+HOYTAŞ Finans v121
+Açılır menü, güncelleme durumu, cari arama, sekme performansı, cari arşivi ve fatura tahsilatı.
