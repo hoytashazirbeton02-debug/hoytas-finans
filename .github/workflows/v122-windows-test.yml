@@ -1,0 +1,25 @@
+name: HOYTAS v122 Windows test
+on:
+  push:
+    branches: [release-v122]
+permissions:
+  contents: read
+jobs:
+  desktop:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt pillow
+      - name: Windows Tk menu, tabs and debt report
+        shell: pwsh
+        run: |
+          $env:HOYTAS_PROFILE_DIR = Join-Path $env:RUNNER_TEMP ([guid]::NewGuid().ToString())
+          python test_v122_ui.py
+      - name: Database regression tests
+        shell: pwsh
+        run: |
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP ([guid]::NewGuid().ToString())
+          python -m unittest discover -q

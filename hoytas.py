@@ -31,7 +31,7 @@ from hybrid_branding import set_brand_logo
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
 TARGET_SCHEMA_VERSION = 60
-APP_VERSION = 121
+APP_VERSION = 122
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 ISOLATED_PROFILE_DIR = os.environ.get("HOYTAS_PROFILE_DIR", "").strip()
 USER_DATA_DIR = ISOLATED_PROFILE_DIR or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
@@ -1396,16 +1396,15 @@ class HoytasApp(tk.Tk):
         ttk.Button(row, text="Taslağı Sil", command=lambda: self.delete_selected(self.fatura_tree, "fatura")).pack(side="right")
 
     def _build(self):
-        header = tk.Frame(self, bg="#F7FAF1", height=100)
+        header = tk.Frame(self, bg="#F7FAF1")
         header.pack(fill="x")
-        header.pack_propagate(False)
         logo = ttk.Label(header, text="HOYTAŞ", style="Brand.TLabel")
-        set_brand_logo(logo, max_size=82)
+        set_brand_logo(logo, max_size=52)
         logo.pack(side="left", padx=(20, 14), pady=6)
         header.configure(height=max(100, logo.winfo_reqheight() + 12))
-        tk.Frame(header, bg="#FFB800", width=3).pack(side="left", fill="y", pady=16, padx=(0, 14))
+        tk.Frame(header, bg="#FFB800", width=3).pack(side="left", fill="y", pady=10, padx=(0, 14))
         tk.Label(header, text="Finans ve İşletme Yönetimi", bg="#F7FAF1", fg="#19220E",
-                 font=("Segoe UI", 13, "bold")).pack(side="left", pady=20)
+                 font=("Segoe UI", 13, "bold")).pack(side="left", pady=8)
         who = getattr(self, "current_user", {})
         user_text = f"KULLANICI  {who.get('username', '—')}   |   {who.get('role', '')}"
         tk.Label(header, text=user_text, bg="#F7FAF1", fg="#28341C",
@@ -1449,7 +1448,12 @@ class HoytasApp(tk.Tk):
         nav.pack(fill="x", before=self.tabs, padx=10, pady=(8, 0))
         overview = ttk.Button(nav, text="Genel Bakış",
                               command=lambda: self._open_module(self.dashboard))
-        overview.pack(side="left", padx=(0, 6))
+        self.module_navigation = nav
+        nav_items = [overview]
+        self.style.configure("Module.TLabel", padding=(9, 5), background="#E5EEDB")
+        self.style.configure("Selected.Module.TLabel", background="#DEF2C4")
+        self.style.configure("ModuleArrow.TButton", padding=(7, 5))
+        self.style.configure("Selected.ModuleArrow.TButton", background="#DEF2C4", foreground="#1F3412")
         nav_groups = {str(self.dashboard): overview}
         for label, frames in (
             ("Cari", (self.cari_tab, self.borc_takip_tab, self.alisveris_cari_tab)),
@@ -1459,13 +1463,20 @@ class HoytasApp(tk.Tk):
             ("Stok", (self.stok_tab, self.stok_hareket_tab)),
             ("Personel", (self.personel_tab, self.maas_tab)),
         ):
-            button = self._action_menu(nav, label, [
-                (modules[frame], lambda page=frame: self._open_module(page)) for frame in frames
-            ])
-            button.configure(direction="below")
-            button.bind("<ButtonPress-1>", self._module_menu_press)
-            button.pack(side="left", padx=(0, 6))
-            nav_groups.update((str(frame), button) for frame in frames)
+            group = ttk.Frame(nav)
+            name = ttk.Label(group, text=label, style="Module.TLabel")
+            name.pack(side="left", fill="y")
+            arrow = ttk.Button(group, text="▼", style="ModuleArrow.TButton")
+            arrow.pack(side="left", fill="y")
+            menu = tk.Menu(arrow, tearoff=False)
+            for frame in frames:
+                menu.add_command(label=modules[frame], command=lambda page=frame: self._open_module(page))
+            arrow.configure(command=lambda button=arrow, popup=menu: self._post_module_menu(button, popup))
+            nav_items.append(group)
+            nav_groups.update((str(frame), (name, arrow)) for frame in frames)
+
+        nav.configure(height=overview.winfo_reqheight() + 4)
+        nav.bind("<Configure>", lambda _event: self._layout_module_navigation(nav, nav_items))
 
         self.module_strip = ttk.Frame(self)
         self.module_strip.pack(fill="x", before=self.tabs, padx=10, pady=(8, 0))
@@ -1497,9 +1508,14 @@ class HoytasApp(tk.Tk):
         def highlight_module(_event=None):
             current_group = nav_groups.get(self.tabs.select())
             self._layout_workspace_tabs()
-            for button in set(nav_groups.values()):
-                base_style = button.winfo_class()
-                button.configure(style=f"Selected.{base_style}" if button is current_group else base_style)
+            for group in set(nav_groups.values()):
+                prefix = "Selected." if group is current_group else ""
+                if group is overview:
+                    overview.configure(style=prefix + "TButton")
+                else:
+                    name, arrow = group
+                    name.configure(style=prefix + "Module.TLabel")
+                    arrow.configure(style=prefix + "ModuleArrow.TButton")
 
         self.tabs.bind("<<NotebookTabChanged>>", highlight_module, add="+")
         highlight_module()
@@ -1580,13 +1596,28 @@ class HoytasApp(tk.Tk):
             self._layout_workspace_tabs()
         return "break"
 
-    def _module_menu_press(self, event):
-        """Only the arrow side posts the module menu; keyboard bindings stay native."""
-        button = event.widget
-        arrow_area = round(button.winfo_fpixels("20p"))
-        if event.x < button.winfo_width() - arrow_area:
-            return "break"
-        return None
+    def _layout_module_navigation(self, nav, items):
+        width = nav.winfo_width()
+        if width <= 1:
+            return
+        row_height = max(item.winfo_reqheight() for item in items) + 4
+        x = y = 0
+        for item in items:
+            item_width = item.winfo_reqwidth()
+            if x and x + item_width > width:
+                x = 0
+                y += row_height
+            item.place(x=x, y=y, width=item_width, height=row_height - 4)
+            x += item_width + 6
+        height = y + row_height
+        if int(nav.cget("height")) != height:
+            nav.configure(height=height)
+
+    def _post_module_menu(self, button, menu):
+        try:
+            menu.tk_popup(button.winfo_rootx(), button.winfo_rooty() + button.winfo_height())
+        finally:
+            menu.grab_release()
 
     def _action_menu(self, parent, text, actions):
         button = ttk.Menubutton(parent, text=text)
@@ -2087,10 +2118,10 @@ class HoytasApp(tk.Tk):
         self.dashboard.bind("<Configure>", lambda event: self.debt_alert_label.configure(
             wraplength=max(event.width - 36, 1)))
 
-    def _tree(self, parent, columns, headings, widths=None, *, show_id=True):
+    def _tree(self, parent, columns, headings, widths=None, *, show_id=True, search_label="Listede Ara:", print_button=True):
         searchbar = ttk.Frame(parent)
         searchbar.pack(fill="x", pady=(6, 0))
-        ttk.Label(searchbar, text="Listede Ara:").pack(side="left")
+        ttk.Label(searchbar, text=search_label).pack(side="left")
         search_var = tk.StringVar()
         search_entry = ttk.Entry(searchbar, textvariable=search_var, width=32)
         search_entry.pack(side="left", padx=(6, 4))
@@ -2125,7 +2156,7 @@ class HoytasApp(tk.Tk):
         # Sağ tık bağlam menüsü; sol tık ve çift tık davranışları korunur.
         tree.bind("<Button-3>", lambda event, w=tree: self._tree_context_menu(event, w))
         tree.bind("<Control-Button-1>", lambda event, w=tree: self._tree_context_menu(event, w))
-        if os.name == "nt":
+        if print_button and os.name == "nt":
             if str(parent) in self.tabs.tabs():
                 title = self.tabs.tab(parent, "text").replace("\n", " ")
             else:
@@ -2867,19 +2898,12 @@ class HoytasApp(tk.Tk):
         """Borçlu carileri tek listede göster; tutarlar hareketlerden hesaplanır."""
         bar = ttk.Frame(self.borc_takip_tab); bar.pack(fill="x")
         ttk.Label(bar, text="Cari Borç Takip Listesi", font=("Segoe UI", 16, "bold")).pack(side="left")
-        self.borc_search = tk.StringVar()
-        ttk.Label(bar, text="Cari ara:").pack(side="left", padx=(18, 4))
-        search = ttk.Entry(bar, textvariable=self.borc_search, width=28)
-        search.pack(side="left")
-        self.borc_search.trace_add("write", lambda *_: self._apply_tree_search(self.borc_tree) if hasattr(self, "borc_tree") else None)
-        ttk.Button(bar, text="Listeyi Yenile", command=self.refresh_all).pack(side="right", padx=(6, 0))
-        ttk.Label(self.borc_takip_tab,
-                  text="Yalnızca kalan borcu bulunan cariler listelenir. Ödeme kaydı girildiğinde kalan tutar otomatik güncellenir.",
-                  foreground="#53645A").pack(anchor="w", pady=(8, 6))
         self.borc_tree = self._tree(self.borc_takip_tab,
             ("id", "unvan", "borc", "odenen", "kalan", "durum"),
             ("ID", "Cari Ünvanı", "Toplam Borç (TL)", "Ödenen (TL)", "Kalan Borç (TL)", "Durum"),
-            (50, 300, 150, 150, 160, 145))
+            (50, 270, 130, 115, 135, 125), show_id=False, search_label="Cari ara:", print_button=False)
+        self.borc_tree.bind("<Double-1>", self._open_debt_row)
+        self.borc_tree.bind("<Return>", lambda _event: self._open_selected_debt_cari())
         self.borc_tree.tag_configure("debt_unpaid", foreground="#9B1C1C")
         self.borc_tree.tag_configure("debt_partial", foreground="#8A4B08")
         summary = ttk.Frame(self.borc_takip_tab); summary.pack(fill="x", pady=8)
@@ -2887,10 +2911,31 @@ class HoytasApp(tk.Tk):
                                           font=("Segoe UI", 12, "bold"), foreground="#9B1C1C")
         self.borc_total_label.pack(side="left")
         actions = ttk.Frame(self.borc_takip_tab); actions.pack(fill="x", pady=(2, 0))
-        ttk.Button(actions, text="Borç Listesi PDF Al",
-                   command=lambda: self.export_pdf_report("Cari Borç Takip Raporu")).pack(side="left")
-        ttk.Button(actions, text="Seçili Carinin Hareketlerini Gör",
-                   command=self._open_selected_debt_cari).pack(side="left", padx=8)
+        ttk.Button(actions, text="Cari Hareketleri", command=self._open_selected_debt_cari).pack(side="left")
+        ttk.Button(actions, text="PDF Al", command=self._export_debt_list).pack(side="left")
+        if os.name == "nt":
+            ttk.Button(actions, text="Yazdır", command=lambda: self._export_debt_list(print_dialog=True)).pack(side="left")
+        ttk.Button(actions, text="Listeyi Yenile", command=self._refresh_from_button).pack(side="left")
+
+    def _open_debt_row(self, event):
+        item = self.borc_tree.identify_row(event.y)
+        if item and self.borc_tree.identify_region(event.x, event.y) == "cell":
+            self.borc_tree.selection_set(item)
+            self._open_selected_debt_cari()
+
+    def _export_debt_list(self, *, print_dialog=False):
+        tree = self.borc_tree
+        rows = [tuple(tree.item(item, "values"))[1:] for item in tree.get_children()]
+        if not rows:
+            return messagebox.showinfo("Borç Takip", "Listede döküm alınacak kayıt yok.", parent=self)
+        amounts = [sum(Decimal(row[index].replace(",", "")) for row in rows) for index in (1, 2, 3)]
+        headings = tuple(tree.heading(column, "text") for column in tree["displaycolumns"])
+        summary = ("TOPLAM", *(f"{amount:,.2f}" for amount in amounts), f"{len(rows)} cari")
+        try:
+            self._preview_then_save_pdf("Cari Borç Takip Raporu", rows=[headings, *rows, summary],
+                                        print_dialog=print_dialog)
+        except (OSError, ValueError, RuntimeError, ImportError) as error:
+            messagebox.showerror("Borç Takip Raporu", str(error), parent=self)
 
     def _debt_rows(self):
         with connect() as c:
@@ -4688,9 +4733,8 @@ class HoytasApp(tk.Tk):
         term = normalize_search_text(tree._search_var.get()) if hasattr(tree, "_search_var") else ""
         shown = [r for r in rows if term in normalize_search_text(" ".join(str(v or "") for v in r))] if term else rows
         if tree is getattr(self, "borc_tree", None):
-            name_term = normalize_search_text(self.borc_search.get())
-            shown = [r for r in shown if name_term in normalize_search_text(r[1])]
-            total = sum(safe_float(r[4]) for r in shown)
+            shown = [row for row in rows if term in normalize_search_text(row[1])] if term else rows
+            total = sum(Decimal(row[4].replace(",", "")) for row in shown)
             self.borc_total_label.config(text=f"Toplam kalan borç: {total:,.2f} TL   |   Borçlu cari: {len(shown)}")
         if tree is getattr(self, "mastarci_tree", None):
             volume, earned, paid = (sum(Decimal(row[index].replace(",", ".")) for row in shown)

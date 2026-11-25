@@ -1,0 +1,3 @@
+HOYTAŞ Finans v122
+Üst menülerde ayrı açılır ok, dar pencerede menü ve sekme yerleşimi, kısa başlık.
+Borç Takip: tek arama, cari hareketlerine çift tıkla erişim ve ekrandaki listeyle eşleşen PDF/yazdırma.
