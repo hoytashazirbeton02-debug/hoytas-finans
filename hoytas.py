@@ -30,8 +30,8 @@ from hybrid_branding import set_brand_logo
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
-TARGET_SCHEMA_VERSION = 59
-APP_VERSION = 120
+TARGET_SCHEMA_VERSION = 60
+APP_VERSION = 121
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 ISOLATED_PROFILE_DIR = os.environ.get("HOYTAS_PROFILE_DIR", "").strip()
 USER_DATA_DIR = ISOLATED_PROFILE_DIR or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
@@ -512,6 +512,7 @@ def connect(path=None):
         FROM cari c""")
     # Mevcut veritabanlarını kayıtları silmeden yeni alanlara taşır.
     migrations = {
+        "cari": [("arsivli", "INTEGER NOT NULL DEFAULT 0 CHECK(arsivli IN (0,1))")],
         "cek": [("banka_kodu", "TEXT"), ("cari_id", "INTEGER")],
         "beton_satis": [("santiye_id", "INTEGER"), ("beton_cinsi", "TEXT NOT NULL DEFAULT ''"), ("pompa_ucreti", "REAL NOT NULL DEFAULT 0")],
         "kullanici": [("kurtarma_hash", "TEXT"), ("kurtarma_salt", "TEXT")],
@@ -572,6 +573,9 @@ def connect(path=None):
     if current_version < 59:
         for action in ("insert", "update", "delete"):
             con.execute(f"DROP TRIGGER IF EXISTS audit_fatura_{action}")
+    if current_version < 60:
+        for action in ("insert", "update", "delete"):
+            con.execute(f"DROP TRIGGER IF EXISTS audit_cari_{action}")
     _install_audit_triggers(con)
     from operation_undo import create_journal
 
@@ -1011,6 +1015,8 @@ class HoytasApp(tk.Tk):
         self.bind_all("<Control-R>", self._refresh_from_button)
         for _i in range(1, 10):
             self.bind_all(f"<Alt-{_i}>", lambda e, i=_i: self._shortcut_tab(i))
+        self._view_observer = sqlite3.connect(DB_PATH, timeout=0.1)
+        self.bind("<Destroy>", self._close_view_observer, add="+")
         self.refresh_all()
         if self.membership_client is not None:
             self.deiconify()
@@ -1072,13 +1078,21 @@ class HoytasApp(tk.Tk):
             self.after_cancel(pending)
         self._tab_refresh_job = self.after(180, self._run_tab_refresh)
 
+    def _close_view_observer(self, event):
+        if event.widget is self:
+            self._view_observer.close()
+
+    def _database_view_version(self):
+        return self._view_observer.execute("PRAGMA data_version").fetchone()[0]
+
     def _run_tab_refresh(self):
         self._tab_refresh_job = None
         if getattr(self, "_refreshing_tab_change", False):
             return
         self._refreshing_tab_change = True
         try:
-            self.refresh_all()
+            if self._database_view_version() != self._loaded_view_version:
+                self.refresh_all()
         except Exception as exc:
             messagebox.showerror("Senkronizasyon yapılamadı", f"Sekmeler yenilenirken hata oluştu:\n{exc}", parent=self)
         finally:
@@ -1388,7 +1402,7 @@ class HoytasApp(tk.Tk):
         ttk.Button(row, text="Taslak PDF", command=lambda: self.selected_invoice_document(self.fatura_tree)).pack(side="left", padx=(0, 8))
         ttk.Button(row, text="Belge Bilgileri", command=lambda: self.selected_invoice_document(self.fatura_tree, edit=True)).pack(side="left", padx=(0, 8))
         ttk.Button(row, text="Taslağı Düzenle", command=lambda: self.edit_selected(self.fatura_tree, "fatura")).pack(side="left", padx=(0, 8))
-        ttk.Button(row, text="Fatura Tahsilatı (Koruma)", command=self.tahsilat_fatura).pack(side="left")
+        ttk.Button(row, text="Fatura Tahsilatı", command=self.tahsilat_fatura).pack(side="left")
         ttk.Button(row, text="Taslağı Sil", command=lambda: self.delete_selected(self.fatura_tree, "fatura")).pack(side="right")
 
     def _build(self):
@@ -1734,6 +1748,9 @@ class HoytasApp(tk.Tk):
                     time.sleep(attempt + 1)
         raise last_error
 
+    def _update_status_text(self, source, version):
+        return f"Kanal: {source}\nKurulu sürüm: v{APP_VERSION}\nSunucudaki sürüm: v{version}"
+
     def check_for_updates(self, silent=False):
         """Önce bağımsız HTTPS manifestini, gerekirse eski GitHub kaynağını denetle."""
         try:
@@ -1766,9 +1783,10 @@ class HoytasApp(tk.Tk):
             if not match:
                 raise RuntimeError("Yayın etiketinde sürüm numarası bulunamadı.")
             version = int(match.group(1))
+            status = self._update_status_text(f"GitHub Releases ({repo})", version)
             if version <= APP_VERSION:
                 if not silent:
-                    messagebox.showinfo("HOYTAŞ güncel", f"Kullandığınız sürüm v{APP_VERSION}. Daha yeni bir sürüm bulunamadı.", parent=self)
+                    messagebox.showinfo("HOYTAŞ güncelleme durumu", f"{status}\n\nDaha yeni bir sürüm bulunamadı.", parent=self)
                 return
             assets = release.get("assets", [])
             package_asset = next((a for a in assets if str(a.get("name", "")).lower().endswith(".zip") and "hoytas" in str(a.get("name", "")).lower()), None)
@@ -1788,7 +1806,7 @@ class HoytasApp(tk.Tk):
                             break
             if not digest.startswith("sha256:") or not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest):
                 raise RuntimeError("Yayın paketi SHA-256 doğrulama bilgisi taşımıyor; güvenlik için indirme durduruldu.")
-            if not messagebox.askyesno("HOYTAŞ güncellemesi bulundu", f"Yeni sürüm v{version} bulundu.\n\nŞimdi indirip güvenli şekilde kurayım mı?", parent=self):
+            if not messagebox.askyesno("HOYTAŞ güncellemesi bulundu", f"{status}\n\nŞimdi indirip güvenli şekilde kurayım mı?", parent=self):
                 return
             fd, package_path = tempfile.mkstemp(prefix=f"hoytas_v{version}_", suffix=".zip", dir=USER_DATA_DIR)
             os.close(fd)
@@ -1862,13 +1880,15 @@ class HoytasApp(tk.Tk):
             raise RuntimeError("Paket adresi kullanıcı bilgisi içermeyen geçerli bir HTTPS adresi olmalıdır.")
         if not re.fullmatch(r"[0-9a-f]{64}", digest):
             raise RuntimeError("Manifest içinde geçerli SHA-256 bilgisi bulunamadı.")
+        channel = "HOYTAŞ ortak kullanım" if ISOLATED_PROFILE_DIR else f"Yerel yayın ({parsed.hostname})"
+        status = self._update_status_text(channel, version)
         if version <= APP_VERSION:
             if not silent:
-                messagebox.showinfo("HOYTAŞ güncel", f"Kullandığınız sürüm v{APP_VERSION}. Daha yeni sürüm yok.", parent=self)
+                messagebox.showinfo("HOYTAŞ güncelleme durumu", f"{status}\n\nDaha yeni bir sürüm bulunamadı.", parent=self)
             return
         # Sessiz kontrol yalnızca "güncel" ve ağ hatası bildirimlerini gizler;
         # yeni sürüm bulunduğunda kullanıcı onayı olmadan kurulum başlatılmaz.
-        if not messagebox.askyesno("HOYTAŞ güncellemesi bulundu", f"Yeni sürüm v{version} bulundu.\n\nŞimdi indirip güvenli şekilde kurayım mı?", parent=self):
+        if not messagebox.askyesno("HOYTAŞ güncellemesi bulundu", f"{status}\n\nŞimdi indirip güvenli şekilde kurayım mı?", parent=self):
             return
         os.makedirs(USER_DATA_DIR, exist_ok=True)
         fd, package_path = tempfile.mkstemp(prefix=f"hoytas_v{version}_", suffix=".zip", dir=USER_DATA_DIR)
@@ -2102,6 +2122,7 @@ class HoytasApp(tk.Tk):
         tree.tag_configure("debt_unpaid", background="#FCE4E4", foreground="#9B1C1C")
         tree.tag_configure("debt_partial", background="#FFF0D6", foreground="#8A4B08")
         tree.tag_configure("debt_closed", background="#E5F4E8", foreground="#216438")
+        tree._search_entry = search_entry
         tree._search_var = search_var
         search_var.trace_add("write", lambda *_args, w=tree: self._apply_tree_search(w))
         tree.bind("<Double-1>", lambda event, w=tree: self._double_click_edit(w))
@@ -2818,10 +2839,6 @@ class HoytasApp(tk.Tk):
         ttk.Label(bar, text="Cari Hesaplar", font=("Segoe UI", 16, "bold")).pack(side="left")
         ttk.Button(bar, text="Yeni Cari Ekle", command=self.add_cari).pack(side="right")
         ttk.Button(bar,text="Tüm Cari Borçları Kontrol Et",command=self.bulk_cari_audit).pack(side="right",padx=6)
-        self.cari_search=tk.StringVar()
-        ttk.Label(bar,text="Ara:").pack(side="left",padx=(18,4))
-        search=ttk.Entry(bar,textvariable=self.cari_search,width=28); search.pack(side="left"); self.cari_search_entry=search
-        self.cari_search.trace_add("write",lambda *_: self.refresh_cari())
         legend=ttk.Frame(self.cari_tab); legend.pack(fill="x",pady=(6,0))
         ttk.Label(legend,text="● Ödeme yapılmamış borç",foreground="#9B1C1C",font=("Segoe UI",9,"bold")).pack(side="left",padx=(0,14))
         ttk.Label(legend,text="● Kısmi ödeme / kalan borç",foreground="#8A4B08",font=("Segoe UI",9,"bold")).pack(side="left",padx=(0,14))
@@ -2829,6 +2846,11 @@ class HoytasApp(tk.Tk):
         self.cari_tree = self._tree(self.cari_tab, ("id","tur","unvan","telefon","vergi_no","borc","alacak","bakiye"),
                                     ("ID","Tür","Ünvan","Telefon","Vergi No","Borç (TL)","Alacak (TL)","Kalan Borç (TL)"),
                                     (45,85,220,120,110,115,115,125))
+        self.cari_search = self.cari_tree._search_var
+        self.cari_search_entry = self.cari_tree._search_entry
+        self.cari_arsiv_goster = tk.BooleanVar(value=False)
+        ttk.Checkbutton(bar, text="Arşivdekiler", variable=self.cari_arsiv_goster,
+                        command=self.refresh_cari).pack(side="left", padx=10)
         self.cari_tree.bind("<Double-1>", lambda event: self.show_cari_hareketleri()
                             if self.cari_tree.identify_row(event.y) else None)
         row=ttk.Frame(self.cari_tab); row.pack(fill="x",pady=8)
@@ -2840,7 +2862,10 @@ class HoytasApp(tk.Tk):
             ("Cari Ekstresi Excel", self.export_selected_cari_excel),
         ]).pack(side="left", padx=(0, 8))
         ttk.Button(row,text="Tahsilat Al / Cari Borcunu Düş",command=self.cari_tahsilat).pack(side="left",padx=8)
-        ttk.Button(row, text="Seçili Kaydı Sil", command=lambda: self.delete_selected(self.cari_tree,"cari")).pack(side="right")
+        self._action_menu(row, "Cari İşlemleri", [
+            ("Arşivle / Arşivden Çıkar", self.toggle_cari_archive),
+            ("Kalıcı Sil (Yönetici)", lambda: self.delete_selected(self.cari_tree, "cari")),
+        ]).pack(side="right")
 
     def _build_borc_takip(self):
         """Borçlu carileri tek listede göster; tutarlar hareketlerden hesaplanır."""
@@ -2899,6 +2924,9 @@ class HoytasApp(tk.Tk):
         self._open_module(self.cari_tab)
         if hasattr(self, "cari_search"):
             self.cari_search.set("")
+            with connect() as db:
+                archived = db.execute("SELECT arsivli FROM cari WHERE id=?", (int(values[0]),)).fetchone()
+            self.cari_arsiv_goster.set(bool(archived and archived[0]))
         self.refresh_cari()
         for item in self.cari_tree.get_children():
             if int(self.cari_tree.item(item, "values")[0]) == int(values[0]):
@@ -4292,17 +4320,18 @@ class HoytasApp(tk.Tk):
             messagebox.showerror("Fatura kaydedilemedi", str(exc), parent=self)
 
     def tahsilat_fatura(self):
-        """Çift tahsilat ve cari-banka uyuşmazlığı çözülene kadar yeni kayıtları kilitle."""
-        return messagebox.showwarning(
-            "Tahsilat koruması",
-            "Fatura tahsilatının cari borcu ve kasa/banka ile tek işlemde eşleşmesi "
-            "henüz doğrulanmadı. Aynı paranın iki kez kaydedilmesini önlemek için "
-            "bu ekrandan yeni tahsilat geçici olarak durduruldu. "
-            "Gerçek tahsilatı Cari Hesaplar > Tahsilat Al üzerinden kaydedin. "
-            "Önceden kaydedilmiş fatura tahsilatları silinmez.",
-            parent=self)
+        selected = self.fatura_tree.selection()
+        if not selected:
+            return messagebox.showinfo("Fatura seçin", "Önce bir fatura seçin.", parent=self)
+        invoice_id = int(self.fatura_tree.item(selected[0], "values")[0])
+        with connect() as db:
+            customer = db.execute("""SELECT c.id,c.unvan FROM fatura f JOIN cari c ON c.id=f.cari_id
+                WHERE f.id=? AND f.durum<>'İptal edildi' AND f.tahsil_edilecek-f.odenen>0.005""", (invoice_id,)).fetchone()
+        if not customer:
+            return messagebox.showinfo("Tahsilat", "Bu faturanın açık tahsilatı bulunmuyor.", parent=self)
+        self.cari_tahsilat(customer, invoice_id=invoice_id)
 
-    def cari_tahsilat(self, cari_context=None):
+    def cari_tahsilat(self, cari_context=None, *, invoice_id=None):
         """Seçili müşteriden alınan kısmi/tam ödemeyi cari ve para hareketlerine işler."""
         if cari_context is None:
             sel = self.cari_tree.selection()
@@ -4313,9 +4342,14 @@ class HoytasApp(tk.Tk):
         cari_id, cari_unvan = cari_context
         with connect() as c:
             open_invoices = c.execute("""SELECT id, COALESCE(belge_no,''), tahsil_edilecek-odenen
-                FROM fatura WHERE cari_id=? AND tahsil_edilecek-odenen>0.005
+                FROM fatura WHERE cari_id=? AND durum<>'İptal edildi' AND tahsil_edilecek-odenen>0.005
                 ORDER BY tarih,id""", (cari_id,)).fetchall()
-        invoice_options = ["Faturaya bağlama"] + [f"{fid} - {belge} (Kalan {kalan:.2f} TL)" for fid,belge,kalan in open_invoices]
+        invoice_options = [f"{fid} - {belge} (Kalan {kalan:.2f} TL)"
+                           for fid, belge, kalan in open_invoices if invoice_id is None or fid == invoice_id]
+        if invoice_id is None:
+            invoice_options.insert(0, "Faturaya bağlama")
+        elif not invoice_options:
+            return messagebox.showinfo("Tahsilat", "Faturanın açık tahsilatı kalmadı.", parent=self)
         d = self.prompt(f"Cari Tahsilat - {cari_unvan}", [
             ("fatura", "Tahsilatın bağlanacağı fatura (isteğe bağlı)", "combo", invoice_options),
             ("tarih", "Tahsilat tarihi (GG.AA.YYYY)", "entry", None),
@@ -4339,12 +4373,15 @@ class HoytasApp(tk.Tk):
         fatura_id = int(d["fatura"].split(" - ", 1)[0]) if d.get("fatura", "").split(" - ", 1)[0].isdigit() else None
         with connect() as c:
             if fatura_id is not None:
-                invoice = c.execute("SELECT tahsil_edilecek,odenen FROM fatura WHERE id=? AND cari_id=?", (fatura_id,cari_id)).fetchone()
-                if not invoice or tutar > round(safe_float(invoice[0])-safe_float(invoice[1]), 2)+0.005:
-                    return messagebox.showerror("Fatura tutarı", "Fatura bulunamadı veya tahsilat kalan fatura tutarını aşıyor.", parent=self)
+                updated = c.execute("""UPDATE fatura SET odenen=odenen+?
+                    WHERE id=? AND cari_id=? AND durum<>'İptal edildi'
+                      AND ? <= ROUND(tahsil_edilecek-odenen, 2)+0.005
+                      AND ? <= COALESCE((SELECT ROUND(bakiye,2) FROM cari_bakiye WHERE cari_id=?),0)+0.005""",
+                    (tutar, fatura_id, cari_id, tutar, tutar, cari_id))
+                if updated.rowcount != 1:
+                    return messagebox.showerror("Fatura tutarı", "Tutar, açık fatura tutarını veya cari borç bakiyesini aşıyor ya da fatura tahsilata kapalı.", parent=self)
                 c.insert_shared("INSERT INTO fatura_tahsilat(fatura_id,tarih,tutar,yontem,aciklama) VALUES(?,?,?,?,?)",
                           (fatura_id,tarih,tutar,d["yontem"],aciklama))
-                c.execute("UPDATE fatura SET odenen=odenen+? WHERE id=?", (tutar,fatura_id))
             # Tahsilat, cari borcunu yalnızca alınan tutar kadar azaltır.
             c.insert_shared("INSERT INTO hareket(tarih,cari_id,tur,kategori,aciklama,tutar,odeme_yontemi) VALUES(?,?,?,?,?,?,?)",
                       (tarih, cari_id, "Alacak", "Tahsilat", aciklama, tutar, d["yontem"]))
@@ -4364,21 +4401,30 @@ class HoytasApp(tk.Tk):
         self.refresh_all()
         messagebox.showinfo("Tahsilat kaydedildi", f"{tutar:,.2f} TL tahsilat kaydedildi. Cari bakiye alınan tutar kadar düşürüldü.", parent=self)
 
+    def toggle_cari_archive(self):
+        selected = self.cari_tree.selection()
+        if not selected:
+            return messagebox.showinfo("Cari seçin", "Önce bir cari hesap seçin.", parent=self)
+        cari_id = int(self.cari_tree.item(selected[0], "values")[0])
+        archived = int(self.cari_arsiv_goster.get())
+        with connect() as db:
+            db.execute("UPDATE cari SET arsivli=? WHERE id=? AND arsivli=?", (1-archived, cari_id, archived))
+        self.refresh_cari()
+
     def refresh_cari(self):
         if not hasattr(self,"cari_tree"): return
-        term=normalize_search_text(self.cari_search.get()) if hasattr(self,"cari_search") else ""
         with connect() as c:
             raw=c.execute("""SELECT c.id,c.tur,c.unvan,c.telefon,c.vergi_no,
                 b.toplam_borc,b.toplam_alacak,b.bakiye
                 FROM cari c JOIN cari_bakiye b ON b.cari_id=c.id
-                ORDER BY c.unvan COLLATE NOCASE""").fetchall()
+                WHERE c.arsivli=? ORDER BY c.unvan COLLATE NOCASE""",
+                (int(self.cari_arsiv_goster.get()),)).fetchall()
         rows=[]; row_tags={}
         for r in raw:
             borc, alacak, bakiye = safe_float(r[5] or 0), safe_float(r[6] or 0), safe_float(r[7] or 0)
             rows.append((r[0],r[1],r[2],r[3],r[4],f"{borc:.2f}",f"{alacak:.2f}",f"{bakiye:.2f}"))
             row_tags[str(r[0])] = ("debt_partial" if alacak > 0.005 else "debt_unpaid") if bakiye > 0.005 else "debt_closed"
         self.cari_tree._row_tags=row_tags
-        if term: rows=[r for r in rows if term in normalize_search_text(" ".join(str(x or "") for x in r[:5]))]
         self.fill_tree(self.cari_tree,rows)
 
     def add_hareket(self, cari_context=None):
@@ -4558,6 +4604,8 @@ class HoytasApp(tk.Tk):
                     f"Bu cari hareketi Beton Satış #{sale_id} kaydının parçasıdır. "
                     "Bağlantının bozulmaması için buradan silinemez. Satışı Beton Satış sayfasından silin.", parent=self)
         if table == "cari":
+            if getattr(self, "current_user", {}).get("role") != "Yönetici":
+                return messagebox.showinfo("Yetki gerekli", "Kalıcı cari silme işlemi yöneticiye açıktır.", parent=self)
             with connect() as c:
                 receipt_count = c.execute("""SELECT COUNT(*) FROM fatura_tahsilat ft
                     JOIN fatura f ON f.id=ft.fatura_id WHERE f.cari_id=?""", (row_id,)).fetchone()[0]
@@ -4573,9 +4621,8 @@ class HoytasApp(tk.Tk):
             summary = ", ".join(f"{k}: {v}" for k,v in counts.items() if v)
             if not messagebox.askyesno("Cari ve tüm kayıtları sil", f"'{cari[0]}' cari hesabı ve bu hesaba bağlı TÜM hareketler, çekler, beton satışları ve faturalar silinecek.\n\n{summary or 'Bağlı kayıt bulunamadı.'}\n\nİşlem öncesi otomatik yedek alınacak. Devam edilsin mi?", parent=self): return
             try:
-                os.makedirs(BACKUP_DIR, exist_ok=True)
-                backup_path=os.path.join(BACKUP_DIR, f"cari_silme_oncesi_{datetime.now():%Y%m%d_%H%M%S}.db")
-                with sqlite3.connect(DB_PATH) as src, sqlite3.connect(backup_path) as dst: src.backup(dst)
+                with connect() as src:
+                    backup_path = _verified_sqlite_backup(src, "cari_silme_oncesi")
                 with connect() as c:
                     # Satış kaynaklı kasa/banka/çek kayıtlarını da referanslarından temizle.
                     sales=c.execute("SELECT id FROM beton_satis WHERE cari_id=?",(row_id,)).fetchall()
@@ -4691,6 +4738,7 @@ class HoytasApp(tk.Tk):
             self.debt_alert_label.config(text=f"⚠ ÖDEME BEKLEYEN CARİ: {odemesiz} hesapta hiç tahsilat yok. Toplam açık cari bakiyesi: {acik_borc:,.2f} TL. Cari Hesaplar sekmesinde kırmızı/turuncu uyarılarla işaretlenir.")
 
     def refresh_all(self):
+        view_version = self._database_view_version()
         started = time.monotonic()
         with connect() as c:
 
@@ -4748,6 +4796,7 @@ class HoytasApp(tk.Tk):
 
         if hasattr(self, 'alisveris_tree'):
             self.refresh_alisveris_cari()
+        self._loaded_view_version = view_version
         elapsed = time.monotonic() - started
         if elapsed > 1.0:
             try:
