@@ -52,6 +52,7 @@ RuntimeFound:
     File "${SOURCE_DIR}/hoytas.py"
     File "${SOURCE_DIR}/HOYTAS.pyw"
     File "${SOURCE_DIR}/HOYTAS.ico"
+    File "${SOURCE_DIR}/hoytas_logo.png"
     File "${SOURCE_DIR}/CANLI_GUNCELLEME.json"
     File "${SOURCE_DIR}/hybrid_*.py"
     File "${SOURCE_DIR}/HOYTAS_Dogrudan_Kisayol.vbs"

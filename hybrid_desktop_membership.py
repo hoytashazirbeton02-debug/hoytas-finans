@@ -4,6 +4,7 @@ from threading import Thread
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
+from hybrid_branding import set_brand_logo
 from login_memory import LoginFields
 
 
@@ -41,8 +42,9 @@ def sign_in(parent, client, *, setup_admin=False, prepare=None):
     window.resizable(False, False)
     frame = ttk.Frame(window, padding=24)
     frame.pack()
-    ttk.Label(frame, text="HOYTAŞ Hazır Beton", font=("Segoe UI", 20, "bold")).grid(
-        row=0, column=0, columnspan=2, pady=(0, 15))
+    brand = ttk.Label(frame, text="HOYTAŞ Hazır Beton", font=("Segoe UI", 20, "bold"))
+    set_brand_logo(brand)
+    brand.grid(row=0, column=0, columnspan=2, pady=(0, 15))
     ttk.Label(frame, text="Kullanıcı adı").grid(row=1, column=0, sticky="w", pady=5)
     ttk.Label(frame, text="Şifre").grid(row=2, column=0, sticky="w", pady=5)
     fields = LoginFields(frame, 1, "merkezi")

@@ -16,6 +16,7 @@ Set shortcut = shell.CreateShortcut(files.BuildPath(shell.SpecialFolders("Deskto
 shortcut.TargetPath = shell.ExpandEnvironmentStrings("%ComSpec%")
 shortcut.Arguments = "/d /c " & Chr(34) & Chr(34) & launcher & Chr(34) & Chr(34)
 shortcut.WorkingDirectory = folder
+shortcut.IconLocation = files.BuildPath(folder, "HOYTAS.ico") & ",0"
 shortcut.Description = "HOYTAS canli profilini ac"
 shortcut.Save
 

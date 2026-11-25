@@ -18,5 +18,6 @@ Set shortcut = shell.CreateShortcut(shortcutPath)
 shortcut.TargetPath = shell.ExpandEnvironmentStrings("%ComSpec%")
 shortcut.Arguments = "/d /c " & Chr(34) & Chr(34) & launcher & Chr(34) & Chr(34)
 shortcut.WorkingDirectory = folder
+shortcut.IconLocation = files.BuildPath(folder, "HOYTAS.ico") & ",0"
 shortcut.Description = "HOYTAS Finans ve Isletme Yonetimi"
 shortcut.Save

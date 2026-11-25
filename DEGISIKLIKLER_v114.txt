@@ -1,0 +1,3 @@
+HOYTAŞ Finans v114
+Cari kontrol ekranı ve satış faturası taslağı düzeni.
+Modülleri ayrı sekmelerde açma ve kapatma.

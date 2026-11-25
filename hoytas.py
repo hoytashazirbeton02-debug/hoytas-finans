@@ -26,10 +26,12 @@ import queue
 import time
 from xml.sax.saxutils import escape
 
+from hybrid_branding import set_brand_logo
+
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
 TARGET_SCHEMA_VERSION = 59
-APP_VERSION = 113
+APP_VERSION = 117
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 ISOLATED_PROFILE_DIR = os.environ.get("HOYTAS_PROFILE_DIR", "").strip()
 USER_DATA_DIR = ISOLATED_PROFILE_DIR or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
@@ -962,30 +964,31 @@ class HoytasApp(tk.Tk):
         try: self.style.theme_use("clam")
         except tk.TclError: pass
         # Kurumsal HOYTAŞ arayüzü: sakin gri zemin, koyu yeşil ve kontrollü sarı vurgu.
-        self.style.configure("TFrame", background="#F1F4F2")
-        self.style.configure("TLabel", background="#F1F4F2", foreground="#24352C", font=("Segoe UI", 10))
+        self.style.configure("Brand.TLabel", background="#F7FAF1", foreground="#19220E")
+        self.style.configure("TFrame", background="#F4F7ED")
+        self.style.configure("TLabel", background="#F4F7ED", foreground="#24352C", font=("Segoe UI", 10))
         self.style.configure("TButton", padding=(12, 8), font=("Segoe UI", 9, "bold"),
-                             background="#286044", foreground="#FFFFFF", borderwidth=0, focusthickness=2)
-        self.style.map("TButton", background=[("active", "#1D4933"), ("pressed", "#173B2A"), ("disabled", "#D5DCD7")],
+                             background="#315C16", foreground="#FFFFFF", borderwidth=0, focusthickness=2)
+        self.style.map("TButton", background=[("active", "#264810"), ("pressed", "#1F3412"), ("disabled", "#D5DCD7")],
                        foreground=[("disabled", "#7C8780")])
         self.style.configure("TMenubutton", padding=(10, 7), font=("Segoe UI", 9, "bold"))
-        self.style.configure("Selected.TMenubutton", background="#CDE5D5", foreground="#173B2A")
-        self.style.configure("Selected.TButton", background="#CDE5D5", foreground="#173B2A")
+        self.style.configure("Selected.TMenubutton", background="#DEF2C4", foreground="#1F3412")
+        self.style.configure("Selected.TButton", background="#DEF2C4", foreground="#1F3412")
         self.style.configure("TEntry", padding=7, fieldbackground="#FFFFFF", foreground="#24352C", bordercolor="#C9D5CD")
         self.style.configure("TCombobox", padding=7, fieldbackground="#FFFFFF", foreground="#24352C", arrowsize=14)
         self.style.map("TCombobox", fieldbackground=[("readonly", "#FFFFFF")], foreground=[("readonly", "#24352C")])
         self.style.configure("TNotebook", background="#E8EEEA", borderwidth=0, tabmargins=(3, 7, 3, 0))
         self.style.configure("TNotebook.Tab", padding=(7, 8), font=("Segoe UI", 9, "bold"),
-                             background="#DCE6DF", foreground="#40564A", borderwidth=0)
-        self.style.map("TNotebook.Tab", background=[("selected", "#FFFFFF"), ("active", "#C9DCCF")],
+                             background="#E5EEDB", foreground="#40564A", borderwidth=0)
+        self.style.map("TNotebook.Tab", background=[("selected", "#FFFFFF"), ("active", "#D6EAC5")],
                        foreground=[("selected", "#1D5B39"), ("active", "#1F3028")], padding=[("selected", (7, 8))])
         self.style.configure("Treeview", rowheight=34, font=("Segoe UI", 9), background="#FFFFFF",
                              fieldbackground="#FFFFFF", foreground="#24352C", borderwidth=0)
         self.style.configure("Treeview.Heading", font=("Segoe UI", 9, "bold"),
                              background="#DCE8E0", foreground="#214B35", padding=(9, 11), relief="flat")
-        self.style.map("Treeview", background=[("selected", "#CDE5D5")], foreground=[("selected", "#173B2A")])
+        self.style.map("Treeview", background=[("selected", "#DEF2C4")], foreground=[("selected", "#1F3412")])
         self.style.configure("TLabelframe", background="#FFFFFF", bordercolor="#D5E0D8", relief="solid", padding=8)
-        self.style.configure("TLabelframe.Label", background="#FFFFFF", foreground="#286044", font=("Segoe UI", 9, "bold"))
+        self.style.configure("TLabelframe.Label", background="#FFFFFF", foreground="#315C16", font=("Segoe UI", 9, "bold"))
         self.style.configure("TLabelframe", background="#FFFFFF", bordercolor="#D8E0DB", relief="solid")
         self.style.configure("TLabelframe.Label", background="#FFFFFF", foreground="#315B46", font=("Segoe UI", 9, "bold"))
         self.style.configure("Metric.TLabelframe", background="#FFFFFF", bordercolor="#D8E0DB", relief="solid")
@@ -1093,7 +1096,7 @@ class HoytasApp(tk.Tk):
     def _shortcut_cari_search(self, event=None):
         if hasattr(self, "cari_search"):
             try:
-                self.tabs.select(self.cari_tab)
+                self._open_module(self.cari_tab)
                 self.cari_search_entry.focus_set()
                 self.cari_search_entry.selection_range(0, "end")
                 return "break"
@@ -1102,7 +1105,7 @@ class HoytasApp(tk.Tk):
 
     def _shortcut_tab(self, number):
         if hasattr(self, "tabs") and number <= len(self.tabs.tabs()):
-            self.tabs.select(number - 1)
+            self._open_module(self.tabs.tabs()[number - 1])
             return "break"
 
     def _hash_password(self, password, salt):
@@ -1152,7 +1155,9 @@ class HoytasApp(tk.Tk):
             while True:
                 win = tk.Toplevel(self); win.title("HOYTAŞ Hazır Beton - İlk Kurulum"); win.transient(self); win.grab_set(); win.resizable(False, False)
                 frm = ttk.Frame(win, padding=22); frm.pack()
-                ttk.Label(frm, text="HOYTAŞ Hazır Beton Yönetici Hesabı", font=("Segoe UI", 15, "bold")).grid(row=0,column=0,columnspan=2,pady=(0,12))
+                brand = ttk.Label(frm, text="Yönetici Hesabı", font=("Segoe UI", 15, "bold"))
+                set_brand_logo(brand, compound="top")
+                brand.grid(row=0, column=0, columnspan=2, pady=(0, 12))
                 ttk.Label(frm,text="Kullanıcı adı").grid(row=1,column=0,sticky="w",pady=5); user=ttk.Entry(frm,width=28); user.insert(0,"admin"); user.grid(row=1,column=1,pady=5)
                 ttk.Label(frm,text="Yeni şifre (en az 8 karakter)").grid(row=2,column=0,sticky="w",pady=5); pw=ttk.Entry(frm,width=28,show="*"); pw.grid(row=2,column=1,pady=5)
                 ttk.Label(frm,text="Şifreyi tekrar yazın").grid(row=3,column=0,sticky="w",pady=5); pw2=ttk.Entry(frm,width=28,show="*"); pw2.grid(row=3,column=1,pady=5)
@@ -1175,7 +1180,9 @@ class HoytasApp(tk.Tk):
         while True:
             win=tk.Toplevel(self); win.title("HOYTAŞ Hazır Beton - Giriş"); win.transient(self); win.grab_set(); win.resizable(False,False)
             frm=ttk.Frame(win,padding=24); frm.pack()
-            ttk.Label(frm,text="HOYTAŞ Hazır Beton",font=("Segoe UI",22,"bold")).grid(row=0,column=0,columnspan=2,pady=(0,3))
+            brand = ttk.Label(frm, text="HOYTAŞ Hazır Beton", font=("Segoe UI", 22, "bold"))
+            set_brand_logo(brand)
+            brand.grid(row=0, column=0, columnspan=2, pady=(0, 3))
             ttk.Label(frm,text="Finans Yönetimi - Güvenli Giriş").grid(row=1,column=0,columnspan=2,pady=(0,14))
             ttk.Label(frm,text="Kullanıcı adı").grid(row=2,column=0,sticky="w",pady=5)
             ttk.Label(frm,text="Şifre").grid(row=3,column=0,sticky="w",pady=5)
@@ -1367,11 +1374,13 @@ class HoytasApp(tk.Tk):
         bar=ttk.Frame(self.fatura_tab); bar.pack(fill="x")
         ttk.Label(bar,text="Fatura / Belge Taslakları",font=("Segoe UI",16,"bold")).pack(side="left")
         ttk.Button(bar,text="Yeni Fatura Taslağı",command=self.add_fatura).pack(side="right")
-        ttk.Label(self.fatura_tab, text="Satış faturası taslakları cari karta bağlıdır. Resmî düzenleme EDM üzerinden yapılır.",
+        ttk.Label(self.fatura_tab, text="Satış taslakları cari karta bağlıdır. Önizleme ve cari kontrolü yerel olarak yapılır.",
                   foreground="#7a4b00", wraplength=900).pack(anchor="w", pady=(8, 0))
         row = ttk.Frame(self.fatura_tab)
         row.pack(fill="x", pady=8)
         self.fatura_tree=self._tree(self.fatura_tab,("id","tarih","cari","belge","miktar","ara","kdv","toplam","tevkifat","net","odenen","kalan","durum"),("ID","Tarih","Cari","Belge No","m³","Ara Toplam TL","KDV TL","Genel Toplam TL","Tevkifat TL","Net TL","Tahsil TL","Kalan TL","Durum"),(45,100,200,120,70,120,100,120,110,110,110,110,125))
+        ttk.Button(row, text="Cari Kontrolü",
+                   command=lambda: self.selected_invoice_document(self.fatura_tree, review=True)).pack(side="left", padx=(0, 8))
         ttk.Button(row, text="Taslak PDF", command=lambda: self.selected_invoice_document(self.fatura_tree)).pack(side="left", padx=(0, 8))
         ttk.Button(row, text="Belge Bilgileri", command=lambda: self.selected_invoice_document(self.fatura_tree, edit=True)).pack(side="left", padx=(0, 8))
         ttk.Button(row, text="Taslağı Düzenle", command=lambda: self.edit_selected(self.fatura_tree, "fatura")).pack(side="left", padx=(0, 8))
@@ -1379,25 +1388,21 @@ class HoytasApp(tk.Tk):
         ttk.Button(row, text="Taslağı Sil", command=lambda: self.delete_selected(self.fatura_tree, "fatura")).pack(side="right")
 
     def _build(self):
-        header = tk.Frame(self, bg="#1F3028", height=78)
+        header = tk.Frame(self, bg="#F7FAF1", height=88)
         header.pack(fill="x")
         header.pack_propagate(False)
-        brand = tk.Frame(header, bg="#1F3028")
-        brand.pack(side="left", fill="y", padx=(22, 10))
-        tk.Label(brand, text="HOYTAŞ", bg="#1F3028", fg="#E7BD37",
-                 font=("Segoe UI", 23, "bold")).pack(anchor="w", pady=(12, 0))
-        tk.Label(brand, text="HAZIR BETON", bg="#1F3028", fg="#FFFFFF",
-                 font=("Segoe UI", 8, "bold")).pack(anchor="w", pady=(0, 9))
-        tk.Frame(header, bg="#DDB62E", width=3).pack(side="left", fill="y", pady=16, padx=(0, 14))
-        tk.Label(header, text="Finans ve İşletme Yönetimi", bg="#1F3028", fg="#F3F5F4",
+        logo = ttk.Label(header, text="HOYTAŞ", style="Brand.TLabel")
+        set_brand_logo(logo, max_size=72)
+        logo.pack(side="left", padx=(20, 14), pady=8)
+        tk.Frame(header, bg="#FFB800", width=3).pack(side="left", fill="y", pady=16, padx=(0, 14))
+        tk.Label(header, text="Finans ve İşletme Yönetimi", bg="#F7FAF1", fg="#19220E",
                  font=("Segoe UI", 13, "bold")).pack(side="left", pady=20)
         who = getattr(self, "current_user", {})
         user_text = f"KULLANICI  {who.get('username', '—')}   |   {who.get('role', '')}"
-        tk.Label(header, text=user_text, bg="#1F3028", fg="#D3DDD6",
+        tk.Label(header, text=user_text, bg="#F7FAF1", fg="#28341C",
                  font=("Segoe UI", 9)).pack(side="right", padx=24)
-        tk.Frame(self, bg="#DDB62E", height=3).pack(fill="x")
-        self.style.layout("Modules.TNotebook.Tab", [])
-        self.tabs = ttk.Notebook(self, style="Modules.TNotebook")
+        tk.Frame(self, bg="#56BA00", height=3).pack(fill="x")
+        self.tabs = ttk.Notebook(self)
         self.tabs.pack(fill="both", expand=True, padx=10, pady=(8, 6))
         self.dashboard = ttk.Frame(self.tabs, padding=18)
         self.cari_tab = ttk.Frame(self.tabs, padding=12)
@@ -1428,10 +1433,12 @@ class HoytasApp(tk.Tk):
         }
         for frame, title in modules.items():
             self.tabs.add(frame, text=title)
+            if frame != self.dashboard:
+                self.tabs.hide(frame)
         nav = ttk.Frame(self)
         nav.pack(fill="x", before=self.tabs, padx=10, pady=(8, 0))
         overview = ttk.Button(nav, text="Genel Bakış",
-                              command=lambda: self.tabs.select(self.dashboard))
+                              command=lambda: self._open_module(self.dashboard))
         overview.pack(side="left", padx=(0, 6))
         nav_groups = {str(self.dashboard): overview}
         for label, frames in (
@@ -1443,14 +1450,19 @@ class HoytasApp(tk.Tk):
             ("Personel", (self.personel_tab, self.maas_tab)),
         ):
             button = self._action_menu(nav, label, [
-                (modules[frame], lambda page=frame: self.tabs.select(page)) for frame in frames
+                (modules[frame], lambda page=frame: self._open_module(page)) for frame in frames
             ])
             button.pack(side="left", padx=(0, 6))
             nav_groups.update((str(frame), button) for frame in frames)
 
+        close_tab = ttk.Button(nav, text="Sekmeyi kapat", command=self._close_module)
+        close_tab.pack(side="right")
+        self.bind("<Control-w>", self._close_module, add="+")
+
         def highlight_module(_event=None):
             current_group = nav_groups.get(self.tabs.select())
-            for button in nav.winfo_children():
+            close_tab.state(["disabled" if current_group is overview else "!disabled"])
+            for button in set(nav_groups.values()):
                 base_style = button.winfo_class()
                 button.configure(style=f"Selected.{base_style}" if button is current_group else base_style)
 
@@ -1466,8 +1478,6 @@ class HoytasApp(tk.Tk):
         self._build_personel()
         self._build_beton()
         self._build_mastarci()
-        ttk.Label(self.fatura_tab, text="Resmî e-Fatura gönderimi EDM üzerinden yapılır.",
-                  foreground="#315B46").pack(anchor="w", pady=(0, 6))
         self._build_fatura()
         self._build_gelen_faturalar()
         self._build_kasa()
@@ -1494,6 +1504,16 @@ class HoytasApp(tk.Tk):
             settings.extend([("Kullanıcı Yönetimi", self.manage_users),
                              ("İşlem Geçmişi", self.show_audit_log)])
         self._action_menu(bottom, "Sistem", settings).pack(side="left")
+
+    def _open_module(self, page):
+        self.tabs.add(page)
+        self.tabs.select(page)
+
+    def _close_module(self, _event=None):
+        selected = self.tabs.select()
+        if selected and selected != str(self.dashboard):
+            self.tabs.hide(selected)
+        return "break"
 
     def _action_menu(self, parent, text, actions):
         button = ttk.Menubutton(parent, text=text)
@@ -2249,6 +2269,8 @@ class HoytasApp(tk.Tk):
         nb.add(invoice_frame, text="Faturalar")
         invoice_actions = ttk.Frame(invoice_frame)
         invoice_actions.pack(fill="x", pady=(0, 6))
+        ttk.Button(invoice_actions, text="Cari Kontrolü",
+                   command=lambda: self.selected_invoice_document(invoice_tree, review=True)).pack(side="left", padx=(0, 8))
         ttk.Button(invoice_actions, text="Satış Taslağı PDF",
                    command=lambda: self.selected_invoice_document(invoice_tree)).pack(side="left", padx=(0, 8))
         ttk.Button(invoice_actions, text="Belge Bilgileri",
@@ -2526,6 +2548,7 @@ class HoytasApp(tk.Tk):
             return
         try:
             from openpyxl import Workbook, load_workbook
+            from openpyxl.drawing.image import Image as XLImage
             from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
             from openpyxl.utils import get_column_letter
             with connect() as c:
@@ -2537,6 +2560,13 @@ class HoytasApp(tk.Tk):
                 checks = c.execute("SELECT yon,COALESCE(banka,''),COALESCE(banka_kodu,''),COALESCE(cek_no,''),vade,tutar,durum,COALESCE(notlar,'') FROM cek WHERE cari_id=? ORDER BY vade ASC,id ASC", (cari_id,)).fetchall()
             wb = Workbook()
             summary = wb.active; summary.title = "Cari Özeti"
+            logo_path = os.path.join(APP_DIR, "hoytas_logo.png")
+            if os.path.isfile(logo_path):
+                logo = XLImage(logo_path)
+                scale = 85 / max(logo.width, logo.height)
+                logo.width *= scale
+                logo.height *= scale
+                summary.add_image(logo, "D2")
             summary.append(["HOYTAŞ HAZIR BETON | CARİ HESAP EKSTRESİ"])
             summary.append(["Cari Ünvanı", cari[0]])
             summary.append(["Telefon", cari[1] or "-"])
@@ -2797,7 +2827,7 @@ class HoytasApp(tk.Tk):
         if not sel:
             return messagebox.showinfo("Cari seçin", "Hareketlerini görmek için borç listesinden bir cari seçin.", parent=self)
         values = self.borc_tree.item(sel[0], "values")
-        self.tabs.select(self.cari_tab)
+        self._open_module(self.cari_tab)
         if hasattr(self, "cari_search"):
             self.cari_search.set("")
         self.refresh_cari()
@@ -4023,7 +4053,7 @@ class HoytasApp(tk.Tk):
         with connect() as c: c.insert_shared("INSERT INTO santiye(ad,adres,yetkili,telefon,notlar) VALUES(?,?,?,?,?)",(d["ad"],d["adres"],d["yetkili"],d["telefon"],d["notlar"]))
         self.refresh_all()
 
-    def selected_invoice_document(self, tree, *, edit=False):
+    def selected_invoice_document(self, tree, *, edit=False, review=False):
         selection = tree.selection()
         if not selection:
             return messagebox.showinfo("Fatura seçin", "Önce bir satış faturası taslağı seçin.", parent=tree)
@@ -4031,6 +4061,8 @@ class HoytasApp(tk.Tk):
         if tree["columns"][1] == "tur" and values[1] != "Satış":
             return messagebox.showinfo("Satış taslağı", "Bu işlem için bir satış faturası taslağı seçin.", parent=tree)
         invoice_id = int(values[0])
+        if review:
+            return self._review_invoice_customer(invoice_id, tree)
         if not edit:
             try:
                 return self._preview_then_save_pdf("Fatura Taslağı PDF", cari_id=invoice_id)
@@ -4052,6 +4084,7 @@ class HoytasApp(tk.Tk):
             ("alici_daire", "Alıcı vergi dairesi (varsa)", "entry", None),
             ("teslim", "Teslim tarihi (GG.AA.YYYY)", "entry", None),
             ("irsaliye", "İrsaliye numarası", "entry", None),
+            ("senaryo", "Taslak senaryosu", "combo", list(INVOICE_DRAFT_PROFILES)),
             ("tevkifat_kodu", "Tevkifat kodu ve işlem adı (varsa)", "entry", None),
         ]
         initial = invoice_document_details(stored, customer_id)
@@ -4075,6 +4108,49 @@ class HoytasApp(tk.Tk):
         if not result.rowcount:
             return messagebox.showwarning("Taslak değişti", "Faturayı yenileyin ve belge bilgilerini tekrar açın.", parent=tree)
         messagebox.showinfo("Belge bilgileri", "Fatura belge bilgileri kaydedildi.", parent=tree)
+
+    def _review_invoice_customer(self, invoice_id, parent):
+        with connect() as db:
+            row = db.execute("""SELECT f.cari_id, f.belge_no, f.belge_bilgileri, c.unvan,
+                c.vergi_no, c.telefon FROM fatura f LEFT JOIN cari c ON c.id=f.cari_id
+                WHERE f.id=?""", (invoice_id,)).fetchone()
+        if not row:
+            return messagebox.showinfo("Fatura bulunamadı", "Taslağı yenileyip tekrar seçin.", parent=parent)
+        customer_id, number, stored, name, tax_id, phone = row
+        details = invoice_document_details(stored, customer_id)
+        fields = (
+            ("Cari unvanı", name),
+            ("VKN / TCKN", tax_id),
+            ("Fatura adresi", details.get("alici_adres")),
+            ("Vergi dairesi", details.get("alici_daire")),
+            ("Telefon", phone),
+            ("Taslak senaryosu", details.get("senaryo") or "Seçilmedi"),
+        )
+        issues = []
+        if not name:
+            issues.append("Cari unvanı eksik.")
+        if not re.fullmatch(r"[0-9]{10,11}", tax_id or ""):
+            issues.append("VKN / TCKN biçimini kontrol edin.")
+        if not details.get("alici_adres"):
+            issues.append("Fatura adresi eksik.")
+        if not details.get("senaryo"):
+            issues.append("Belge senaryosu seçilmemiş.")
+        window = tk.Toplevel(self)
+        window.title("Fatura Cari Kontrolü")
+        window.transient(self)
+        body = ttk.Frame(window, padding=20)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text=f"Cari kontrolü · {number or 'Fatura taslağı'}",
+                  font=("Segoe UI", 14, "bold")).grid(row=0, columnspan=2, sticky="w", pady=(0, 12))
+        for index, (label, value) in enumerate(fields, start=1):
+            ttk.Label(body, text=label).grid(row=index, column=0, sticky="nw", padx=(0, 18), pady=4)
+            ttk.Label(body, text=value or "—", wraplength=410).grid(row=index, column=1, sticky="w", pady=4)
+        ttk.Label(body, text=" ".join(issues) if issues else "Cari alanları yerel kontrolden geçti.",
+                  foreground="#815224" if issues else "#315B46", wraplength=550).grid(
+                      row=7, columnspan=2, sticky="w", pady=(12, 4))
+        ttk.Label(body, text="GİB mükellef durumu sorgulanmadı.").grid(row=8, columnspan=2, sticky="w")
+        ttk.Button(body, text="Kapat", command=window.destroy).grid(row=9, column=1, sticky="e", pady=(14, 0))
+        return window
 
     def add_fatura(self, cari_context=None):
         """Yerel taslak: m³, KDV ve seçilen tevkifat oranından net tahsilatı hesapla."""
@@ -4640,7 +4716,7 @@ class HoytasApp(tk.Tk):
         from reportlab.lib import colors
         from reportlab.lib.pagesizes import A4, landscape
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-        from reportlab.lib.enums import TA_CENTER
+        from reportlab.lib.enums import TA_CENTER, TA_RIGHT
         from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage
         from reportlab.pdfbase import pdfmetrics
         from reportlab.pdfbase.ttfonts import TTFont
@@ -4673,10 +4749,11 @@ class HoytasApp(tk.Tk):
         logo_path=os.path.join(APP_DIR, "hoytas_logo.png")
         story=[]
         invoice_footer = []
+        invoice_totals = []
         beton_summary_rows=None
         cari_summary_rows=None
-        if os.path.exists(logo_path):
-            logo=RLImage(logo_path, width=205, height=82)
+        if report_type != "Fatura Taslağı PDF" and os.path.exists(logo_path):
+            logo=RLImage(logo_path, width=64, height=64, kind="proportional", mask="auto")
             logo.hAlign="CENTER"
             story.extend([logo, Spacer(1,4)])
         if report_type == "Cari Hesap Ekstresi":
@@ -4802,37 +4879,75 @@ class HoytasApp(tk.Tk):
                 (day, number, description, quantity, price, base, vat_rate, vat, gross,
                  kind, withholding_rate, withholding, payable, stored, customer_id, customer, tax_id) = invoice
                 info = invoice_document_details(stored, customer_id)
+                def invoice_paragraph(value, style=normal):
+                    return Paragraph(escape(str(value or "—")).replace("\n", "<br/>"), style)
+
+                block_title = ParagraphStyle("InvoiceSection", parent=normal, fontSize=10,
+                                             leading=14, textColor=colors.HexColor("#315C16"))
+                columns = (A4[0] - 68) / 2
+                def detail_block(left, right):
+                    block = Table([[left, right]], colWidths=[columns, columns], hAlign="LEFT")
+                    block.setStyle(TableStyle([
+                        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F4F7F5")),
+                        ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#D0DAD4")),
+                        ("INNERGRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D0DAD4")),
+                        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                        ("LEFTPADDING", (0, 0), (-1, -1), 12),
+                        ("TOPPADDING", (0, 0), (-1, -1), 10),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+                    ]))
+                    return block
+
+                brand_style = ParagraphStyle("InvoiceBrand", parent=normal, fontSize=14, leading=18,
+                                             textColor=colors.HexColor("#1F3412"))
+                heading_style = ParagraphStyle("InvoiceHeading", parent=brand_style, fontSize=13,
+                                               alignment=TA_RIGHT)
+                draft_style = ParagraphStyle("InvoiceDraftNotice", parent=normal, alignment=TA_RIGHT)
+                brand = [invoice_paragraph("HOYTAŞ", brand_style), invoice_paragraph("HAZIR BETON")]
+                heading = [invoice_paragraph("SATIŞ FATURASI TASLAĞI", heading_style),
+                           invoice_paragraph("Resmî belge yerine kullanılamaz.", draft_style)]
+                icon = RLImage(logo_path, width=60, height=60, kind="proportional", mask="auto") if os.path.isfile(logo_path) else ""
+                header = Table([[icon, brand, heading]], colWidths=[72, 124, columns * 2 - 196],
+                               hAlign="LEFT")
+                header.setStyle(TableStyle([
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("LINEBELOW", (0, 0), (-1, -1), 1.2, colors.HexColor("#FFB800")),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+                ]))
                 story.extend([
-                    Paragraph("SATIŞ FATURASI TASLAĞI", cari_title_style),
-                    Paragraph("Resmî belge yerine kullanılamaz.", normal),
-                    Spacer(1, 12),
+                    header, Spacer(1, 14),
+                    detail_block(
+                        [invoice_paragraph("SATICI", block_title), invoice_paragraph(info.get("satici_unvan") or "HOYTAŞ Hazır Beton"),
+                         invoice_paragraph(info.get("satici_adres")),
+                         invoice_paragraph(f"Vergi dairesi: {info.get('satici_daire') or '—'}"),
+                         invoice_paragraph(f"VKN / TCKN: {info.get('satici_vkn') or '—'}")],
+                        [invoice_paragraph("ALICI", block_title), invoice_paragraph(customer), invoice_paragraph(info.get("alici_adres")),
+                         invoice_paragraph(f"Vergi dairesi: {info.get('alici_daire') or '—'}"),
+                         invoice_paragraph(f"VKN / TCKN: {tax_id or '—'}")],
+                    ),
+                    Spacer(1, 10),
+                    detail_block(
+                        [invoice_paragraph("BELGE BİLGİLERİ", block_title),
+                         invoice_paragraph(f"Taslak numarası: {number or '—'}"),
+                         invoice_paragraph(f"Düzenleme tarihi: {display_date(day)}"),
+                         invoice_paragraph(f"Senaryo: {info.get('senaryo') or 'Seçilmedi'}"),
+                         invoice_paragraph(f"Fatura tipi: {'TEVKIFAT' if kind == 'Tevkifatlı' else 'SATIS'}")],
+                        [invoice_paragraph("TESLİMAT BİLGİLERİ", block_title),
+                         invoice_paragraph(f"Teslim tarihi: {display_date(info['teslim']) if info.get('teslim') else '—'}"),
+                         invoice_paragraph(f"İrsaliye numarası: {info.get('irsaliye') or '—'}"),
+                         *([invoice_paragraph(f"Tevkifat işlemi: {info.get('tevkifat_kodu') or '—'}")]
+                           if withholding_rate else [])],
+                    ),
+                    Spacer(1, 14),
                 ])
-                for label, value in (
-                    ("Satıcı", info.get("satici_unvan") or "HOYTAŞ Hazır Beton"),
-                    ("Satıcı adresi", info.get("satici_adres")),
-                    ("Satıcı vergi dairesi / VKN veya TCKN", " / ".join(
-                        value for value in (info.get("satici_daire"), info.get("satici_vkn")) if value)),
-                    ("Alıcı", customer), ("Alıcı adresi", info.get("alici_adres")),
-                    ("Alıcı vergi dairesi / VKN veya TCKN", " / ".join(
-                        value for value in (info.get("alici_daire"), tax_id) if value)),
-                    ("Düzenleme tarihi", display_date(day)), ("Seri ve sıra numarası", number),
-                    ("Teslim tarihi", display_date(info["teslim"]) if info.get("teslim") else ""),
-                    ("İrsaliye numarası", info.get("irsaliye")), ("Fatura türü", kind),
-                    ("Tevkifat kodu ve işlem adı", info.get("tevkifat_kodu") if withholding_rate else ""),
-                ):
-                    if label != "Tevkifat kodu ve işlem adı" or withholding_rate:
-                        story.append(Paragraph(f"{escape(label)}: {escape(str(value or '—'))}", normal))
-                story.append(Spacer(1, 12))
-                rows = [["Mal / Hizmet", "Miktar (m³)", "Birim Fiyat (TL)", "Tutar (TL)"],
-                        [f"Hazır beton\n{description}" if description else "Hazır beton",
-                         format_m3(quantity), invoice_money(price), invoice_money(base)],
-                        ["", "", "KDV Matrahı", invoice_money(base)],
-                        ["", "", f"Hesaplanan KDV (%{vat_rate:g})", invoice_money(vat)],
-                        ["", "", "Vergiler Dahil Toplam", invoice_money(gross)]]
+                rows = [["Sıra", "Mal / Hizmet", "Miktar", "Birim fiyat (TL)", "KDV oranı", "Mal / hizmet tutarı (TL)"],
+                        ["1", f"Hazır beton\n{description}" if description else "Hazır beton",
+                         format_m3(quantity).translate(str.maketrans(",.", ".,")) + " m³", invoice_money(price), f"%{vat_rate:g}", invoice_money(base)]]
+                invoice_totals = [("Mal / hizmet toplamı", base), ("KDV matrahı", base),
+                                  (f"Hesaplanan KDV (%{vat_rate:g})", vat), ("Vergiler dahil toplam", gross)]
                 if withholding_rate:
-                    rows.append(["", "", f"KDV Tevkifatı ({withholding_rate * 10:.0f}/10)",
-                                 invoice_money(withholding)])
-                rows.append(["", "", "Ödenecek Tutar", invoice_money(payable)])
+                    invoice_totals.append((f"KDV tevkifatı ({withholding_rate * 10:.0f}/10)", withholding))
+                invoice_totals.append(("Ödenecek tutar", payable))
                 invoice_footer = [
                     f"Yalnız {invoice_amount_in_words(payable)}",
                     "Fatura bilgileri: 213 sayılı Vergi Usul Kanunu, madde 230.",
@@ -4871,14 +4986,16 @@ class HoytasApp(tk.Tk):
         # Paragraph yaparak satır kaydır ve tabloyu kullanılabilir sayfa genişliğine sığdır.
         from reportlab.platypus import Paragraph as RLParagraph
         wrapped_rows=[]
+        invoice_header = ParagraphStyle("InvoiceTableHeader", parent=normal, textColor=colors.white)
         for row_index, row in enumerate(rows):
+            row_style = invoice_header if invoice_totals and row_index == 0 else normal
             wrapped=[]
             for cell in row:
                 if isinstance(cell, RLParagraph):
                     wrapped.append(cell)
                 elif isinstance(cell, str):
                     safe = escape(cell).replace("\n", "<br/>")
-                    wrapped.append(RLParagraph(safe, normal))
+                    wrapped.append(RLParagraph(safe, row_style))
                 else:
                     wrapped.append(cell)
             wrapped_rows.append(wrapped)
@@ -4896,7 +5013,7 @@ class HoytasApp(tk.Tk):
             "Cari Beton Satış Dökümü": [0.75, 0.9, 0.75, 0.9, 0.75, 0.9, 1.0, 1.0, 1.8],
             "Beton Satış Raporu": [0.78, 1.65, 0.90, 0.70, 0.90, 0.90, 1.00, 1.05, 1.60],
             "Beton Satışları Dökümü": [0.78, 1.65, 0.90, 0.70, 0.90, 0.90, 1.00, 1.05, 1.60],
-            "Fatura Taslağı PDF": [1.75, 1.00, 1.20, 1.20],
+            "Fatura Taslağı PDF": [0.45, 2.20, 0.85, 1.20, 0.80, 1.35],
             "Gelen Alış Faturaları": [0.85, 0.85, 1.45, 1.05, 1.55, 1.00, 1.00, 1.00, 0.95],
             "Kasa ve Banka Raporu": [0.85, 1.00, 1.15, 1.05, 2.10, 1.00, 1.00],
             "Cari Borç Takip Raporu": [2.20, 1.05, 1.05, 1.15, 1.20],
@@ -4909,7 +5026,7 @@ class HoytasApp(tk.Tk):
         # Başlık satırı yalnızca ilk sayfada görünür; her sayfada tarih/tür satırı
         # tekrar etmez ve tablo sütunları sayfa genişliğinin dışına taşmaz.
         table=Table(wrapped_rows, colWidths=col_widths, repeatRows=1, hAlign="LEFT", splitByRow=1)
-        header_bg=colors.HexColor("#24583D") if report_type=="Cari Hesap Ekstresi" else colors.HexColor("#477b35")
+        header_bg=colors.HexColor("#315C16") if report_type=="Cari Hesap Ekstresi" else colors.HexColor("#315C16")
         header_fg=colors.white
         alternate=colors.HexColor("#F4F8EF") if report_type=="Cari Hesap Ekstresi" else colors.HexColor("#f2f5f8")
         table.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),header_bg),("TEXTCOLOR",(0,0),(-1,0),header_fg),
@@ -4917,18 +5034,29 @@ class HoytasApp(tk.Tk):
             ("VALIGN",(0,0),(-1,-1),"TOP"),("ROWBACKGROUNDS",(0,1),(-1,-1),[colors.white,alternate]),
             ("LEFTPADDING",(0,0),(-1,-1),4),("RIGHTPADDING",(0,0),(-1,-1),4),("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),4)]))
         story.append(table)
+        if invoice_totals:
+            totals_table = Table([[invoice_paragraph(label), invoice_paragraph(invoice_money(amount))]
+                                  for label, amount in invoice_totals],
+                                 colWidths=[178, 93], hAlign="RIGHT")
+            totals_table.setStyle(TableStyle([
+                ("LINEABOVE", (0, 0), (-1, -1), 0.4, colors.HexColor("#D0DAD4")),
+                ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#DFEDE4")),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ]))
+            story.extend([Spacer(1, 12), totals_table])
         if invoice_footer:
             story.append(Spacer(1, 10))
             story.extend(Paragraph(escape(line), normal) for line in invoice_footer)
         if cari_summary_rows:
             story.extend([Spacer(1,12), Paragraph("CARİ HESAP ÖZETİ", title_style), Spacer(1,5)])
             summary_table=Table(cari_summary_rows,colWidths=[page_width*0.58,page_width*0.42],hAlign="LEFT")
-            summary_table.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),colors.HexColor("#24583D")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("FONTNAME",(0,0),(-1,-1),font_name),("FONTSIZE",(0,0),(-1,-1),8),("GRID",(0,0),(-1,-1),0.35,colors.HexColor("#cbd0d4")),("ROWBACKGROUNDS",(0,1),(-1,-1),[colors.white,colors.HexColor("#F4F8EF")]),("ALIGN",(1,1),(1,-1),"RIGHT"),("TOPPADDING",(0,0),(-1,-1),6),("BOTTOMPADDING",(0,0),(-1,-1),6)]))
+            summary_table.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),colors.HexColor("#315C16")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("FONTNAME",(0,0),(-1,-1),font_name),("FONTSIZE",(0,0),(-1,-1),8),("GRID",(0,0),(-1,-1),0.35,colors.HexColor("#cbd0d4")),("ROWBACKGROUNDS",(0,1),(-1,-1),[colors.white,colors.HexColor("#F4F8EF")]),("ALIGN",(1,1),(1,-1),"RIGHT"),("TOPPADDING",(0,0),(-1,-1),6),("BOTTOMPADDING",(0,0),(-1,-1),6)]))
             story.append(summary_table)
         if beton_summary_rows:
             story.extend([Spacer(1,12), Paragraph("BETON M³ ÖZETİ", title_style), Spacer(1,5)])
             summary_table=Table(beton_summary_rows,colWidths=[page_width*0.38,page_width*0.16,page_width*0.22,page_width*0.24],repeatRows=1)
-            summary_table.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),colors.HexColor("#24583D")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("FONTNAME",(0,0),(-1,-1),font_name),("FONTSIZE",(0,0),(-1,-1),8),("GRID",(0,0),(-1,-1),0.35,colors.HexColor("#cbd0d4")),("ROWBACKGROUNDS",(0,1),(-1,-1),[colors.white,colors.HexColor("#F4F8EF")]),("ALIGN",(1,1),(-1,-1),"RIGHT"),("TOPPADDING",(0,0),(-1,-1),5),("BOTTOMPADDING",(0,0),(-1,-1),5)]))
+            summary_table.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),colors.HexColor("#315C16")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("FONTNAME",(0,0),(-1,-1),font_name),("FONTSIZE",(0,0),(-1,-1),8),("GRID",(0,0),(-1,-1),0.35,colors.HexColor("#cbd0d4")),("ROWBACKGROUNDS",(0,1),(-1,-1),[colors.white,colors.HexColor("#F4F8EF")]),("ALIGN",(1,1),(-1,-1),"RIGHT"),("TOPPADDING",(0,0),(-1,-1),5),("BOTTOMPADDING",(0,0),(-1,-1),5)]))
             story.append(summary_table)
         doc.build(story)
 
@@ -4968,12 +5096,13 @@ class HoytasApp(tk.Tk):
                     logo_path = os.path.join(APP_DIR, "hoytas_logo.png")
                     if os.path.exists(logo_path):
                         logo = XLImage(logo_path)
-                        logo.width = 300
-                        logo.height = 150
+                        scale = 85 / max(logo.width, logo.height)
+                        logo.width *= scale
+                        logo.height *= scale
                         ws.add_image(logo, "A1")
                     ws.merge_cells(start_row=6, start_column=1, end_row=6, end_column=5)
                     title_cell = ws.cell(row=6, column=1, value=f"HOYTAŞ HAZIR BETON | FİNANS VE İŞLETME YÖNETİMİ — {sheet_name.upper()}")
-                    title_cell.font = Font(name="Calibri", size=14, bold=True, color="548235")
+                    title_cell.font = Font(name="Calibri", size=14, bold=True, color="315C16")
                     title_cell.alignment = Alignment(vertical="center")
                     ws.row_dimensions[6].height = 28
                     columns_info = c.execute(f"PRAGMA table_info({table})").fetchall()
@@ -4993,7 +5122,7 @@ class HoytasApp(tk.Tk):
                     ws.auto_filter.ref = f"A8:{get_column_letter(max(1,len(headers)))}{max(8,ws.max_row)}"
                     for cell in ws[8]:
                         cell.font = Font(bold=True, color="FFFFFF")
-                        cell.fill = PatternFill("solid", fgColor="76AD42")
+                        cell.fill = PatternFill("solid", fgColor="315C16")
                         cell.alignment = Alignment(vertical="center", wrap_text=True)
                     ws.row_dimensions[8].height = 28
                     for col in ws.iter_cols(min_row=8, max_row=ws.max_row):
@@ -5133,6 +5262,9 @@ class HoytasApp(tk.Tk):
     def show_db_path(self):
         messagebox.showinfo("Veritabanı",f"Veriler burada saklanıyor:\n{DB_PATH}\n\nEski veriler ilk açılışta bu konuma kopyalanır; yedekleri düzenli alın.")
 
+
+
+INVOICE_DRAFT_PROFILES = ("", "TEMELFATURA", "TICARIFATURA", "EARSIVFATURA")
 
 
 def invoice_document_details(stored, customer_id):

@@ -6,8 +6,8 @@ if not exist "%~dp0Baslat.vbs" (
   pause
   exit /b 1
 )
-if not exist "%~dp0HOYTAS_SABIT_BASLATICI.vbs" (
-  echo Sabit baslatici dosyasi eksik.
+if not exist "%~dp0MASAUSTU_KISAYOLU_OLUSTUR.vbs" (
+  echo Masaustu kisayol dosyasi eksik.
   pause
   exit /b 1
 )

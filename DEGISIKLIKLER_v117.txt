@@ -1,0 +1,2 @@
+HOYTAŞ Finans v117
+Cari ekstresi Excel çıktısına logo eklendi. Yerel Windows kısayol dosyası pakete eklendi.
