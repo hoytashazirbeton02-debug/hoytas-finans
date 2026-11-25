@@ -965,6 +965,7 @@ class HoytasApp(tk.Tk):
                              background="#286044", foreground="#FFFFFF", borderwidth=0, focusthickness=2)
         self.style.map("TButton", background=[("active", "#1D4933"), ("pressed", "#173B2A"), ("disabled", "#D5DCD7")],
                        foreground=[("disabled", "#7C8780")])
+        self.style.configure("TMenubutton", padding=(10, 7), font=("Segoe UI", 9, "bold"))
         self.style.configure("TEntry", padding=7, fieldbackground="#FFFFFF", foreground="#24352C", bordercolor="#C9D5CD")
         self.style.configure("TCombobox", padding=7, fieldbackground="#FFFFFF", foreground="#24352C", arrowsize=14)
         self.style.map("TCombobox", fieldbackground=[("readonly", "#FFFFFF")], foreground=[("readonly", "#24352C")])
@@ -1008,39 +1009,40 @@ class HoytasApp(tk.Tk):
         """Wrap button-only packed toolbars without altering their commands."""
         # Reserve all fixed-height controls before allocating remaining space to tables.
         packed = root.pack_slaves()
-        flexible = [w for w in packed if str(w.pack_info().get("expand")) in ("1", "True", "true") and w.pack_info().get("fill") == "both"]
-        if flexible:
-            first = flexible[0]
-            for w in packed[packed.index(first)+1:]:
-                info = w.pack_info()
-                if w not in flexible and info.get("side") == "top":
-                    w.pack_configure(before=first)
+        first = next((w for w in packed if w.pack_info()["expand"] and
+                      w.pack_info()["fill"] == "both"), None)
+        if first is not None:
+            for widget in reversed(packed[packed.index(first) + 1:]):
+                info = widget.pack_info()
+                if not info["expand"] and info["side"] in ("top", "bottom"):
+                    widget.pack_configure(side="bottom", before=first)
         for frame in root.winfo_children():
             if isinstance(frame, ttk.Frame):
                 children = frame.winfo_children()
-                if len(children) >= 2 and all(isinstance(w, ttk.Button) and w.winfo_manager()=="pack" for w in children):
-                    for w in children:
-                        w.pack_forget()
-                    def arrange(event=None, f=frame, buttons=tuple(children)):
-                        width = max(1, f.winfo_width())
+                if len(children) >= 2 and all(isinstance(w, (ttk.Button, ttk.Menubutton)) and
+                                              w.winfo_manager() == "pack" for w in children):
+                    for button in children:
+                        button.pack_forget()
+
+                    def arrange(event=None, bar=frame, buttons=tuple(children)):
+                        width = bar.winfo_width()
                         if width <= 1:
                             return
-                        layout = []
-                        row = col = used = 0
-                        for w in buttons:
-                            need = w.winfo_reqwidth()+8
-                            if used and used+need > width:
-                                row += 1; col = used = 0
-                            layout.append((row,col))
-                            col += 1; used += need
-                        if getattr(f,"_toolbar_layout",None)==layout:
-                            return
-                        f._toolbar_layout=layout
-                        for w,(r,c) in zip(buttons,layout):
-                            w.grid(row=r,column=c,sticky="w",padx=3,pady=2)
-                    for i,w in enumerate(children):
-                        w.grid(row=0,column=i,sticky="w",padx=3,pady=2)
-                    frame.bind("<Configure>",arrange,add="+")
+                        row_height = max(button.winfo_reqheight() for button in buttons) + 4
+                        x = y = 0
+                        for button in buttons:
+                            need = button.winfo_reqwidth() + 6
+                            if x and x + need > width:
+                                x = 0
+                                y += row_height
+                            button.place(x=x + 3, y=y + 2)
+                            x += need
+                        height = y + row_height
+                        if int(bar.cget("height")) != height:
+                            bar.configure(height=height)
+
+                    frame.configure(height=max(w.winfo_reqheight() for w in children) + 4)
+                    frame.bind("<Configure>", arrange, add="+")
                     frame.after_idle(arrange)
                 else:
                     self._adapt_action_rows(frame)
@@ -1385,7 +1387,8 @@ class HoytasApp(tk.Tk):
         tk.Label(header, text=user_text, bg="#1F3028", fg="#D3DDD6",
                  font=("Segoe UI", 9)).pack(side="right", padx=24)
         tk.Frame(self, bg="#DDB62E", height=3).pack(fill="x")
-        self.tabs = ttk.Notebook(self)
+        self.style.layout("Modules.TNotebook.Tab", [])
+        self.tabs = ttk.Notebook(self, style="Modules.TNotebook")
         self.tabs.pack(fill="both", expand=True, padx=10, pady=(8, 6))
         self.dashboard = ttk.Frame(self.tabs, padding=18)
         self.cari_tab = ttk.Frame(self.tabs, padding=12)
@@ -1403,39 +1406,34 @@ class HoytasApp(tk.Tk):
         self.stok_hareket_tab = ttk.Frame(self.tabs, padding=12)
         self.maas_tab = ttk.Frame(self.tabs, padding=12)
         self.banka_tab = ttk.Frame(self.tabs, padding=12)
-        # Sekmelerde kısaltma yerine okunaklı iki satırlı tam adlar kullan.
-        tab_items = [
-            (self.dashboard, "Genel\nBakış"), (self.cari_tab, "Cari\nHesaplar"),
-            (self.borc_takip_tab, "Borç\nTakip"), (self.alisveris_cari_tab, "Tedarikçi\nCari"),
-            (self.hareket_tab, "Gelir /\nGider"), (self.cek_tab, "Çek\nİşlemleri"),
-            (self.stok_tab, "Stok /\nDepo"), (self.personel_tab, "Personel\nİşlemleri"),
-            (self.beton_tab, "Beton\nSatış"), (self.mastarci_tab, "Mastarcı\nHesabı"), (self.fatura_tab, "Fatura /\nBelge"),
-            (self.gelen_fatura_tab, "Alış\nFaturaları"), (self.kasa_tab, "Nakit\nKasa"),
-            (self.stok_hareket_tab, "Stok\nHareketleri"), (self.maas_tab, "Maaş\nÖdemeleri"),
-            (self.banka_tab, "Banka\nİşlemleri"),
-        ]
-        for frame, title in tab_items:
+        # Keep tab indices stable for the existing keyboard shortcuts.
+        modules = {
+            self.dashboard: "Genel Bakış", self.cari_tab: "Cari Hesaplar",
+            self.borc_takip_tab: "Borç Takip", self.alisveris_cari_tab: "Tedarikçi Cari",
+            self.hareket_tab: "Gelir / Gider", self.cek_tab: "Çek İşlemleri",
+            self.stok_tab: "Stok / Depo", self.personel_tab: "Personel",
+            self.beton_tab: "Beton Satışları", self.mastarci_tab: "Mastarcı Hesabı",
+            self.fatura_tab: "Satış Faturaları", self.gelen_fatura_tab: "Alış Faturaları",
+            self.kasa_tab: "Nakit Kasa", self.stok_hareket_tab: "Stok Hareketleri",
+            self.maas_tab: "Maaş Ödemeleri", self.banka_tab: "Banka İşlemleri",
+        }
+        for frame, title in modules.items():
             self.tabs.add(frame, text=title)
         nav = ttk.Frame(self)
-        nav.pack(fill="x",before=self.tabs,padx=10,pady=4)
-        ttk.Label(nav,text="Menüye git:").pack(side="left")
-        names = [title.replace("\n"," ") for _,title in tab_items]
-        jump = ttk.Combobox(nav,values=names,state="readonly",width=28)
-        jump.pack(side="left",padx=6)
-        jump.current(0)
-        jump.bind("<<ComboboxSelected>>",lambda e:self.tabs.select(tab_items[jump.current()][0]))
-        self.tabs.bind("<<NotebookTabChanged>>",lambda e:jump.current(self.tabs.index("current")),add="+")
-        # Her sekmenin kendine ait işlem rehberi; genel açıklama yerine bağlama özgü bilgi.
-        ttk.Label(self.cari_tab, text="Cari bakiyeleri ve faturalar ayrı izlenir. Bir carinin toplam borcunu ve fatura tahsilatını ilgili kayıt üzerinden kontrol edin.", foreground="#315B46", wraplength=1200).pack(anchor="w", pady=(0, 8))
-        ttk.Label(self.beton_tab, text="Beton cinsi, m³, şantiye, pompa bedeli ve tahsilat durumunu burada takip edin. Satış açıklamasına teslim/şantiye bilgisini yazın.", foreground="#315B46", wraplength=1200).pack(anchor="w", pady=(0, 8))
-        ttk.Label(self.fatura_tab, text="Normal ve tevkifatlı fatura taslaklarında m³, KDV, tevkifat ve net tahsilat ayrı hesaplanır. Resmî e-Fatura gönderimi EDM üzerinden yapılır.", foreground="#315B46", wraplength=1200).pack(anchor="w", pady=(0, 8))
-        ttk.Label(self.cek_tab, text="Alınan ve verilen çekleri banka, cari, vade ve durum bilgileriyle takip edin.", foreground="#315B46", wraplength=1200).pack(anchor="w", pady=(0, 8))
-        ttk.Label(self.stok_tab, text="Malzeme, stok miktarı ve birim maliyetlerini takip edin; stok hareketlerini ayrı sekmede kaydedin.", foreground="#315B46", wraplength=1200).pack(anchor="w", pady=(0, 8))
-        ttk.Label(self.personel_tab, text="Personel bilgileri bu alandadır. Maaş ve nakit avans hareketleri Maaş Ödemeleri sekmesinde izlenir.", foreground="#315B46", wraplength=1200).pack(anchor="w", pady=(0, 8))
-        ttk.Label(self.kasa_tab, text="Nakit giriş ve çıkışlarını kaynak ve işlem açıklamasıyla kaydedin.", foreground="#315B46", wraplength=1200).pack(anchor="w", pady=(0, 8))
-        ttk.Label(self.hareket_tab, text="Gelir, gider, cari borç ve alacak işlemlerini açıklamasıyla kaydedin; ilgili cariyi seçin.", foreground="#315B46", wraplength=1200).pack(anchor="w", pady=(0, 8))
-        ttk.Label(self.gelen_fatura_tab, text="Tedarikçi faturalarını, vade tarihlerini, yapılan ödemeleri ve kalan tutarları izleyin.", foreground="#315B46", wraplength=1200).pack(anchor="w", pady=(0, 8))
-        ttk.Label(self.banka_tab, text="Banka giriş/çıkışlarını hesap ve açıklama bilgileriyle takip edin.", foreground="#315B46", wraplength=1200).pack(anchor="w", pady=(0, 8))
+        nav.pack(fill="x", before=self.tabs, padx=10, pady=(8, 0))
+        ttk.Button(nav, text="Genel Bakış",
+                   command=lambda: self.tabs.select(self.dashboard)).pack(side="left", padx=(0, 6))
+        for label, frames in (
+            ("Cari", (self.cari_tab, self.borc_takip_tab, self.alisveris_cari_tab)),
+            ("Beton", (self.beton_tab, self.mastarci_tab)),
+            ("Finans", (self.hareket_tab, self.kasa_tab, self.banka_tab, self.cek_tab)),
+            ("Faturalar", (self.fatura_tab, self.gelen_fatura_tab)),
+            ("Stok", (self.stok_tab, self.stok_hareket_tab)),
+            ("Personel", (self.personel_tab, self.maas_tab)),
+        ):
+            self._action_menu(nav, label, [
+                (modules[frame], lambda page=frame: self.tabs.select(page)) for frame in frames
+            ]).pack(side="left", padx=(0, 6))
         self._build_dashboard()
         self._build_cari()
         self._build_borc_takip()
@@ -1446,28 +1444,42 @@ class HoytasApp(tk.Tk):
         self._build_personel()
         self._build_beton()
         self._build_mastarci()
+        ttk.Label(self.fatura_tab, text="Resmî e-Fatura gönderimi EDM üzerinden yapılır.",
+                  foreground="#315B46").pack(anchor="w", pady=(0, 6))
         self._build_fatura()
         self._build_gelen_faturalar()
         self._build_kasa()
         self._build_extra_tabs()
         bottom = ttk.Frame(self, padding=(18, 4, 18, 12))
         bottom.pack(side="bottom",fill="x",before=self.tabs)
-        bottom_top = ttk.Frame(bottom); bottom_top.pack(fill="x", pady=(0, 5))
-        bottom_bottom = ttk.Frame(bottom); bottom_bottom.pack(fill="x")
-        for parent, specs in [
-            (bottom_top, [("⟳ Yenile (F5)", self._refresh_from_button), ("Excel Raporu", self.export_excel),
-                          ("CSV Dışa Aktar", self.export_csv), ("Şimdi Yedekle", self.backup),
-                          ("Veritabanı Kontrolü", self.database_health_check), ("PDF Raporları", self.pdf_menu)]),
-            (bottom_bottom, ([("Şifre Değiştir", self.change_password_dialog)] if self.membership_client is None else []) +
-                            [("Veritabanı Konumu", self.show_db_path),
-                             ("Güncelleme URL Ayarları", self.configure_update_url),
-                             ("Güncellemeleri Denetle", self.check_for_updates), ("ZIP ile Güncelle", self.install_update_package)])
-        ]:
-            for label, command in specs:
-                ttk.Button(parent, text=label, command=command).pack(side="left", padx=(0, 7))
-        if getattr(self,"current_user",{}).get("role")=="Yönetici":
-            ttk.Button(bottom_bottom,text="Kullanıcı Yönetimi",command=self.manage_users).pack(side="right")
-            ttk.Button(bottom_bottom,text="İşlem Geçmişi",command=self.show_audit_log).pack(side="right", padx=(0,8))
+        ttk.Button(bottom, text="Yenile (F5)", command=self._refresh_from_button).pack(side="left", padx=(0, 6))
+        self._action_menu(bottom, "Raporlar", [
+            ("PDF Raporları", self.pdf_menu),
+            ("Excel Raporu", self.export_excel),
+            ("CSV Dışa Aktar", self.export_csv),
+        ]).pack(side="left", padx=(0, 6))
+        settings = [
+            ("Şimdi Yedekle", self.backup),
+            ("Veritabanı Kontrolü", self.database_health_check),
+            ("Veritabanı Konumu", self.show_db_path),
+            ("Güncellemeleri Denetle", self.check_for_updates),
+            ("Güncelleme URL Ayarları", self.configure_update_url),
+            ("ZIP ile Güncelle", self.install_update_package),
+        ]
+        if self.membership_client is None:
+            settings.append(("Şifre Değiştir", self.change_password_dialog))
+        if getattr(self, "current_user", {}).get("role") == "Yönetici":
+            settings.extend([("Kullanıcı Yönetimi", self.manage_users),
+                             ("İşlem Geçmişi", self.show_audit_log)])
+        self._action_menu(bottom, "Sistem", settings).pack(side="left")
+
+    def _action_menu(self, parent, text, actions):
+        button = ttk.Menubutton(parent, text=text)
+        menu = tk.Menu(button, tearoff=False)
+        for label, command in actions:
+            menu.add_command(label=label, command=command)
+        button.configure(menu=menu)
+        return button
 
     def configure_update_url(self):
         """Otomatik güncelleme manifest URL'sini program içinden düzenle."""
@@ -1927,30 +1939,28 @@ class HoytasApp(tk.Tk):
 
     def _build_dashboard(self):
         ttk.Label(self.dashboard, text="Genel Bakış", font=("Segoe UI", 19, "bold")).pack(anchor="w")
-        ttk.Label(self.dashboard, text="Kayıtlarınız bu bilgisayardaki yerel veritabanında saklanır.",
-                  foreground="#596775").pack(anchor="w", pady=(4, 18))
-        ttk.Label(self.dashboard,
-                  text="Cari: müşteri ve bakiye  •  Beton Satış: m³ ve şantiye  •  Borç Takip: kalan alacak  •  F5: tüm listeleri yenile",
-                  foreground="#315B46", font=("Segoe UI", 10, "bold"), wraplength=1080).pack(anchor="w", pady=(0, 12))
         if os.name == "nt":
             ttk.Button(self.dashboard, text="Yazdır", command=self._print_dashboard).pack(anchor="w")
         self.metrics = ttk.Frame(self.dashboard)
         self.metrics.pack(fill="x", pady=4)
         self.metric_labels = {}
-        for key, label in [("cari","Cari kayıt"),("gelir","Toplam gelir"),("gider","Toplam gider"),
-                           ("cek","Bekleyen çek"),("stok","Stok kalemi"),("acik_borc","Açık cari borcu")]:
-            card = ttk.LabelFrame(self.metrics, text=label, padding=16, style="Metric.TLabelframe")
-            card.pack(side="left", fill="both", expand=True, padx=(0, 10), pady=3)
+        for column in range(3):
+            self.metrics.columnconfigure(column, weight=1)
+        for index, (key, label) in enumerate([
+            ("cari", "Cari kayıt"), ("gelir", "Toplam gelir"), ("gider", "Toplam gider"),
+            ("cek", "Bekleyen çek"), ("stok", "Stok kalemi"), ("acik_borc", "Açık cari borcu"),
+        ]):
+            card = ttk.LabelFrame(self.metrics, text=label, padding=10, style="Metric.TLabelframe")
+            card.grid(row=index // 3, column=index % 3, sticky="nsew", padx=(0, 10), pady=3)
             val = ttk.Label(card, text="—", style="Metric.TLabel")
             val.pack(anchor="w")
             self.metric_labels[key] = val
         self.debt_alert_label = ttk.Label(self.dashboard, text="", foreground="#A32626", font=("Segoe UI", 10, "bold"), wraplength=980, justify="left")
         self.debt_alert_label.pack(anchor="w", pady=(12, 4))
-        ttk.Label(self.dashboard, text="Başlangıç notu", font=("Segoe UI", 12, "bold")).pack(anchor="w", pady=(18, 6))
-        ttk.Label(self.dashboard, text="Beton satışında şantiye seçimi, cari hesap arama, çeklerin cariyle ilişkilendirilmesi, kullanıcı girişi ve fatura taslağı hesaplamaları bu sürümde bulunur. EDM üzerinden resmi e-belge gönderimi entegrasyon erişimi sağlandığında yapılacaktır.",
-                  wraplength=970, justify="left").pack(anchor="w")
+        self.dashboard.bind("<Configure>", lambda event: self.debt_alert_label.configure(
+            wraplength=max(event.width - 36, 1)))
 
-    def _tree(self, parent, columns, headings, widths=None):
+    def _tree(self, parent, columns, headings, widths=None, *, show_id=True):
         searchbar = ttk.Frame(parent)
         searchbar.pack(fill="x", pady=(6, 0))
         ttk.Label(searchbar, text="Listede Ara:").pack(side="left")
@@ -1961,9 +1971,14 @@ class HoytasApp(tk.Tk):
         frame = ttk.Frame(parent)
         frame.pack(fill="both", expand=True, pady=(4, 0))
         tree = DateTreeview(frame, columns=columns, show="headings", height=6)
+        if not show_id:
+            tree.configure(displaycolumns=tuple(col for col in columns if col != "id"))
+        numeric = {"borc", "alacak", "bakiye", "tutar", "toplam", "kalan", "odenen",
+                   "pompa", "fiyat", "m3", "miktar", "maas", "ara", "kdv", "tevkifat", "net"}
         for i, (col, head) in enumerate(zip(columns, headings)):
-            tree.heading(col, text=head)
-            tree.column(col, width=(widths[i] if widths else 130), anchor="w")
+            anchor = "e" if col in numeric else "w"
+            tree.heading(col, text=head, anchor=anchor)
+            tree.column(col, width=(widths[i] if widths else 130), anchor=anchor)
         vs = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
         hs = ttk.Scrollbar(frame, orient="horizontal", command=tree.xview)
         tree.configure(yscrollcommand=vs.set, xscrollcommand=hs.set)
@@ -2134,14 +2149,16 @@ class HoytasApp(tk.Tk):
         if win is None:
             win = tk.Toplevel(self)
             win.title(f"Cari Kartı - {unvan}")
-            win.geometry("1100x650")
+            win.geometry(f"{min(1100, self.winfo_screenwidth()-32)}x{min(650, self.winfo_screenheight()-80)}")
             win.minsize(850, 450)
             win.transient(self)
         else:
             for child in win.winfo_children():
                 child.destroy()
         top=ttk.Frame(win,padding=12); top.pack(fill="x")
-        ttk.Label(top,text=unvan,font=("Segoe UI",15,"bold")).pack(side="left")
+        name = ttk.Label(top, text=unvan, font=("Segoe UI", 15, "bold"))
+        name.pack(anchor="w")
+        top.bind("<Configure>", lambda event: name.configure(wraplength=max(event.width - 24, 1)))
         with connect() as c:
             totals=c.execute("SELECT toplam_borc,toplam_alacak FROM cari_bakiye WHERE cari_id=?",(cari_id,)).fetchone() or (0,0)
             moves=c.execute("SELECT h.id,h.tarih,h.tur,h.kategori,COALESCE(h.aciklama,''),COALESCE(h.odeme_yontemi,''),h.tutar FROM hareket h WHERE h.cari_id=? ORDER BY h.tarih ASC,h.id ASC",(cari_id,)).fetchall()
@@ -2150,17 +2167,24 @@ class HoytasApp(tk.Tk):
         balance=totals[0]-totals[1]
         total_m3 = sum(safe_float(r[3] or 0) for r in sales)
         sales_total_tl = sum(safe_float(r[6] or 0) for r in sales)
-        ttk.Label(top,text=f"Cari Borç: {totals[0]:,.2f} TL    Alacak: {totals[1]:,.2f} TL    Bakiye: {balance:,.2f} TL    |    Beton: {format_m3(total_m3)} m³ / {sales_total_tl:,.2f} TL",font=("Segoe UI",10,"bold")).pack(side="right")
-        nb=ttk.Notebook(win); nb.pack(fill="both",expand=True,padx=12,pady=(0,12))
-        mf=ttk.Frame(nb,padding=6); nb.add(mf,text="Cari Hareketleri")
-        mt=DateTreeview(mf,columns=("id","tarih","tur","kategori","aciklama","odeme","borc","alacak","bakiye"),show="headings")
-        heads=("ID","Tarih","Tür","Kategori","Açıklama","Ödeme","Borç TL","Alacak TL","Bakiye TL")
-        widths=(45,95,85,120,270,100,100,100,110)
-        for col,head,width in zip(mt.cget("columns"),heads,widths): mt.heading(col,text=head); mt.column(col,width=width,anchor="w")
-        mvs=ttk.Scrollbar(mf,orient="vertical",command=mt.yview); mt.configure(yscrollcommand=mvs.set); mt.pack(side="left",fill="both",expand=True); mvs.pack(side="right",fill="y")
+        ttk.Label(top, text=f"Borç: {totals[0]:,.2f} TL     Alacak: {totals[1]:,.2f} TL     Bakiye: {balance:,.2f} TL",
+                  font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(4, 0))
+        ttk.Label(top, text=f"Beton satışları: {format_m3(total_m3)} m³  /  {sales_total_tl:,.2f} TL").pack(anchor="w")
+        nb = ttk.Notebook(win)
+        nb.pack(fill="both", expand=True, padx=12, pady=(0, 6))
+        mf = ttk.Frame(nb, padding=6)
+        nb.add(mf, text="Cari Hareketleri")
+        movement_actions = ttk.Frame(mf)
+        movement_actions.pack(side="bottom", fill="x", pady=(6, 0))
+        mt = self._tree(mf, ("id", "tarih", "tur", "kategori", "aciklama", "odeme", "borc", "alacak", "bakiye"),
+                        ("ID", "Tarih", "Tür", "Kategori", "Açıklama", "Ödeme", "Borç TL", "Alacak TL", "Bakiye TL"),
+                        (45, 94, 70, 98, 270, 85, 95, 95, 105), show_id=False)
+        ttk.Button(movement_actions, text="Hareketi Düzenle",
+                   command=lambda: self._edit_cari_move_from_window(mt)).pack(side="left")
         bal=0
         sales_by_id = {int(r[0]): r for r in sales}
         import re
+        movement_rows = []
         for r in moves:
             debt=r[6] if r[2]=="Borç" else 0
             credit=r[6] if r[2]=="Alacak" else 0
@@ -2170,22 +2194,28 @@ class HoytasApp(tk.Tk):
             if match and r[2] == "Borç" and int(match.group(1) or match.group(2)) in sales_by_id:
                 sale = sales_by_id[int(match.group(1) or match.group(2))]
                 description = format_beton_aciklama(sale[2], sale[3], sale[4], sale[5], sale[6], sale[9], sale[8], sale[7])
-            mt.insert("","end",values=(r[0],r[1],r[2],r[3],description,r[5],f"{debt:,.2f}" if debt else "-",f"{credit:,.2f}" if credit else "-",f"{bal:,.2f}"))
-        ttk.Label(mf,text=f"Cari hareket toplamı: Borç {sum(safe_float(r[6] or 0) for r in moves if r[2] == 'Borç'):,.2f} TL  |  Alacak {sum(safe_float(r[6] or 0) for r in moves if r[2] == 'Alacak'):,.2f} TL  |  Bakiye {balance:,.2f} TL",font=("Segoe UI",10,"bold")).pack(side="bottom",anchor="w",pady=(8,2))
-        sf=ttk.Frame(nb,padding=6); nb.add(sf,text="Beton Satışları")
-        ttk.Label(sf,text=f"BETON SATIŞ ÖZETİ     {len(sales)} satış  |  Toplam {format_m3(total_m3)} m³  |  Satış tutarı {sales_total_tl:,.2f} TL",font=("Segoe UI",11,"bold")).pack(side="top",anchor="w",pady=(0,8))
-        ttk.Label(sf,text="Bilgi: Beton satış toplamı ile cari bakiye farklı olabilir. Cari bakiye yalnızca kayıtlı borç/alacak hareketlerinden hesaplanır.",font=("Segoe UI",9)).pack(side="bottom",anchor="w",pady=(8,2))
-        st=DateTreeview(sf,columns=("id","tarih","cinsi","m3","fiyat","pompa","toplam","durum","santiye","aciklama"),show="headings")
-        for col,head,width in zip(st.cget("columns"),("ID","Tarih","Beton Cinsi","Miktar m³","Birim Fiyat TL/m³","Pompa TL","Toplam TL","Ödeme Durumu","Şantiye","Açıklama"),(42,90,95,85,115,95,110,145,130,250)): st.heading(col,text=head); st.column(col,width=width,anchor="w")
-        st.pack(fill="both",expand=True)
+            movement_rows.append((r[0],r[1],r[2],r[3],description,r[5],f"{debt:,.2f}" if debt else "-",f"{credit:,.2f}" if credit else "-",f"{bal:,.2f}"))
+        self.fill_tree(mt, movement_rows)
+        sf = ttk.Frame(nb, padding=6)
+        nb.add(sf, text="Beton Satışları")
+        ttk.Label(sf, text=f"{len(sales)} satış   |   {format_m3(total_m3)} m³   |   {sales_total_tl:,.2f} TL",
+                  font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        sales_status = ttk.Label(sf, font=("Segoe UI", 9, "bold"))
+        st = self._tree(sf, ("id", "tarih", "cinsi", "m3", "fiyat", "pompa", "toplam", "durum", "santiye", "aciklama"),
+                        ("ID", "Tarih", "Beton Cinsi", "Miktar m³", "Birim Fiyat TL/m³", "Pompa TL", "Toplam TL", "Ödeme Durumu", "Şantiye", "Açıklama"),
+                        (42, 90, 95, 85, 128, 95, 110, 135, 130, 250), show_id=False)
+        sales_rows = []
         for r in sales:
             detail = format_beton_aciklama(r[2],r[3],r[4],r[5],r[6],r[9],r[8],r[7])
-            st.insert("","end",values=(r[0],r[1],r[2],format_m3(r[3]),f"{r[4]:,.2f}",f"{r[5]:,.2f}" if r[5] else "Yok",f"{r[6]:,.2f}",r[7],r[9] or "-",detail))
-        cf=ttk.Frame(nb,padding=6); nb.add(cf,text="Bağlı Çekler")
-        ct=DateTreeview(cf,columns=("id","yon","banka","no","vade","tutar","durum"),show="headings")
-        for col,head,width in zip(ct.cget("columns"),("ID","Yön","Banka","Çek No","Vade","Tutar TL","Durum"),(45,100,160,140,110,140,150)): ct.heading(col,text=head); ct.column(col,width=width,anchor="w")
-        ct.pack(fill="both",expand=True)
-        for r in checks: ct.insert("","end",values=(r[0],r[1],r[2],r[3],r[4],f"{r[5]:,.2f}",r[6]))
+            sales_rows.append((r[0],r[1],r[2],format_m3(r[3]),f"{r[4]:,.2f}",f"{r[5]:,.2f}" if r[5] else "Yok",f"{r[6]:,.2f}",r[7],r[9] or "-",detail))
+        self.fill_tree(st, sales_rows)
+        cf = ttk.Frame(nb, padding=6)
+        nb.add(cf, text="Bağlı Çekler")
+        ct = self._tree(cf, ("id", "yon", "banka", "no", "vade", "tutar", "durum"),
+                        ("ID", "Yön", "Banka", "Çek No", "Vade", "Tutar TL", "Durum"),
+                        (45, 100, 160, 140, 110, 140, 150), show_id=False)
+        self.fill_tree(ct, [(cid, direction, bank, number, due, f"{amount:,.2f}", status)
+                            for cid, direction, bank, number, due, amount, status in checks])
         with connect() as db:
             invoices = db.execute("""SELECT id, 'Satış', tarih, belge_no, genel_toplam,
                 odenen, tahsil_edilecek-odenen, durum, aciklama FROM fatura WHERE cari_id=?
@@ -2197,11 +2227,12 @@ class HoytasApp(tk.Tk):
         nb.add(invoice_frame, text="Faturalar")
         invoice_tree = self._tree(invoice_frame, ("id", "tur", "tarih", "belge", "toplam", "odenen", "kalan", "durum", "aciklama"),
                                   ("ID", "Tür", "Tarih", "Belge No", "Toplam TL", "Ödenen TL", "Kalan TL", "Durum", "Açıklama"),
-                                  (55, 75, 95, 115, 115, 115, 115, 110, 225))
-        for invoice_id, kind, day, number, total, paid, remaining, status, detail in invoices:
-            invoice_tree.insert("", "end", values=(invoice_id, kind, day, number or "",
-                f"{safe_float(total):,.2f}", f"{safe_float(paid):,.2f}",
-                f"{safe_float(remaining):,.2f}", status, detail or ""))
+                                  (55, 75, 95, 115, 115, 115, 115, 110, 225), show_id=False)
+        self.fill_tree(invoice_tree, [
+            (invoice_id, kind, day, number or "", f"{safe_float(total):,.2f}",
+             f"{safe_float(paid):,.2f}", f"{safe_float(remaining):,.2f}", status, detail or "")
+            for invoice_id, kind, day, number, total, paid, remaining, status, detail in invoices
+        ])
         nb.select(selected_tab)
 
         def refresh_card(operation=None, tab=None):
@@ -2227,19 +2258,24 @@ class HoytasApp(tk.Tk):
         ):
             ttk.Button(commands, text=label,
                        command=lambda op=operation, index=tab: refresh_card(op, index)).pack(side="left", padx=(0, 5))
-        ttk.Button(commands, text="Yenile", command=refresh_card).pack(side="right")
+        ttk.Button(commands, text="Yenile", command=refresh_card).pack(side="left")
         with connect() as audit_db:
             missing_sales, wrong_sales, ambiguous_sales = audit_beton_cari_amounts(audit_db, cari_id)
         if missing_sales or wrong_sales or ambiguous_sales:
-            ttk.Label(sf,text=f"Cari bağlantısı: {len(missing_sales)} eksik, {len(wrong_sales)} tutar hatası, {len(ambiguous_sales)} belirsiz. Kayıtlar otomatik değiştirilmedi.",font=("Segoe UI",9,"bold")).pack(side="bottom",anchor="w")
-        actions=ttk.Frame(win,padding=(12,0,12,12)); actions.pack(fill="x")
-        ttk.Button(actions,text="Beton-Cari Bağlantısını Kontrol Et",
-                   command=lambda:self.repair_cari_beton_links(cari_id,win)).pack(side="left",padx=(0,8))
-        ttk.Button(actions,text="Cari Hesap PDF",command=lambda:self.export_single_cari_pdf(cari_id,unvan,"Cari Hesap Ekstresi")).pack(side="left",padx=(0,8))
-        ttk.Button(actions,text="Beton Cari PDF",command=lambda:self.export_single_cari_pdf(cari_id,unvan,"Cari Beton Satış Dökümü")).pack(side="left",padx=(0,8))
-        ttk.Button(actions,text="Excel Dökümü Al",command=lambda:self.export_single_cari_excel(cari_id,unvan)).pack(side="left",padx=(0,8))
-        ttk.Button(actions,text="Seçili cari hareketini düzenle",command=lambda:self._edit_cari_move_from_window(mt)).pack(side="left",padx=(0,8))
-        ttk.Button(actions,text="Kapat",command=win.destroy).pack(side="right")
+            sales_status.configure(text=f"Cari bağlantısı: {len(missing_sales)} eksik, "
+                                   f"{len(wrong_sales)} tutar hatası, {len(ambiguous_sales)} belirsiz.")
+            sales_status.pack(side="bottom", anchor="w", before=st.master, pady=(6, 0))
+        actions = ttk.Frame(win, padding=(12, 0, 12, 10))
+        actions.pack(side="bottom", fill="x", before=nb)
+        self._action_menu(actions, "Döküm Al", [
+            ("Cari Hesap PDF", lambda: self.export_single_cari_pdf(cari_id, "Cari Hesap Ekstresi")),
+            ("Beton Cari PDF", lambda: self.export_single_cari_pdf(cari_id, "Cari Beton Satış Dökümü")),
+            ("Cari Ekstresi Excel", lambda: self.export_single_cari_excel(cari_id, unvan)),
+        ]).pack(side="left", padx=(0, 8))
+        ttk.Button(actions, text="Beton-Cari Bağlantısını Kontrol Et",
+                   command=lambda: self.repair_cari_beton_links(cari_id, win)).pack(side="left")
+        ttk.Button(actions, text="Kapat", command=win.destroy).pack(side="right")
+        self._adapt_action_rows(win)
 
     def repair_cari_beton_links(self, cari_id, window=None):
         """Backed-up, explicit correction of identifiable movements only."""
@@ -2280,6 +2316,13 @@ class HoytasApp(tk.Tk):
     def _safe_export_name(self, value):
         cleaned = "".join(ch if ch.isalnum() or ch in " -_" else "_" for ch in str(value)).strip()
         return (cleaned[:60] or "Cari")
+
+    def _report_filename(self, report_type, extension, customer=None):
+        parts = ["HOYTAS", self._safe_export_name(report_type)]
+        if customer:
+            parts.append(self._safe_export_name(customer))
+        parts.append(datetime.now().strftime("%Y%m%d"))
+        return "_".join(parts).replace(" ", "_") + extension
 
     def _pdf_preview_action(self, report_type, viewer, preview_path):
         """Keep the preview available while the user prints or chooses to save."""
@@ -2343,11 +2386,22 @@ class HoytasApp(tk.Tk):
             except RuntimeError as exc:
                 messagebox.showerror("PDF önizlemesi açılamadı", f"PDF kaydedilmedi. Önce Adobe Acrobat/Reader ile önizleme açılmalıdır.\n\n{exc}", parent=self)
                 return False
-            if not self._pdf_preview_action(report_type, viewer, preview_path):
+            customer = None
+            if cari_id is not None and report_type in (
+                "Cari Hesap Ekstresi", "Cari Hareket Dökümü", "Cari Beton Satış Dökümü"
+            ):
+                with connect() as db:
+                    record = db.execute("SELECT unvan FROM cari WHERE id=?", (cari_id,)).fetchone()
+                if record:
+                    customer = record[0]
+            title = f"{report_type} – {customer}" if customer else report_type
+            if not self._pdf_preview_action(title, viewer, preview_path):
                 return False
             if not final_path:
-                initial = "HOYTAS_" + report_type.replace(" ", "_").replace("/", "_") + "_" + datetime.now().strftime("%Y%m%d") + ".pdf"
-                final_path = filedialog.asksaveasfilename(parent=self, title="PDF dosyasını kaydet", defaultextension=".pdf", filetypes=[("PDF dosyası", "*.pdf")], initialfile=initial)
+                final_path = filedialog.asksaveasfilename(
+                    parent=self, title=f"{title} – PDF Kaydet", defaultextension=".pdf",
+                    filetypes=[("PDF dosyası", "*.pdf")],
+                    initialfile=self._report_filename(report_type, ".pdf", customer))
             if not final_path:
                 return False
             os.makedirs(os.path.dirname(os.path.abspath(final_path)), exist_ok=True)
@@ -2374,6 +2428,13 @@ class HoytasApp(tk.Tk):
             self._preview_then_save_pdf(report_type, None, cari_id)
         except Exception as exc:
             messagebox.showerror("PDF oluşturulamadı", str(exc), parent=self)
+
+    def export_selected_cari_excel(self):
+        selection = self.cari_tree.selection()
+        if not selection:
+            return messagebox.showinfo("Cari seçin", "Excel dökümü almak için önce cari hesap seçin.", parent=self)
+        values = self.cari_tree.item(selection[0], "values")
+        self.export_single_cari_excel(int(values[0]), str(values[2]))
 
     def export_selected_beton_cari_pdf(self):
         """Export only the customer's sales for the selected concrete-sale row."""
@@ -2413,9 +2474,8 @@ class HoytasApp(tk.Tk):
         except Exception as exc:
             messagebox.showerror("PDF oluşturulamadı", str(exc), parent=self)
 
-    def export_single_cari_pdf(self, cari_id, unvan, report_type="Cari Hesap Ekstresi"):
+    def export_single_cari_pdf(self, cari_id, report_type="Cari Hesap Ekstresi"):
         """Cari hareket penceresindeki cari için doğrudan doğrulanmış PDF ekstresi üret."""
-        initial = f"HOYTAS_{self._safe_export_name(unvan)}_{report_type.replace(' ', '_')}_{datetime.now():%Y%m%d}.pdf"
         try:
             self._preview_then_save_pdf(report_type, None, cari_id)
         except ImportError:
@@ -2425,8 +2485,8 @@ class HoytasApp(tk.Tk):
 
     def export_single_cari_excel(self, cari_id, unvan):
         """Cari hareketleri, beton satışları ve bağlı çekleri tek XLSX dosyasına aktar."""
-        initial = f"HOYTAS_Cari_Ekstresi_{self._safe_export_name(unvan)}_{datetime.now():%Y%m%d}.xlsx"
-        path = filedialog.asksaveasfilename(parent=self, title="Cari Excel ekstresini kaydet",
+        initial = self._report_filename("Cari Hesap Ekstresi", ".xlsx", unvan)
+        path = filedialog.asksaveasfilename(parent=self, title=f"Cari Hesap Ekstresi – {unvan} – Excel Kaydet",
             defaultextension=".xlsx", filetypes=[("Excel çalışma kitabı", "*.xlsx")], initialfile=initial)
         if not path:
             return
@@ -2648,11 +2708,16 @@ class HoytasApp(tk.Tk):
         self.cari_tree = self._tree(self.cari_tab, ("id","tur","unvan","telefon","vergi_no","borc","alacak","bakiye"),
                                     ("ID","Tür","Ünvan","Telefon","Vergi No","Borç (TL)","Alacak (TL)","Kalan Borç (TL)"),
                                     (45,85,220,120,110,115,115,125))
+        self.cari_tree.bind("<Double-1>", lambda event: self.show_cari_hareketleri()
+                            if self.cari_tree.identify_row(event.y) else None)
         row=ttk.Frame(self.cari_tab); row.pack(fill="x",pady=8)
         ttk.Button(row,text="Seçili Kaydı Düzenle",command=lambda:self.edit_selected(self.cari_tree,"cari")).pack(side="left")
-        ttk.Button(row,text="Cari Hareketlerini Gör",command=self.show_cari_hareketleri).pack(side="left",padx=(0,8))
-        ttk.Button(row,text="Cari Ekstresi PDF",command=lambda:self.export_selected_cari_pdf("Cari Hesap Ekstresi")).pack(side="left",padx=(0,8))
-        ttk.Button(row,text="Cari Hareket PDF",command=lambda:self.export_selected_cari_pdf("Cari Hareket Dökümü")).pack(side="left",padx=(0,8))
+        ttk.Button(row,text="Cari Kartını Aç",command=self.show_cari_hareketleri).pack(side="left",padx=(0,8))
+        self._action_menu(row, "Döküm Al", [
+            ("Cari Ekstresi PDF", lambda: self.export_selected_cari_pdf("Cari Hesap Ekstresi")),
+            ("Cari Hareket PDF", lambda: self.export_selected_cari_pdf("Cari Hareket Dökümü")),
+            ("Cari Ekstresi Excel", self.export_selected_cari_excel),
+        ]).pack(side="left", padx=(0, 8))
         ttk.Button(row,text="Tahsilat Al / Cari Borcunu Düş",command=self.cari_tahsilat).pack(side="left",padx=8)
         ttk.Button(row, text="Seçili Kaydı Sil", command=lambda: self.delete_selected(self.cari_tree,"cari")).pack(side="right")
 
@@ -2829,7 +2894,7 @@ class HoytasApp(tk.Tk):
         ttk.Label(bar, text="Gelir / Gider Kayıtları", font=("Segoe UI", 16, "bold")).pack(side="left")
         ttk.Button(bar, text="Yeni Hareket Ekle", command=self.add_hareket).pack(side="right")
         self.hareket_tree = self._tree(self.hareket_tab, ("id","tarih","tur","kategori","cari","aciklama","tutar","odeme"),
-            ("ID","Tarih","Tür","Kategori","Cari","Açıklama","Tutar (TL)","Ödeme"), (50,105,90,130,200,220,120,110))
+            ("ID","Tarih","Tür","Kategori","Cari","Açıklama","Tutar (TL)","Ödeme"), (50,95,80,105,155,185,105,90), show_id=False)
         row=ttk.Frame(self.hareket_tab); row.pack(fill="x",pady=8)
         ttk.Button(row,text="Seçili Kaydı Düzenle",command=lambda:self.edit_selected(self.hareket_tree,"hareket")).pack(side="left")
         ttk.Button(row, text="Seçili Kaydı Sil", command=lambda: self.delete_selected(self.hareket_tree,"hareket")).pack(side="right")
@@ -2937,6 +3002,7 @@ class HoytasApp(tk.Tk):
         ttk.Button(bar, text="Yenile", command=refresh).pack(side="right")
         tree._undo_table = "maas_odeme"
         tree._after_undo = refresh
+        self._adapt_action_rows(win)
         refresh()
 
     def show_puantaj(self, personel_id=None, after_change=None):
