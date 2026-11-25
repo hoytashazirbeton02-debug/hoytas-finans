@@ -1,0 +1,7 @@
+HOYTAŞ Finans v112
+
+• Ana menüler iş alanlarına göre gruplandı ve açık menü vurgulanıyor.
+• Dar ekranda işlem düğmeleri satıra sığmadığında alt satıra geçiyor.
+• Cari kartında işlemler ve dökümler erişilebilir; hareketler aranabiliyor.
+• Cari hareketi cari kartından doğrudan düzenlenebiliyor.
+• Cari PDF ve Excel kaydetme penceresinde ve dosya adında müşteri adı görünüyor.

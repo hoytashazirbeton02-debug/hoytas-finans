@@ -29,7 +29,7 @@ from xml.sax.saxutils import escape
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
 TARGET_SCHEMA_VERSION = 58
-APP_VERSION = 111
+APP_VERSION = 112
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 ISOLATED_PROFILE_DIR = os.environ.get("HOYTAS_PROFILE_DIR", "").strip()
 USER_DATA_DIR = ISOLATED_PROFILE_DIR or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
@@ -966,6 +966,8 @@ class HoytasApp(tk.Tk):
         self.style.map("TButton", background=[("active", "#1D4933"), ("pressed", "#173B2A"), ("disabled", "#D5DCD7")],
                        foreground=[("disabled", "#7C8780")])
         self.style.configure("TMenubutton", padding=(10, 7), font=("Segoe UI", 9, "bold"))
+        self.style.configure("Selected.TMenubutton", background="#CDE5D5", foreground="#173B2A")
+        self.style.configure("Selected.TButton", background="#CDE5D5", foreground="#173B2A")
         self.style.configure("TEntry", padding=7, fieldbackground="#FFFFFF", foreground="#24352C", bordercolor="#C9D5CD")
         self.style.configure("TCombobox", padding=7, fieldbackground="#FFFFFF", foreground="#24352C", arrowsize=14)
         self.style.map("TCombobox", fieldbackground=[("readonly", "#FFFFFF")], foreground=[("readonly", "#24352C")])
@@ -1421,8 +1423,10 @@ class HoytasApp(tk.Tk):
             self.tabs.add(frame, text=title)
         nav = ttk.Frame(self)
         nav.pack(fill="x", before=self.tabs, padx=10, pady=(8, 0))
-        ttk.Button(nav, text="Genel Bakış",
-                   command=lambda: self.tabs.select(self.dashboard)).pack(side="left", padx=(0, 6))
+        overview = ttk.Button(nav, text="Genel Bakış",
+                              command=lambda: self.tabs.select(self.dashboard))
+        overview.pack(side="left", padx=(0, 6))
+        nav_groups = {str(self.dashboard): overview}
         for label, frames in (
             ("Cari", (self.cari_tab, self.borc_takip_tab, self.alisveris_cari_tab)),
             ("Beton", (self.beton_tab, self.mastarci_tab)),
@@ -1431,9 +1435,20 @@ class HoytasApp(tk.Tk):
             ("Stok", (self.stok_tab, self.stok_hareket_tab)),
             ("Personel", (self.personel_tab, self.maas_tab)),
         ):
-            self._action_menu(nav, label, [
+            button = self._action_menu(nav, label, [
                 (modules[frame], lambda page=frame: self.tabs.select(page)) for frame in frames
-            ]).pack(side="left", padx=(0, 6))
+            ])
+            button.pack(side="left", padx=(0, 6))
+            nav_groups.update((str(frame), button) for frame in frames)
+
+        def highlight_module(_event=None):
+            current_group = nav_groups.get(self.tabs.select())
+            for button in nav.winfo_children():
+                base_style = button.winfo_class()
+                button.configure(style=f"Selected.{base_style}" if button is current_group else base_style)
+
+        self.tabs.bind("<<NotebookTabChanged>>", highlight_module, add="+")
+        highlight_module()
         self._build_dashboard()
         self._build_cari()
         self._build_borc_takip()
@@ -2180,7 +2195,7 @@ class HoytasApp(tk.Tk):
                         ("ID", "Tarih", "Tür", "Kategori", "Açıklama", "Ödeme", "Borç TL", "Alacak TL", "Bakiye TL"),
                         (45, 94, 70, 98, 270, 85, 95, 95, 105), show_id=False)
         ttk.Button(movement_actions, text="Hareketi Düzenle",
-                   command=lambda: self._edit_cari_move_from_window(mt)).pack(side="left")
+                   command=lambda: refresh_card(lambda _cari: self.edit_selected(mt, "hareket"))).pack(side="left")
         bal=0
         sales_by_id = {int(r[0]): r for r in sales}
         import re
@@ -2600,18 +2615,6 @@ class HoytasApp(tk.Tk):
             messagebox.showerror("Eksik bileşen", "Excel oluşturmak için openpyxl paketini kurun veya kurulum.bat dosyasını çalıştırın.", parent=self)
         except Exception as exc:
             messagebox.showerror("Excel oluşturulamadı", str(exc), parent=self)
-
-    def _edit_cari_move_from_window(self, tree):
-        sel=tree.selection()
-        if not sel: return messagebox.showinfo("Hareket seçin","Düzenlemek için bir hareket seçin.",parent=self)
-        rid=int(tree.item(sel[0],"values")[0])
-        # Hareket ana listesinde aynı ID'li kaydı seçip standart düzenleme formunu kullan.
-        if hasattr(self,"hareket_tree"):
-            for item in self.hareket_tree.get_children():
-                if int(self.hareket_tree.item(item,"values")[0])==rid:
-                    self.tabs.select(self.hareket_tab); self.hareket_tree.selection_set(item); self.hareket_tree.focus(item)
-                    self.edit_selected(self.hareket_tree,"hareket"); self.refresh_all(); return
-        return messagebox.showinfo("Hareket bulunamadı","Bu cari hareketi ana hareket listesinde bulunamadı.",parent=self)
 
     def bulk_cari_audit(self):
         try:
