@@ -1,0 +1,2 @@
+HOYTAŞ Finans v120
+Sekme kapatma işareti küçültüldü ve sekme başlığıyla aynı arka plana alındı.

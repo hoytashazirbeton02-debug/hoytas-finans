@@ -31,7 +31,7 @@ from hybrid_branding import set_brand_logo
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
 TARGET_SCHEMA_VERSION = 59
-APP_VERSION = 119
+APP_VERSION = 120
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 ISOLATED_PROFILE_DIR = os.environ.get("HOYTAS_PROFILE_DIR", "").strip()
 USER_DATA_DIR = ISOLATED_PROFILE_DIR or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
@@ -1471,7 +1471,7 @@ class HoytasApp(tk.Tk):
             select.grid(row=0, column=0, sticky="ns")
             close = None
             if frame != self.dashboard:
-                close = ttk.Button(tab, text="×", style="Close.Workspace.TButton",
+                close = ttk.Button(tab, text="×", width=1, style="Close.Workspace.TButton",
                                    command=lambda page=frame: self._close_module(page=page))
                 close.grid(row=0, column=1, sticky="ns")
             self.module_controls[str(frame)] = (tab, select, close)
@@ -1479,9 +1479,12 @@ class HoytasApp(tk.Tk):
         self.style.configure("Current.Workspace.TButton", padding=(8, 5), background="#315C16", foreground="#FFFFFF")
         self.style.map("Workspace.TButton", background=[("active", "#D6EAC5")])
         self.style.map("Current.Workspace.TButton", background=[("active", "#264810")])
-        self.style.configure("Close.Workspace.TButton", font=("Segoe UI", 12, "bold"),
-                             padding=(9, 2), background="#F5E6E2", foreground="#862D22")
-        self.style.map("Close.Workspace.TButton", background=[("active", "#F2CFC7")])
+        self.style.configure("Close.Workspace.TButton", font=("Segoe UI", 10, "bold"),
+                             padding=(5, 0), background="#E5EEDB", foreground="#263519")
+        self.style.configure("Current.Close.Workspace.TButton", font=("Segoe UI", 10, "bold"),
+                             padding=(5, 0), background="#315C16", foreground="#FFFFFF")
+        self.style.map("Close.Workspace.TButton", background=[("active", "#D6EAC5")])
+        self.style.map("Current.Close.Workspace.TButton", background=[("active", "#264810")])
         self.module_strip.bind("<Configure>", self._layout_workspace_tabs)
         self.bind("<Control-w>", self._close_module, add="+")
 
@@ -1546,6 +1549,7 @@ class HoytasApp(tk.Tk):
             tab_width = select.winfo_reqwidth()
             tab_height = select.winfo_reqheight()
             if close is not None:
+                close.configure(style="Current.Close.Workspace.TButton" if page == selected else "Close.Workspace.TButton")
                 tab_width += close.winfo_reqwidth()
                 tab_height = max(tab_height, close.winfo_reqheight())
             if x and x + tab_width > width:
