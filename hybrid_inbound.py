@@ -80,6 +80,9 @@ def _snapshot(value, columns, record_id, table):
     if (table == "fatura" and isinstance(snapshot, dict) and "belge_bilgileri" in columns
             and snapshot.keys() == set(columns) - {"belge_bilgileri"}):
         snapshot["belge_bilgileri"] = "{}"
+    if (table == "cari" and isinstance(snapshot, dict) and "arsivli" in columns
+            and snapshot.keys() == set(columns) - {"arsivli"}):
+        snapshot["arsivli"] = 0
     if not isinstance(snapshot, dict) or snapshot.keys() != set(columns) or snapshot["id"] != record_id:
         raise ValueError("Invalid row snapshot")
     return snapshot
