@@ -31,7 +31,7 @@ from hybrid_branding import set_brand_logo
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
 TARGET_SCHEMA_VERSION = 60
-APP_VERSION = 122
+APP_VERSION = 123
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 ISOLATED_PROFILE_DIR = os.environ.get("HOYTAS_PROFILE_DIR", "").strip()
 USER_DATA_DIR = ISOLATED_PROFILE_DIR or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
@@ -1446,14 +1446,14 @@ class HoytasApp(tk.Tk):
                 self.tabs.hide(frame)
         nav = ttk.Frame(self)
         nav.pack(fill="x", before=self.tabs, padx=10, pady=(8, 0))
-        overview = ttk.Button(nav, text="Genel Bakış",
+        self.style.configure("Navigation.TButton", padding=(8, 4))
+        self.style.configure("Selected.Navigation.TButton", background="#DEF2C4", foreground="#1F3412")
+        self.style.configure("Navigation.TMenubutton", padding=(8, 4), arrowsize=9)
+        self.style.configure("Selected.Navigation.TMenubutton", background="#DEF2C4", foreground="#1F3412")
+        overview = ttk.Button(nav, text="Genel Bakış", style="Navigation.TButton",
                               command=lambda: self._open_module(self.dashboard))
         self.module_navigation = nav
         nav_items = [overview]
-        self.style.configure("Module.TLabel", padding=(9, 5), background="#E5EEDB")
-        self.style.configure("Selected.Module.TLabel", background="#DEF2C4")
-        self.style.configure("ModuleArrow.TButton", padding=(7, 5))
-        self.style.configure("Selected.ModuleArrow.TButton", background="#DEF2C4", foreground="#1F3412")
         nav_groups = {str(self.dashboard): overview}
         for label, frames in (
             ("Cari", (self.cari_tab, self.borc_takip_tab, self.alisveris_cari_tab)),
@@ -1463,17 +1463,13 @@ class HoytasApp(tk.Tk):
             ("Stok", (self.stok_tab, self.stok_hareket_tab)),
             ("Personel", (self.personel_tab, self.maas_tab)),
         ):
-            group = ttk.Frame(nav)
-            name = ttk.Label(group, text=label, style="Module.TLabel")
-            name.pack(side="left", fill="y")
-            arrow = ttk.Button(group, text="▼", style="ModuleArrow.TButton")
-            arrow.pack(side="left", fill="y")
-            menu = tk.Menu(arrow, tearoff=False)
-            for frame in frames:
-                menu.add_command(label=modules[frame], command=lambda page=frame: self._open_module(page))
-            arrow.configure(command=lambda button=arrow, popup=menu: self._post_module_menu(button, popup))
-            nav_items.append(group)
-            nav_groups.update((str(frame), (name, arrow)) for frame in frames)
+            button = self._action_menu(nav, label, [
+                (modules[frame], lambda page=frame: self._open_module(page)) for frame in frames
+            ])
+            button.configure(direction="below", style="Navigation.TMenubutton", width=0,
+                             takefocus=True)
+            nav_items.append(button)
+            nav_groups.update((str(frame), button) for frame in frames)
 
         nav.configure(height=overview.winfo_reqheight() + 4)
         nav.bind("<Configure>", lambda _event: self._layout_module_navigation(nav, nav_items))
@@ -1508,14 +1504,9 @@ class HoytasApp(tk.Tk):
         def highlight_module(_event=None):
             current_group = nav_groups.get(self.tabs.select())
             self._layout_workspace_tabs()
-            for group in set(nav_groups.values()):
-                prefix = "Selected." if group is current_group else ""
-                if group is overview:
-                    overview.configure(style=prefix + "TButton")
-                else:
-                    name, arrow = group
-                    name.configure(style=prefix + "Module.TLabel")
-                    arrow.configure(style=prefix + "ModuleArrow.TButton")
+            for button in set(nav_groups.values()):
+                prefix = "Selected." if button is current_group else ""
+                button.configure(style=f"{prefix}Navigation.{button.winfo_class()}")
 
         self.tabs.bind("<<NotebookTabChanged>>", highlight_module, add="+")
         highlight_module()
@@ -1612,12 +1603,6 @@ class HoytasApp(tk.Tk):
         height = y + row_height
         if int(nav.cget("height")) != height:
             nav.configure(height=height)
-
-    def _post_module_menu(self, button, menu):
-        try:
-            menu.tk_popup(button.winfo_rootx(), button.winfo_rooty() + button.winfo_height())
-        finally:
-            menu.grab_release()
 
     def _action_menu(self, parent, text, actions):
         button = ttk.Menubutton(parent, text=text)

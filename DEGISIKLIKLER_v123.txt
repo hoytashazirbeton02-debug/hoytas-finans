@@ -1,0 +1,2 @@
+HOYTAŞ Finans v123
+Üst menülerde başlık ve küçük ok tek kutuda. Kutunun tamamı alt seçenekleri tek liste halinde açar.
