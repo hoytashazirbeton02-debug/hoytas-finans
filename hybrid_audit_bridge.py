@@ -36,7 +36,11 @@ def install_capture(db, batch_id=None):
                 (event_id, audit_id, table_name, record_id, action, old_values, new_values)
             VALUES
                 (lower(hex(randomblob(16))), NEW.id, NEW.table_name, NEW.record_id,
-                 NEW.action, NEW.old_values, NEW.new_values);
+                 NEW.action,
+                 CASE WHEN NEW.table_name='cari' AND json_extract(NEW.old_values,'$.arsivli')=0
+                      THEN json_remove(NEW.old_values,'$.arsivli') ELSE NEW.old_values END,
+                 CASE WHEN NEW.table_name='cari' AND json_extract(NEW.new_values,'$.arsivli')=0
+                      THEN json_remove(NEW.new_values,'$.arsivli') ELSE NEW.new_values END);
             {capture_batch}
         END""")
 

@@ -1,0 +1,95 @@
+name: HOYTAS v121 smoke test
+on:
+  pull_request:
+    branches: [menu-ok-duzenleme]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk python3-venv xvfb xauth
+          python3 -m venv --system-site-packages .test-venv
+          .test-venv/bin/pip install pillow reportlab openpyxl
+      - name: Migration, user interface and finance tests
+        env:
+          HOYTAS_UPDATE_TEST: "1"
+        run: |
+          export HOYTAS_PROFILE_DIR="$(mktemp -d)"
+          xvfb-run -a .test-venv/bin/python - <<'PY'
+          from unittest.mock import patch
+          from types import SimpleNamespace
+          import subprocess
+          import hoytas as h
+
+          legacy = {"__file__": h.__file__, "__name__": "legacy_hoytas"}
+          old_source = subprocess.check_output(["git", "show", "fc8f0dce782c14f02b0817e2f42935577f1b2360:hoytas.py"])
+          exec(compile(old_source, h.__file__, "exec"), legacy)
+          with legacy["connect"]() as db:
+              db.execute("INSERT INTO cari(id,tur,unvan,telefon,created_at) VALUES(1,'Müşteri','Örnek İnşaat','05551234567','2026-11-25')")
+              db.execute("INSERT INTO hareket(tarih,cari_id,tur,kategori,tutar) VALUES('2026-11-25',1,'Borç','Beton',100)")
+              db.execute("INSERT INTO fatura(id,tarih,cari_id,belge_no,genel_toplam,tahsil_edilecek) VALUES(1,'2026-11-25',1,'TEST',100,100)")
+          with h.connect() as db:
+              assert db.execute("SELECT arsivli FROM cari").fetchone() == (0,)
+              assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+
+          with patch.object(h.HoytasApp, "_ensure_admin_and_login", lambda a: setattr(a, "current_user", {"username":"Test","role":"Yönetici"})), patch.object(h.HoytasApp, "check_for_updates_silent"):
+              app = h.HoytasApp()
+          app.update()
+          app._open_module(app.cari_tab)
+          app.update()
+          btn = next(w for w in app.winfo_children() for w in w.winfo_children()
+                     if isinstance(w, h.ttk.Menubutton) and w.cget("text") == "Cari")
+          assert app._module_menu_press(SimpleNamespace(widget=btn, x=0)) == "break"
+          assert app._module_menu_press(SimpleNamespace(widget=btn, x=btn.winfo_width()-4)) is None
+          assert str(btn.cget("direction")) == "below"
+          app.cari_search.set("05551234567")
+          assert len(app.cari_tree.get_children()) == 1
+          app.cari_tree.selection_set(app.cari_tree.get_children()[0])
+          app.toggle_cari_archive()
+          assert not app.cari_tree.get_children()
+          app.cari_arsiv_goster.set(True)
+          app.refresh_cari()
+          assert len(app.cari_tree.get_children()) == 1
+          app.cari_tree.selection_set(app.cari_tree.get_children()[0])
+          app.toggle_cari_archive()
+          app.cari_arsiv_goster.set(False)
+          app.refresh_all()
+          assert app._database_view_version() == app._loaded_view_version
+          with h.connect() as db:
+              db.execute("UPDATE cari SET telefon='05551234568' WHERE id=1")
+          assert app._database_view_version() != app._loaded_view_version
+          app._run_tab_refresh()
+          assert app._database_view_version() == app._loaded_view_version
+          assert app.cari_search.get() == "05551234567" and not app.cari_tree.get_children()
+
+          app.fatura_tree.selection_set(app.fatura_tree.get_children()[0])
+          def receipt(title, fields):
+              invoice_choice = fields[0][3]
+              assert len(invoice_choice) == 1 and invoice_choice[0].startswith("1 - ")
+              return dict(fatura=invoice_choice[0], tarih="25.11.2026", tutar="100", yontem="Nakit", aciklama="", banka="", cek_no="", vade="")
+          with patch.object(app, "prompt", side_effect=receipt), patch.object(h.messagebox, "showinfo"), patch.object(h.messagebox, "showerror") as errors:
+              app.tahsilat_fatura()
+              app.tahsilat_fatura()
+              assert not errors.called
+          with h.connect() as db:
+              assert db.execute("SELECT odenen FROM fatura").fetchone() == (100,)
+              assert db.execute("SELECT count(*) FROM fatura_tahsilat").fetchone() == (1,)
+              assert db.execute("SELECT count(*) FROM nakit_kasa").fetchone() == (1,)
+              assert db.execute("SELECT bakiye FROM cari_bakiye").fetchone() == (0,)
+          assert "Kurulu sürüm: v121" in app._update_status_text("HOYTAŞ", 121)
+          app.destroy()
+          PY
+          .test-venv/bin/python -m unittest discover -q
+      - name: Verify public source archive
+        env:
+          RELEASE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          curl -fLSs --retry 3 "https://github.com/hoytashazirbeton02-debug/hoytas-finans/archive/$RELEASE_SHA.zip" -o /tmp/hoytas-v121.zip
+          python3 -m zipfile -t /tmp/hoytas-v121.zip
+          sha256sum /tmp/hoytas-v121.zip

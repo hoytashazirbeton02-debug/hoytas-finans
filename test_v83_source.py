@@ -35,7 +35,8 @@ print("v83 static date and receipt guard checks passed")
 section = method_source("cari_tahsilat")
 assert "fatura_tahsilat(fatura_id,tarih,tutar,yontem,aciklama)" in section
 assert "UPDATE fatura SET odenen=odenen+?" in section
-assert "tutar > round(safe_float(invoice[0])-safe_float(invoice[1]), 2)+0.005" in section
+assert "? <= ROUND(tahsil_edilecek-odenen, 2)+0.005" in section
+assert "SELECT ROUND(bakiye,2) FROM cari_bakiye" in section
 assert section.count('INSERT INTO nakit_kasa(') == 1
 assert section.count('INSERT INTO banka_hareket(') == 1
 
