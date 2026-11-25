@@ -27,12 +27,14 @@ def verify(scale, width):
             app.update()
 
         menu = arrow.winfo_children()[0]
-        click(name)
-        assert not menu.winfo_ismapped()
-        click(arrow)
-        assert menu.winfo_ismapped()
+        # Windows runs a native, blocking menu loop until the user makes a choice.
+        # Intercept the popup at that boundary while exercising the actual Tk clicks.
+        with patch.object(menu, "tk_popup") as popup:
+            click(name)
+            popup.assert_not_called()
+            click(arrow)
+            popup.assert_called_once_with(arrow.winfo_rootx(), arrow.winfo_rooty() + arrow.winfo_height())
         assert menu.entrycget(1, "label") == "Borç Takip"
-        menu.unpost()
         menu.invoke(1)
         app.update()
         assert app.tabs.select() == str(app.borc_takip_tab)
