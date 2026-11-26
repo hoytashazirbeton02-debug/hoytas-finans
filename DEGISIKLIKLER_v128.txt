@@ -1,0 +1,4 @@
+HOYTAŞ v128
+- Genel Bakış gelir/gider dönem filtresi ve yazdırılan özette dönem bilgisi.
+- Kayıt düzenlemede ünvanla cari arama ve seçme.
+- Beton satış raporları Beton Satış Dökümü menüsünde.
