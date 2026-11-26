@@ -1,0 +1,4 @@
+HOYTAŞ v126
+- Cari ekstresi, beton satış dökümü ve açık borç listesi ilgili ekranlardan alınır.
+- Borç Takip, toplam alacağı ödeme olarak etiketlemez.
+- Windows ana penceresi giriş sonrası büyütülmüş açılır.
