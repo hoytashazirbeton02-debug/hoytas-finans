@@ -1,0 +1,3 @@
+HOYTAŞ v127
+- Cari Excel özetinde beton birim fiyatı, farklı fiyatlarda miktar ağırlıklı ortalama ve varsa ayrı pompa toplamı.
+- Tam metreküp miktarlarında gereksiz ondalık ayırıcı kaldırıldı.
