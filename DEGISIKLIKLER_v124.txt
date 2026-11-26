@@ -1,0 +1,4 @@
+HOYTAŞ v124
+- Cari PDF ve Excel çıktılarında başlık logosu ve soluk arka plan filigranı.
+- Cari hareket PDF’sinde müşteri adı ve işaretli bakiye. Excel özetinde tek bakiye ve boş beton listesinde sıfır toplam.
+- Açılışta ve kayıt sonrası görünen ekranın yenilenmesi.
