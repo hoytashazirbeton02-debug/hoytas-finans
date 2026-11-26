@@ -1,0 +1,3 @@
+HOYTAŞ v125
+- Cari Excel özetinde tek A4, ayrıntılarda tek sayfa genişliği.
+- Normal başlık logosu korunur. Soluk filigran bir kez görünür ve yazdırılır.
