@@ -2735,12 +2735,28 @@ class HoytasApp(tk.Tk):
             summary.append(["Toplam Borç (TL)", debt])
             summary.append(["Toplam Alacak (TL)", credit])
             summary.append(["Bakiye (Borç - Alacak) (TL)", debt-credit])
-            total_m3 = sum(safe_float(r[2] or 0) for r in sales)
+            quantities_and_prices = [(safe_float(row[2] or 0), safe_float(row[3] or 0)) for row in sales]
+            total_m3 = sum(quantity for quantity, _ in quantities_and_prices)
+            prices = {price for _, price in quantities_and_prices}
+            unit_price = (sum(quantity * price for quantity, price in quantities_and_prices) / total_m3
+                          if total_m3 > 0 and prices and min(prices) > 0 else None)
+            price_label = ("Ort. Birim Fiyat (pompa hariç)" if len(prices) > 1
+                           else "Birim Fiyat (pompa hariç)")
+            total_pump = sum(safe_float(row[4] or 0) for row in sales)
             total_sales_amount = sum(safe_float(r[5] or 0) for r in sales)
             total_collected = sum(safe_float(r[5] or 0) for r in moves if r[1] == "Alacak" and ("tahsilat" in str(r[2]).casefold() or "tahsilat" in str(r[3]).casefold()))
-            summary.append(["Toplam Beton Satışı (m³)", safe_float(total_m3)])
-            summary.append(["Toplam Satış Tutarı (TL)", total_sales_amount])
-            summary.append(["Toplam Tahsilat (TL)", total_collected])
+            summary.append(["Toplam Beton Satışı (m³)", total_m3])
+            quantity_format = '#,##0' if '.' not in format_m3(total_m3) else '#,##0.###'
+            summary.cell(summary.max_row, 2).number_format = quantity_format + ' "m³"'
+            summary.append([price_label, unit_price if unit_price is not None else "—"])
+            summary.cell(summary.max_row, 2).number_format = '#,##0.00 "TL/m³"'
+            money_rows = [("Toplam Satış Tutarı (TL)", total_sales_amount),
+                          ("Toplam Tahsilat (TL)", total_collected)]
+            if total_pump:
+                money_rows.insert(0, ("Toplam Pompa Ücreti (TL)", total_pump))
+            for label, amount in money_rows:
+                summary.append([label, amount])
+                summary.cell(summary.max_row, 2).number_format = '#,##0.00 "TL"'
             summary.append(["Rapor Tarihi", datetime.now().strftime("%d.%m.%Y %H:%M")])
             sh = wb.create_sheet("Cari Hareketleri")
             sh.append(["Tarih", "Tür", "Kategori", "Açıklama", "Ödeme Yöntemi", "Borç (TL)", "Alacak (TL)", "Bakiye (TL)"])
@@ -2750,7 +2766,7 @@ class HoytasApp(tk.Tk):
                 sh.append([display_date(r[0]), r[1], r[2], r[3], r[4], safe_float(r[5] or 0) if r[1] == "Borç" else 0, safe_float(r[5] or 0) if r[1] == "Alacak" else 0, balance])
             sh.append(["", "", "", "", "TOPLAM", debt, credit, balance])
             ss = wb.create_sheet("Beton Satışları")
-            ss.append(["Tarih", "Beton Cinsi", "Miktar (m³)", "Birim Fiyat (TL)", "Pompa Ücreti (TL)", "Toplam (TL)", "Ödeme Durumu", "Açıklama"])
+            ss.append(["Tarih", "Beton Cinsi", "Miktar (m³)", "Birim Fiyat (TL/m³)", "Pompa Ücreti (TL)", "Toplam (TL)", "Ödeme Durumu", "Açıklama"])
             for r in sales: ss.append([display_date(r[0]), r[1], safe_float(r[2] or 0), r[3], r[4], r[5], r[6], format_beton_aciklama(r[1],r[2],r[3],r[4],r[5],r[8],r[7],r[6])])
             sales_total_row = ss.max_row + 1
             ss.append(["", "TOPLAM BETON (m³)", f"=SUM(C2:C{sales_total_row - 1})" if sales else 0,
@@ -2805,8 +2821,7 @@ class HoytasApp(tk.Tk):
                     letter = get_column_letter(col[0].column)
                     max_len = max((len(str(cell.value or "")) for cell in col), default=10)
                     ws.column_dimensions[letter].width = min(max(max_len + 2, 13), 46)
-            for row in (5, 6, 7, 9, 10): summary.cell(row, 2).number_format = '#,##0.00 "TL"'
-            summary.cell(8, 2).number_format = '#,##0.### "m³"'
+            for row in (5, 6, 7): summary.cell(row, 2).number_format = '#,##0.00 "TL"'
             for ws in (sh, ss, sc):
                 for row in ws.iter_rows(min_row=2):
                     for cell in row:
