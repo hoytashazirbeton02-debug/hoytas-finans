@@ -1,7 +1,7 @@
 name: HOYTAS Release
 on:
   push:
-    branches: [release-v125]
+    branches: [release-v126]
     paths:
       - '.github/workflows/release.yml'
       - 'hoytas.py'
