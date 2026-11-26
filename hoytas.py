@@ -1067,6 +1067,8 @@ class HoytasApp(tk.Tk):
         self._refresh_selected_module()
         if self.membership_client is not None:
             self.deiconify()
+        if os.name == "nt":
+            self.state("zoomed")
         # Sunucu tanımlıysa açılışta sessizce yeni sürüm kontrolü yap.
         self.after(1800, self.check_for_updates_silent)
 
