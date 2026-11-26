@@ -31,7 +31,7 @@ from hybrid_branding import set_brand_logo
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
 TARGET_SCHEMA_VERSION = 60
-APP_VERSION = 124
+APP_VERSION = 125
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 ISOLATED_PROFILE_DIR = os.environ.get("HOYTAS_PROFILE_DIR", "").strip()
 USER_DATA_DIR = ISOLATED_PROFILE_DIR or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
@@ -76,70 +76,54 @@ def normalize_dropbox_download_url(url):
     return url
 
 
-def save_cari_excel_with_watermark(workbook, path, logo_path):
-    """Store the logo as an XLSX worksheet background behind editable cells."""
+def prepare_cari_excel_print_layout(workbook, logo_path):
+    """Fit each report to A4 width and place one printable logo inside its bounds."""
     from io import BytesIO
-    from xml.etree import ElementTree as ET
+    from openpyxl.drawing.image import Image as XLImage
+    from openpyxl.drawing.spreadsheet_drawing import AbsoluteAnchor
+    from openpyxl.drawing.xdr import XDRPoint2D, XDRPositiveSize2D
+    from openpyxl.utils import get_column_letter
+    from openpyxl.utils.units import pixels_to_EMU
     from PIL import Image
 
-    sheet_ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
-    document_ns = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-    package_ns = "http://schemas.openxmlformats.org/package/2006/relationships"
-    types_ns = "http://schemas.openxmlformats.org/package/2006/content-types"
-    backgrounds = {}
-    parts = {}
-    relationship_parts = set()
-    with Image.open(logo_path) as source:
-        logo = source.convert("RGBA")
-    logo.thumbnail((270, 230), Image.Resampling.LANCZOS)
-    logo.putalpha(logo.getchannel("A").point(lambda alpha: round(alpha * 0.09)))
+    summary = workbook.active
+    logo = None
+    if os.path.isfile(logo_path):
+        with Image.open(logo_path) as source:
+            logo = source.convert("RGBA")
+        logo.putalpha(logo.getchannel("A").point(lambda alpha: round(alpha * 0.14)))
 
-    for index, sheet in enumerate(workbook.worksheets, 1):
+    for sheet in workbook.worksheets:
+        is_summary = sheet is summary
+        last_row = sheet.max_row if logo is None else max(sheet.max_row, 10)
+        sheet.print_area = f"A1:{get_column_letter(sheet.max_column)}{last_row}"
+        sheet.print_options.horizontalCentered = True
+        sheet.sheet_view.showGridLines = False
+        sheet.sheet_properties.pageSetUpPr.fitToPage = True
+        sheet.sheet_properties.pageSetUpPr.autoPageBreaks = False
+        sheet.page_setup.paperSize = sheet.PAPERSIZE_A4
+        sheet.page_setup.orientation = sheet.ORIENTATION_PORTRAIT if is_summary else sheet.ORIENTATION_LANDSCAPE
+        sheet.page_setup.fitToWidth = 1
+        sheet.page_setup.fitToHeight = 1 if is_summary else 0
+        if not is_summary:
+            sheet.print_title_rows = "1:1"
+        if logo is None:
+            continue
+
         width = sum(round(column.width * 7 + 5) for column in sheet.column_dimensions.values())
-        tile = Image.new("RGB", (max(width, logo.width), 560), "white")
-        tile.paste(logo, ((tile.width - logo.width) // 2, 48), logo)
+        header_height = sheet.row_dimensions[1].height * 96 / 72
+        row_height = sheet.sheet_format.defaultRowHeight * 96 / 72
+        height = min((last_row - 1) * row_height - 12, 190)
+        scale = min(height / logo.height, width * 0.45 / logo.width)
+        image_width, image_height = logo.width * scale, logo.height * scale
         png = BytesIO()
-        tile.save(png, format="PNG")
-        sheet_part = f"xl/worksheets/sheet{index}.xml"
-        media_name = f"cari-watermark-{index}.png"
-        rel_part = f"xl/worksheets/_rels/sheet{index}.xml.rels"
-        backgrounds[sheet_part] = (media_name, rel_part)
-        relationship_parts.add(rel_part)
-        parts[f"xl/media/{media_name}"] = png.getvalue()
-
-    with tempfile.TemporaryFile() as saved:
-        workbook.save(saved)
-        with zipfile.ZipFile(saved) as source, zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as output:
-            for entry in source.infolist():
-                if entry.filename in relationship_parts:
-                    continue
-                data = source.read(entry)
-                if entry.filename in backgrounds:
-                    media_name, rel_part = backgrounds[entry.filename]
-                    rels = (ET.fromstring(source.read(rel_part)) if rel_part in source.namelist()
-                            else ET.Element(f"{{{package_ns}}}Relationships"))
-                    ids = {relationship.get("Id") for relationship in rels}
-                    rel_number = 1
-                    while f"rId{rel_number}" in ids:
-                        rel_number += 1
-                    rel_id = f"rId{rel_number}"
-                    ET.SubElement(rels, f"{{{package_ns}}}Relationship", {
-                        "Id": rel_id,
-                        "Type": f"{document_ns}/image",
-                        "Target": f"../media/{media_name}",
-                    })
-                    output.writestr(rel_part, ET.tostring(rels, encoding="utf-8"))
-                    sheet = ET.fromstring(data)
-                    ET.SubElement(sheet, f"{{{sheet_ns}}}picture", {f"{{{document_ns}}}id": rel_id})
-                    data = ET.tostring(sheet, encoding="utf-8")
-                elif entry.filename == "[Content_Types].xml":
-                    types = ET.fromstring(data)
-                    if not any(item.get("Extension") == "png" for item in types):
-                        ET.SubElement(types, f"{{{types_ns}}}Default", {"Extension": "png", "ContentType": "image/png"})
-                    data = ET.tostring(types, encoding="utf-8")
-                output.writestr(entry, data)
-            for name, png in parts.items():
-                output.writestr(name, png)
+        logo.save(png, format="PNG")
+        watermark = XLImage(png)
+        watermark.anchor = AbsoluteAnchor(
+            pos=XDRPoint2D(pixels_to_EMU((width - image_width) / 2), pixels_to_EMU(header_height + 6)),
+            ext=XDRPositiveSize2D(pixels_to_EMU(image_width), pixels_to_EMU(image_height)),
+        )
+        sheet.add_image(watermark)
 
 
 def open_pdf_in_viewer(path, *, print_dialog=False):
@@ -2828,10 +2812,8 @@ class HoytasApp(tk.Tk):
                         if cell.column in (6, 7, 8) and ws.title == "Cari Hareketleri": cell.number_format = '#,##0.00'
                         if ws.title == "Beton Satışları" and cell.column in (4, 5, 6): cell.number_format = '#,##0.00'
                         if ws.title == "Bağlı Çekler" and cell.column == 6: cell.number_format = '#,##0.00'
-            if has_logo:
-                save_cari_excel_with_watermark(wb, path, logo_path)
-            else:
-                wb.save(path)
+            prepare_cari_excel_print_layout(wb, logo_path)
+            wb.save(path)
             check = load_workbook(path, read_only=True, data_only=True)
             expected = {"Cari Özeti", "Cari Hareketleri", "Beton Satışları", "Bağlı Çekler"}
             if not expected.issubset(set(check.sheetnames)):
