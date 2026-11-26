@@ -76,6 +76,72 @@ def normalize_dropbox_download_url(url):
     return url
 
 
+def save_cari_excel_with_watermark(workbook, path, logo_path):
+    """Store the logo as an XLSX worksheet background behind editable cells."""
+    from io import BytesIO
+    from xml.etree import ElementTree as ET
+    from PIL import Image
+
+    sheet_ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    document_ns = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    package_ns = "http://schemas.openxmlformats.org/package/2006/relationships"
+    types_ns = "http://schemas.openxmlformats.org/package/2006/content-types"
+    backgrounds = {}
+    parts = {}
+    relationship_parts = set()
+    with Image.open(logo_path) as source:
+        logo = source.convert("RGBA")
+    logo.thumbnail((270, 230), Image.Resampling.LANCZOS)
+    logo.putalpha(logo.getchannel("A").point(lambda alpha: round(alpha * 0.09)))
+
+    for index, sheet in enumerate(workbook.worksheets, 1):
+        width = sum(round(column.width * 7 + 5) for column in sheet.column_dimensions.values())
+        tile = Image.new("RGB", (max(width, logo.width), 560), "white")
+        tile.paste(logo, ((tile.width - logo.width) // 2, 48), logo)
+        png = BytesIO()
+        tile.save(png, format="PNG")
+        sheet_part = f"xl/worksheets/sheet{index}.xml"
+        media_name = f"cari-watermark-{index}.png"
+        rel_part = f"xl/worksheets/_rels/sheet{index}.xml.rels"
+        backgrounds[sheet_part] = (media_name, rel_part)
+        relationship_parts.add(rel_part)
+        parts[f"xl/media/{media_name}"] = png.getvalue()
+
+    with tempfile.TemporaryFile() as saved:
+        workbook.save(saved)
+        with zipfile.ZipFile(saved) as source, zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as output:
+            for entry in source.infolist():
+                if entry.filename in relationship_parts:
+                    continue
+                data = source.read(entry)
+                if entry.filename in backgrounds:
+                    media_name, rel_part = backgrounds[entry.filename]
+                    rels = (ET.fromstring(source.read(rel_part)) if rel_part in source.namelist()
+                            else ET.Element(f"{{{package_ns}}}Relationships"))
+                    ids = {relationship.get("Id") for relationship in rels}
+                    rel_number = 1
+                    while f"rId{rel_number}" in ids:
+                        rel_number += 1
+                    rel_id = f"rId{rel_number}"
+                    ET.SubElement(rels, f"{{{package_ns}}}Relationship", {
+                        "Id": rel_id,
+                        "Type": f"{document_ns}/image",
+                        "Target": f"../media/{media_name}",
+                    })
+                    output.writestr(rel_part, ET.tostring(rels, encoding="utf-8"))
+                    sheet = ET.fromstring(data)
+                    ET.SubElement(sheet, f"{{{sheet_ns}}}picture", {f"{{{document_ns}}}id": rel_id})
+                    data = ET.tostring(sheet, encoding="utf-8")
+                elif entry.filename == "[Content_Types].xml":
+                    types = ET.fromstring(data)
+                    if not any(item.get("Extension") == "png" for item in types):
+                        ET.SubElement(types, f"{{{types_ns}}}Default", {"Extension": "png", "ContentType": "image/png"})
+                    data = ET.tostring(types, encoding="utf-8")
+                output.writestr(entry, data)
+            for name, png in parts.items():
+                output.writestr(name, png)
+
+
 def open_pdf_in_viewer(path, *, print_dialog=False):
     """PDF'yi Edge'e veya tarayıcıya yönlendirmeden Adobe Acrobat/Reader ile aç."""
     path = os.path.abspath(path)
@@ -1003,8 +1069,7 @@ class HoytasApp(tk.Tk):
         self.style.configure("Metric.TLabel", background="#FFFFFF", foreground="#1F3028", font=("Segoe UI", 18, "bold"))
         self._build()
         self._adapt_action_rows(self)
-        # Initial refresh and write operations already synchronize all modules.
-        # Avoid a duplicate full refresh on the initial notebook event.
+        # Other modules load when opened. Avoid repeating the initial dashboard refresh.
         self._last_selected_tab = self.tabs.select()
         self.tabs.bind("<<NotebookTabChanged>>", self._refresh_on_tab_change, add="+")
         # Klavye kısayolları: sekmeler, cari arama ve kayıt formları.
@@ -1015,7 +1080,7 @@ class HoytasApp(tk.Tk):
         self.bind_all("<Control-R>", self._refresh_from_button)
         for _i in range(1, 10):
             self.bind_all(f"<Alt-{_i}>", lambda e, i=_i: self._shortcut_tab(i))
-        self.refresh_all()
+        self._refresh_selected_module()
         if self.membership_client is not None:
             self.deiconify()
         # Sunucu tanımlıysa açılışta sessizce yeni sürüm kontrolü yap.
@@ -1066,7 +1131,7 @@ class HoytasApp(tk.Tk):
                 self._adapt_action_rows(frame)
 
     def _refresh_on_tab_change(self, event=None):
-        """Sekme değişiminde bütün modülleri aynı veritabanı görüntüsüne getir."""
+        """Açılan modülü güncel veritabanı kayıtlarıyla doldur."""
         selected = self.tabs.select()
         if selected == self._last_selected_tab:
             return
@@ -1334,7 +1399,7 @@ class HoytasApp(tk.Tk):
                 dup=c.execute("SELECT 1 FROM gelen_fatura WHERE cari_id=? AND belge_no=?",(cid,d["belge"].strip())).fetchone()
                 if dup: raise ValueError("Bu tedarikçi ve fatura numarası zaten kayıtlı.")
                 c.insert_shared("INSERT INTO gelen_fatura(tarih,vade,cari_id,belge_no,aciklama,ara_toplam,kdv_oran,kdv_tutar,genel_toplam,odenen,durum) VALUES(?,?,?,?,?,?,?,?,?,0,'Ödenmedi')",(tarih,vade,cid,d["belge"].strip(),d["aciklama"],ara,oran,kdv,toplam))
-            self.refresh_all(); messagebox.showinfo("Kaydedildi",f"Gelen fatura kaydedildi.\\nGenel toplam: {toplam:,.2f} TL\\nÖdeme durumu: Ödenmedi",parent=self)
+            self._refresh_selected_module(); messagebox.showinfo("Kaydedildi",f"Gelen fatura kaydedildi.\\nGenel toplam: {toplam:,.2f} TL\\nÖdeme durumu: Ödenmedi",parent=self)
         except Exception as e: messagebox.showerror("Fatura kaydedilemedi",str(e),parent=self)
 
     def odeme_gelen_fatura(self):
@@ -1357,7 +1422,7 @@ class HoytasApp(tk.Tk):
                 c.insert_shared("INSERT INTO hareket(tarih,cari_id,tur,kategori,aciklama,tutar,odeme_yontemi) VALUES(?,?,?,?,?,?,?)",(dt,row[0],"Gider","Alış Faturası Ödemesi",ref,amount,d["yontem"]))
                 if d["yontem"]=="Nakit": c.insert_shared("INSERT INTO nakit_kasa(tarih,yon,kaynak,aciklama,tutar,kullanici) VALUES(?,?,?,?,?,?)",(dt,"Para Çıkışı","Gelen Fatura",ref,amount,getattr(self,"current_user",{}).get("username","")))
                 elif d["yontem"]=="Banka": c.insert_shared("INSERT INTO banka_hareket(tarih,banka,hesap,yon,aciklama,tutar) VALUES(?,?,?,?,?,?)",(dt,"Banka","", "Para Çıkışı",ref,amount))
-            self.refresh_all(); messagebox.showinfo("Ödeme kaydedildi",f"Ödeme: {amount:,.2f} TL\\nKalan: {round(kalan-amount,2):,.2f} TL\\nDurum: {status}",parent=self)
+            self._refresh_selected_module(); messagebox.showinfo("Ödeme kaydedildi",f"Ödeme: {amount:,.2f} TL\\nKalan: {round(kalan-amount,2):,.2f} TL\\nDurum: {status}",parent=self)
         except Exception as e:messagebox.showerror("Ödeme kaydedilemedi",str(e),parent=self)
 
     def edit_gelen_fatura(self):
@@ -1375,7 +1440,7 @@ class HoytasApp(tk.Tk):
             if vade:datetime.strptime(vade,"%Y-%m-%d")
             ara=parse_amount(d["ara"]); oran=parse_amount(d["kdv"]); kdv=round(ara*oran/100,2); total=round(ara+kdv,2); cid=int(d["cari"].split(" - ",1)[0])
             with connect() as c:c.execute("UPDATE gelen_fatura SET tarih=?,vade=?,cari_id=?,belge_no=?,aciklama=?,ara_toplam=?,kdv_oran=?,kdv_tutar=?,genel_toplam=?,durum='Ödenmedi' WHERE id=?",(d["tarih"],vade,cid,d["belge"],d["aciklama"],ara,oran,kdv,total,rid))
-            self.refresh_all()
+            self._refresh_selected_module()
         except Exception as e:messagebox.showerror("Düzenleme başarısız",str(e),parent=self)
 
     def _build_fatura(self):
@@ -2230,7 +2295,7 @@ class HoytasApp(tk.Tk):
         except (UndoUnavailable, sqlite3.Error, ValueError) as error:
             messagebox.showwarning("İşlem geri alınamadı", str(error), parent=parent)
             return
-        self.refresh_all()
+        self._refresh_selected_module()
         refresh = getattr(tree, "_after_undo", None)
         if refresh:
             refresh()
@@ -2461,7 +2526,7 @@ class HoytasApp(tk.Tk):
                 raise
         if window and window.winfo_exists():
             window.destroy()
-        self.refresh_all()
+        self._refresh_selected_module()
         messagebox.showinfo("Cari bağlantısı", f"{len(again_missing)} eksik, {len(again_mismatch)} hatalı hareket onarıldı.\n"
                             f"Belirsiz kayıt: {len(again_ambiguous)}\nYedek: {backup}", parent=self)
 
@@ -2651,6 +2716,9 @@ class HoytasApp(tk.Tk):
         try:
             from openpyxl import Workbook, load_workbook
             from openpyxl.drawing.image import Image as XLImage
+            from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
+            from openpyxl.drawing.xdr import XDRPositiveSize2D
+            from openpyxl.utils.units import pixels_to_EMU
             from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
             from openpyxl.utils import get_column_letter
             with connect() as c:
@@ -2663,12 +2731,16 @@ class HoytasApp(tk.Tk):
             wb = Workbook()
             summary = wb.active; summary.title = "Cari Özeti"
             logo_path = os.path.join(APP_DIR, "hoytas_logo.png")
-            if os.path.isfile(logo_path):
+            has_logo = os.path.isfile(logo_path)
+            if has_logo:
                 logo = XLImage(logo_path)
-                scale = 85 / max(logo.width, logo.height)
-                logo.width *= scale
-                logo.height *= scale
-                summary.add_image(logo, "D2")
+                scale = min(54 / logo.width, 48 / logo.height)
+                logo.anchor = OneCellAnchor(
+                    _from=AnchorMarker(col=0, row=0, colOff=pixels_to_EMU(8), rowOff=pixels_to_EMU(5)),
+                    ext=XDRPositiveSize2D(pixels_to_EMU(logo.width * scale),
+                                          pixels_to_EMU(logo.height * scale)),
+                )
+                summary.add_image(logo)
             summary.append(["HOYTAŞ HAZIR BETON | CARİ HESAP EKSTRESİ"])
             summary.append(["Cari Ünvanı", cari[0]])
             summary.append(["Telefon", cari[1] or "-"])
@@ -2684,7 +2756,6 @@ class HoytasApp(tk.Tk):
             summary.append(["Toplam Beton Satışı (m³)", safe_float(total_m3)])
             summary.append(["Toplam Satış Tutarı (TL)", total_sales_amount])
             summary.append(["Toplam Tahsilat (TL)", total_collected])
-            summary.append(["Kalan Cari Bakiye (TL)", debt-credit])
             summary.append(["Rapor Tarihi", datetime.now().strftime("%d.%m.%Y %H:%M")])
             sh = wb.create_sheet("Cari Hareketleri")
             sh.append(["Tarih", "Tür", "Kategori", "Açıklama", "Ödeme Yöntemi", "Borç (TL)", "Alacak (TL)", "Bakiye (TL)"])
@@ -2697,7 +2768,8 @@ class HoytasApp(tk.Tk):
             ss.append(["Tarih", "Beton Cinsi", "Miktar (m³)", "Birim Fiyat (TL)", "Pompa Ücreti (TL)", "Toplam (TL)", "Ödeme Durumu", "Açıklama"])
             for r in sales: ss.append([display_date(r[0]), r[1], safe_float(r[2] or 0), r[3], r[4], r[5], r[6], format_beton_aciklama(r[1],r[2],r[3],r[4],r[5],r[8],r[7],r[6])])
             sales_total_row = ss.max_row + 1
-            ss.append(["", "TOPLAM BETON (m³)", f"=SUM(C2:C{sales_total_row-1})", "", "", f"=SUM(F2:F{sales_total_row-1})", "", ""])
+            ss.append(["", "TOPLAM BETON (m³)", f"=SUM(C2:C{sales_total_row - 1})" if sales else 0,
+                       "", "", f"=SUM(F2:F{sales_total_row - 1})" if sales else 0, "", ""])
             sc = wb.create_sheet("Bağlı Çekler")
             sc.append(["Yön", "Banka", "Banka Kodu", "Çek No", "Vade", "Tutar (TL)", "Durum", "Notlar"])
             for r in checks: sc.append([r[0], r[1], r[2], r[3], display_date(r[4]), r[5], r[6], r[7]])
@@ -2720,10 +2792,11 @@ class HoytasApp(tk.Tk):
                     ws["A1"].font = title_font
                     ws["A1"].fill = accent_fill
                     ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
-                    ws.row_dimensions[1].height = 30
+                    ws.row_dimensions[1].height = 43 if has_logo else 30
                     for rr in range(2, ws.max_row + 1):
                         ws.cell(rr, 1).font = label_font
-                        ws.cell(rr, 1).fill = accent_fill
+                        if not has_logo:
+                            ws.cell(rr, 1).fill = accent_fill
                     ws.column_dimensions["A"].width = 34
                     ws.column_dimensions["B"].width = 48
                 else:
@@ -2734,18 +2807,20 @@ class HoytasApp(tk.Tk):
                     ws.row_dimensions[1].height = 32
                     ws.auto_filter.ref = ws.dimensions
                     for rr in range(2, ws.max_row + 1):
-                        if rr % 2 == 0:
+                        if not has_logo and rr % 2 == 0:
                             for cell in ws[rr]:
                                 cell.fill = accent_fill
                     if ws.max_row >= 2 and str(ws.cell(ws.max_row, 5).value or "").startswith("TOPLAM"):
                         for cell in ws[ws.max_row]:
                             cell.fill = yellow_fill
                             cell.font = Font(name="Aptos", bold=True, color="24583D")
+                if ws is summary:
+                    continue
                 for col in ws.columns:
                     letter = get_column_letter(col[0].column)
                     max_len = max((len(str(cell.value or "")) for cell in col), default=10)
                     ws.column_dimensions[letter].width = min(max(max_len + 2, 13), 46)
-            for row in (5, 6, 7, 9, 10, 11): summary.cell(row, 2).number_format = '#,##0.00 "TL"'
+            for row in (5, 6, 7, 9, 10): summary.cell(row, 2).number_format = '#,##0.00 "TL"'
             summary.cell(8, 2).number_format = '#,##0.### "m³"'
             for ws in (sh, ss, sc):
                 for row in ws.iter_rows(min_row=2):
@@ -2753,7 +2828,10 @@ class HoytasApp(tk.Tk):
                         if cell.column in (6, 7, 8) and ws.title == "Cari Hareketleri": cell.number_format = '#,##0.00'
                         if ws.title == "Beton Satışları" and cell.column in (4, 5, 6): cell.number_format = '#,##0.00'
                         if ws.title == "Bağlı Çekler" and cell.column == 6: cell.number_format = '#,##0.00'
-            wb.save(path)
+            if has_logo:
+                save_cari_excel_with_watermark(wb, path, logo_path)
+            else:
+                wb.save(path)
             check = load_workbook(path, read_only=True, data_only=True)
             expected = {"Cari Özeti", "Cari Hareketleri", "Beton Satışları", "Bağlı Çekler"}
             if not expected.issubset(set(check.sheetnames)):
@@ -2827,7 +2905,7 @@ class HoytasApp(tk.Tk):
                             db.execute("UPDATE hareket SET tutar=?,tarih=? WHERE id=? AND cari_id=?",
                                        (amount, date, movement_id, cid))
                     win.destroy()
-                    self.refresh_all()
+                    self._refresh_selected_module()
                     messagebox.showinfo("Onarım", f"{name} için {len(planned)} hareket düzeltildi.\nYedek: {backup}",
                                         parent=self)
                     self.bulk_cari_audit()
@@ -2988,7 +3066,7 @@ class HoytasApp(tk.Tk):
                 return messagebox.showwarning("Kayıt mevcut","Bu ünvanla cari zaten kayıtlı.",parent=self)
             c.insert_shared("INSERT INTO cari(tur,unvan,telefon,vergi_no,notlar,created_at) VALUES(?,?,?,?,?,?)",
                 ("Tedarikçi",unvan,d["telefon"],"",d["notlar"],datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-        self.refresh_all()
+        self._refresh_selected_module()
         messagebox.showinfo("Kaydedildi",f"{unvan} tedarikçi carisi oluşturuldu.",parent=self)
 
     def _supplier_choices(self):
@@ -3014,7 +3092,7 @@ class HoytasApp(tk.Tk):
                 return messagebox.showerror("Cari bulunamadı","Seçilen tedarikçi bulunamadı.",parent=self)
             c.insert_shared("INSERT INTO hareket(tarih,cari_id,tur,kategori,aciklama,tutar,odeme_yontemi) VALUES(?,?,?,?,?,?,?)",
                 (tarih,cari_id,"Borç",category,acik,tutar,"Vadeli"))
-        self.refresh_all()
+        self._refresh_selected_module()
         messagebox.showinfo("Alışveriş kaydedildi",f"{tutar:,.2f} TL alışveriş tedarikçi borcuna eklendi.",parent=self)
 
     def pay_supplier(self):
@@ -3048,7 +3126,7 @@ class HoytasApp(tk.Tk):
             else:
                 c.insert_shared("INSERT INTO banka_hareket(tarih,banka,hesap,yon,aciklama,tutar) VALUES(?,?,?,?,?,?)",
                     (tarih,d["banka"] or "Banka","", "Para Çıkışı",acik,tutar))
-        self.refresh_all()
+        self._refresh_selected_module()
         messagebox.showinfo("Ödeme kaydedildi",f"{tutar:,.2f} TL ödeme kaydedildi; tedarikçi cari borcu düşürüldü.",parent=self)
 
     def refresh_alisveris_cari(self):
@@ -3523,7 +3601,7 @@ class HoytasApp(tk.Tk):
                     db.execute("BEGIN IMMEDIATE")
                     save_puantaj_approval(db, pid, first, hourly=rate.get(), revoke=revoke)
                 refresh()
-                self.refresh_all()
+                self._refresh_selected_module()
                 if after_change:
                     after_change()
             except (ValueError, ArithmeticError, sqlite3.Error) as error:
@@ -3658,7 +3736,7 @@ class HoytasApp(tk.Tk):
                     row = db.execute("""SELECT tarih,mastarci,santiye,miktar_m3,birim_fiyat,hakedis_kurus,
                         odenen_kurus,aciklama,musteri FROM mastarci_hesap WHERE id=?""", (record_id,)).fetchone()
                 if row is None:
-                    return self.refresh_all()
+                    return self._refresh_selected_module()
             if action == "delete":
                 if not messagebox.askyesno("Mastar işini sil", "Seçili iş ve ödeme bilgisi silinsin mi?", parent=self):
                     return
@@ -3720,7 +3798,7 @@ class HoytasApp(tk.Tk):
                             WHERE id=? AND odenen_kurus<=?""", (*values, record_id, total))
                         if changed.rowcount != 1:
                             raise ValueError("Hakediş güncel ödenen tutarın altına inemez.")
-            self.refresh_all()
+            self._refresh_selected_module()
         except (ValueError, ArithmeticError, sqlite3.Error) as error:
             messagebox.showerror("Mastarcı işlemi kaydedilemedi", str(error), parent=self)
 
@@ -3771,7 +3849,7 @@ class HoytasApp(tk.Tk):
         with connect() as c:
             c.insert_shared("INSERT INTO nakit_kasa(tarih,yon,kaynak,aciklama,tutar,kullanici) VALUES(?,?,?,?,?,?)",
                 (tarih,d["yon"],d["kaynak"],d["aciklama"],tutar,self.current_user.get("username","")))
-        self.refresh_all()
+        self._refresh_selected_module()
 
     def prompt(self, title, fields, initial=None):
         initial = initial or {}
@@ -3987,7 +4065,7 @@ class HoytasApp(tk.Tk):
                         c.execute("UPDATE banka_hareket SET tarih=?,tutar=? WHERE aciklama=?",(data["tarih"],data["toplam"],ref))
                         c.execute("UPDATE cek SET tutar=? WHERE notlar=?",(data["toplam"],ref))
                 if table=="fatura": c.execute("UPDATE fatura SET ara_toplam=?,kdv_tutar=?,genel_toplam=? WHERE id=?",(data["ara_toplam"],data["kdv_tutar"],data["genel_toplam"],rid))
-            self.refresh_all()
+            self._refresh_selected_module()
         except Exception as e: messagebox.showerror("Düzenleme başarısız",f"Kayıt güncellenemedi. Bilgileri kontrol edin.\n\n{e}",parent=self)
 
     def _build_extra_tabs(self):
@@ -4031,7 +4109,7 @@ class HoytasApp(tk.Tk):
                 if new<0: raise ValueError("Çıkış miktarı mevcut stoktan fazla olamaz.")
                 c.execute("INSERT INTO stok_hareket(tarih,stok_id,yon,miktar,aciklama) VALUES(?,?,?,?,?)",(dt,sid,d["yon"],qty,d["aciklama"]))
                 c.execute("UPDATE stok SET miktar=? WHERE id=?",(new,sid))
-            self.refresh_all()
+            self._refresh_selected_module()
         except Exception as e: messagebox.showerror("Stok hareketi kaydedilemedi",str(e),parent=self)
 
     def add_maas_odeme(self, personel_id=None, kind=None):
@@ -4069,7 +4147,7 @@ class HoytasApp(tk.Tk):
                 db.execute("""INSERT INTO maas_odeme(tarih,personel_id,donem,tutar,yontem,aciklama,islem_turu)
                     VALUES(?,?,?,?,?,?,?)""", (day, pid, data["donem"], amount,
                     method, data["aciklama"], data["islem_turu"]))
-            self.refresh_all()
+            self._refresh_selected_module()
         except (ValueError, sqlite3.Error) as error:
             messagebox.showerror("Personel işlemi kaydedilemedi", str(error), parent=self)
 
@@ -4080,7 +4158,7 @@ class HoytasApp(tk.Tk):
             dt=d["tarih"] or date.today().isoformat(); datetime.strptime(dt,"%Y-%m-%d"); amount=parse_amount(d["tutar"])
             if not d["banka"].strip() or amount<=0:raise ValueError("Banka adı gerekli, tutar sıfırdan büyük olmalı.")
             with connect() as c:c.insert_shared("INSERT INTO banka_hareket(tarih,banka,hesap,yon,aciklama,tutar,karsi_taraf) VALUES(?,?,?,?,?,?,?)",(dt,d["banka"],d["hesap"],d["yon"],d["aciklama"],amount,d["karsi_taraf"]))
-            self.refresh_all()
+            self._refresh_selected_module()
         except Exception as e:messagebox.showerror("Banka işlemi kaydedilemedi",str(e),parent=self)
 
     def add_cari(self):
@@ -4092,7 +4170,7 @@ class HoytasApp(tk.Tk):
         with connect() as c:
             c.insert_shared("INSERT INTO cari(tur,unvan,telefon,vergi_no,notlar,created_at) VALUES(?,?,?,?,?,?)",
                 (d["tur"],d["unvan"],d["telefon"],d["vergi_no"],d["notlar"],datetime.now().isoformat(timespec="seconds")))
-        self.refresh_all()
+        self._refresh_selected_module()
 
     def show_audit_log(self):
         if getattr(self, "current_user", {}).get("role") != "Yönetici":
@@ -4174,7 +4252,7 @@ class HoytasApp(tk.Tk):
         if not d: return
         if not d["ad"]: return messagebox.showwarning("Eksik bilgi","Şantiye adı zorunludur.")
         with connect() as c: c.insert_shared("INSERT INTO santiye(ad,adres,yetkili,telefon,notlar) VALUES(?,?,?,?,?)",(d["ad"],d["adres"],d["yetkili"],d["telefon"],d["notlar"]))
-        self.refresh_all()
+        self._refresh_selected_module()
 
     def selected_invoice_document(self, tree, *, edit=False, review=False):
         selection = tree.selection()
@@ -4336,7 +4414,7 @@ class HoytasApp(tk.Tk):
                     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)""",
                     (tarih,cari_id,d["belge"].strip(),d["aciklama"],miktar,fiyat,ara,kdv_oran,
                      kdv_tutar,toplam,"Taslak",tur,tevkifat_oran,tevkifat_tutar,net))
-            self.refresh_all()
+            self._refresh_selected_module()
             messagebox.showinfo("Fatura taslağı kaydedildi",
                 f"Ara toplam: {ara:,.2f} TL\nKDV: {kdv_tutar:,.2f} TL\n"
                 f"Genel toplam: {toplam:,.2f} TL\nTevkifat: {tevkifat_tutar:,.2f} TL\n"
@@ -4427,7 +4505,7 @@ class HoytasApp(tk.Tk):
                 cek_no = d["cek_no"] or f"TAH-{datetime.now().strftime('%Y%m%d%H%M%S')}"
                 c.insert_shared("INSERT INTO cek(yon,banka,banka_kodu,cari_id,cek_no,kesideci_lehtar,vade,tutar,durum,notlar) VALUES(?,?,?,?,?,?,?,?,?,?)",
                           ("Alınan", d["banka"] or "", "", cari_id, cek_no, cari_unvan, vade, tutar, "Bekliyor", aciklama))
-        self.refresh_all()
+        self._refresh_selected_module()
         messagebox.showinfo("Tahsilat kaydedildi", f"{tutar:,.2f} TL tahsilat kaydedildi. Cari bakiye alınan tutar kadar düşürüldü.", parent=self)
 
     def toggle_cari_archive(self):
@@ -4479,7 +4557,7 @@ class HoytasApp(tk.Tk):
         with connect() as c:
             c.insert_shared("INSERT INTO hareket(tarih,cari_id,tur,kategori,aciklama,tutar,odeme_yontemi) VALUES(?,?,?,?,?,?,?)",
                 (tarih,cari_id,d["tur"],d["kategori"],d["aciklama"],tutar,d["odeme"]))
-        self.refresh_all()
+        self._refresh_selected_module()
 
     def add_cek(self, cari_context=None):
         with connect() as c: cariler=c.execute("SELECT id,unvan FROM cari ORDER BY unvan").fetchall()
@@ -4502,7 +4580,7 @@ class HoytasApp(tk.Tk):
                 # ise cari borcu/alacak yönünde ters etki oluşturur.
                 move_type = "Alacak" if d["yon"] == "Alınan" else "Borç"
                 c.insert_shared("INSERT INTO hareket(tarih,cari_id,tur,kategori,aciklama,tutar,odeme_yontemi) VALUES(?,?,?,?,?,?,?)",(datetime.now().strftime("%Y-%m-%d"),cari_id,move_type,"Çek",f"{d['yon']} çek #{d['cek_no']} - {banka}",tutar,"Çek"))
-        self.refresh_all()
+        self._refresh_selected_module()
 
     def add_stok(self):
         d = self.prompt("Stok Kalemi", [("kod","Stok Kodu","entry",None),("ad","Malzeme Adı","entry",None),
@@ -4518,7 +4596,7 @@ class HoytasApp(tk.Tk):
         with connect() as c:
             c.execute("INSERT INTO stok(kod,ad,birim,miktar,birim_fiyat) VALUES(?,?,?,?,?)",
                       (d["kod"],d["ad"],d["birim"],miktar,fiyat))
-        self.refresh_all()
+        self._refresh_selected_module()
 
     def edit_personel_payment(self, personel_id):
         with connect() as db:
@@ -4540,7 +4618,7 @@ class HoytasApp(tk.Tk):
                 if data["ad"] != row[0]:
                     db.execute("UPDATE personel SET ad=? WHERE id=?", (data["ad"], personel_id))
                 save_personel_iban(db, personel_id, iban)
-            self.refresh_all()
+            self._refresh_selected_module()
         except (ValueError, sqlite3.Error) as error:
             messagebox.showerror("Ödeme bilgileri kaydedilemedi", str(error), parent=self)
 
@@ -4559,7 +4637,7 @@ class HoytasApp(tk.Tk):
             personel = c.execute("INSERT INTO personel(ad,gorev,telefon,maas,notlar) VALUES(?,?,?,?,?)",
                       (d["ad"],d["gorev"],d["telefon"],maas,d["notlar"])).lastrowid
             save_personel_iban(c, personel, iban)
-        self.refresh_all()
+        self._refresh_selected_module()
 
     def add_beton(self, cari_context=None):
         with connect() as c: cariler = c.execute("SELECT id,unvan FROM cari WHERE tur='Müşteri' OR tur='Diğer' ORDER BY unvan").fetchall()
@@ -4615,7 +4693,7 @@ class HoytasApp(tk.Tk):
                     cek_no=d.get("cek_no") or f"SAT-{sale_id}"
                     c.insert_shared("INSERT INTO cek(yon,banka,banka_kodu,cari_id,cek_no,kesideci_lehtar,vade,tutar,durum,notlar) VALUES(?,?,?,?,?,?,?,?,?,?)",
                         ("Alınan",d.get("banka") or "","",cari_id,cek_no,"",vade,toplam,"Bekliyor",ref))
-        self.refresh_all()
+        self._refresh_selected_module()
 
     def delete_selected(self, tree, table):
         sel = tree.selection()
@@ -4677,7 +4755,7 @@ class HoytasApp(tk.Tk):
                     c.execute("DELETE FROM fatura WHERE cari_id=?",(row_id,))
                     c.execute("DELETE FROM gelen_fatura WHERE cari_id=?",(row_id,))
                     c.execute("DELETE FROM cari WHERE id=?",(row_id,))
-                self.refresh_all()
+                self._refresh_selected_module()
                 messagebox.showinfo("Cari silindi", f"Cari ve bağlı kayıtları silindi.\nGeri dönüş yedeği: {backup_path}", parent=self)
             except Exception as e:
                 messagebox.showerror("Silme başarısız", f"Cari silinemedi; işlem geri alındı.\n{e}", parent=self)
@@ -4707,7 +4785,7 @@ class HoytasApp(tk.Tk):
             except sqlite3.IntegrityError:
                 c.rollback()
                 return messagebox.showerror("Kayıt silinemedi", "Bu kayıt başka işlemlere bağlı. Veri kaybını önlemek için silme durduruldu.", parent=self)
-        self.refresh_all()
+        self._refresh_selected_module()
 
     def _selected_check_number(self, tree):
         sel=tree.selection()
@@ -4771,16 +4849,17 @@ class HoytasApp(tk.Tk):
 
     def _refresh_selected_module(self):
         page = self.tabs.select()
-        with connect() as c:
-            self._refresh_module_tables(c, page)
         if page == str(self.cari_tab):
             self.refresh_cari()
-        if page == str(self.borc_takip_tab):
+        elif page == str(self.borc_takip_tab):
             self.refresh_borc_takip()
-        if page == str(self.dashboard):
+        elif page == str(self.dashboard):
             self.refresh_dashboard()
-        if page == str(self.alisveris_cari_tab):
+        elif page == str(self.alisveris_cari_tab):
             self.refresh_alisveris_cari()
+        else:
+            with connect() as c:
+                self._refresh_module_tables(c, page)
 
     def _refresh_module_tables(self, c, page=None):
         if page is None or page == str(self.hareket_tab):
@@ -4927,7 +5006,9 @@ class HoytasApp(tk.Tk):
         invoice_totals = []
         beton_summary_rows=None
         cari_summary_rows=None
-        if report_type != "Fatura Taslağı PDF" and os.path.exists(logo_path):
+        has_logo = os.path.isfile(logo_path)
+        cari_watermark = has_logo and report_type in ("Cari Hesap Ekstresi", "Cari Hareket Dökümü")
+        if has_logo and report_type != "Fatura Taslağı PDF":
             logo=RLImage(logo_path, width=64, height=64, kind="proportional", mask="auto")
             logo.hAlign="CENTER"
             story.extend([logo, Spacer(1,4)])
@@ -5003,14 +5084,15 @@ class HoytasApp(tk.Tk):
             elif report_type=="Cari Hareket Dökümü":
                 cari=c.execute("SELECT unvan FROM cari WHERE id=?",(cari_id,)).fetchone()
                 if not cari: raise ValueError("Cari hesap bulunamadı.")
+                story.extend([Paragraph(escape(cari[0]), cari_title_style), Spacer(1, 6)])
                 moves=c.execute("SELECT tarih,tur,kategori,COALESCE(aciklama,''),COALESCE(odeme_yontemi,''),tutar FROM hareket WHERE cari_id=? AND tur IN ('Borç','Alacak') ORDER BY tarih ASC,id ASC",(cari_id,)).fetchall()
                 rows=[["Tarih","Tür","Kategori","Açıklama","Ödeme Yöntemi","Borç (TL)","Alacak (TL)","Bakiye (TL)"]]
                 balance=0.0
                 for tarih,tur,kategori,acik,odeme,tutar in moves:
                     balance += tutar if tur == "Borç" else -tutar
-                    rows.append([display_date(tarih),tur,kategori,Paragraph(escape(acik),normal),odeme,f"{tutar:,.2f}" if tur == "Borç" else "",f"{tutar:,.2f}" if tur == "Alacak" else "",f"{abs(balance):,.2f}"])
+                    rows.append([display_date(tarih),tur,kategori,Paragraph(escape(acik),normal),odeme,f"{tutar:,.2f}" if tur == "Borç" else "",f"{tutar:,.2f}" if tur == "Alacak" else "",f"{balance:,.2f}"])
                 debit=sum(r[5] for r in moves if r[1] == "Borç"); credit=sum(r[5] for r in moves if r[1] == "Alacak")
-                rows.append(["","","","TOPLAM","",f"{debit:,.2f}",f"{credit:,.2f}",f"{abs(balance):,.2f}"])
+                rows.append(["","","","TOPLAM","",f"{debit:,.2f}",f"{credit:,.2f}",f"{balance:,.2f}"])
             elif report_type=="Cari Borç Takip Raporu":
                 rows=[["Cari Ünvanı", "Toplam Borç (TL)", "Ödenen (TL)", "Kalan Borç (TL)", "Durum"]]
                 debt_rows=c.execute("""SELECT unvan,toplam_borc,toplam_alacak,bakiye
@@ -5204,9 +5286,10 @@ class HoytasApp(tk.Tk):
         header_bg=colors.HexColor("#315C16") if report_type=="Cari Hesap Ekstresi" else colors.HexColor("#315C16")
         header_fg=colors.white
         alternate=colors.HexColor("#F4F8EF") if report_type=="Cari Hesap Ekstresi" else colors.HexColor("#f2f5f8")
+        body_backgrounds = [None, colors.Color(244 / 255, 248 / 255, 239 / 255, alpha=0.35)] if cari_watermark else [colors.white, alternate]
         table.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),header_bg),("TEXTCOLOR",(0,0),(-1,0),header_fg),
             ("FONTNAME",(0,0),(-1,-1),font_name),("FONTSIZE",(0,0),(-1,-1),7),("GRID",(0,0),(-1,-1),0.35,colors.HexColor("#cbd0d4")),
-            ("VALIGN",(0,0),(-1,-1),"TOP"),("ROWBACKGROUNDS",(0,1),(-1,-1),[colors.white,alternate]),
+            ("VALIGN",(0,0),(-1,-1),"TOP"),("ROWBACKGROUNDS",(0,1),(-1,-1),body_backgrounds),
             ("LEFTPADDING",(0,0),(-1,-1),4),("RIGHTPADDING",(0,0),(-1,-1),4),("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),4)]))
         story.append(table)
         if invoice_totals:
@@ -5226,14 +5309,26 @@ class HoytasApp(tk.Tk):
         if cari_summary_rows:
             story.extend([Spacer(1,12), Paragraph("CARİ HESAP ÖZETİ", title_style), Spacer(1,5)])
             summary_table=Table(cari_summary_rows,colWidths=[page_width*0.58,page_width*0.42],hAlign="LEFT")
-            summary_table.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),colors.HexColor("#315C16")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("FONTNAME",(0,0),(-1,-1),font_name),("FONTSIZE",(0,0),(-1,-1),8),("GRID",(0,0),(-1,-1),0.35,colors.HexColor("#cbd0d4")),("ROWBACKGROUNDS",(0,1),(-1,-1),[colors.white,colors.HexColor("#F4F8EF")]),("ALIGN",(1,1),(1,-1),"RIGHT"),("TOPPADDING",(0,0),(-1,-1),6),("BOTTOMPADDING",(0,0),(-1,-1),6)]))
+            summary_table.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),colors.HexColor("#315C16")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("FONTNAME",(0,0),(-1,-1),font_name),("FONTSIZE",(0,0),(-1,-1),8),("GRID",(0,0),(-1,-1),0.35,colors.HexColor("#cbd0d4")),("ROWBACKGROUNDS",(0,1),(-1,-1),body_backgrounds),("ALIGN",(1,1),(1,-1),"RIGHT"),("TOPPADDING",(0,0),(-1,-1),6),("BOTTOMPADDING",(0,0),(-1,-1),6)]))
             story.append(summary_table)
         if beton_summary_rows:
             story.extend([Spacer(1,12), Paragraph("BETON M³ ÖZETİ", title_style), Spacer(1,5)])
             summary_table=Table(beton_summary_rows,colWidths=[page_width*0.38,page_width*0.16,page_width*0.22,page_width*0.24],repeatRows=1)
             summary_table.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),colors.HexColor("#315C16")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("FONTNAME",(0,0),(-1,-1),font_name),("FONTSIZE",(0,0),(-1,-1),8),("GRID",(0,0),(-1,-1),0.35,colors.HexColor("#cbd0d4")),("ROWBACKGROUNDS",(0,1),(-1,-1),[colors.white,colors.HexColor("#F4F8EF")]),("ALIGN",(1,1),(-1,-1),"RIGHT"),("TOPPADDING",(0,0),(-1,-1),5),("BOTTOMPADDING",(0,0),(-1,-1),5)]))
             story.append(summary_table)
-        doc.build(story)
+        def draw_cari_watermark(canvas, document):
+            page_width, page_height = document.pagesize
+            width = page_width * 0.48
+            canvas.saveState()
+            canvas.setFillAlpha(0.09)
+            canvas.drawImage(logo_path, (page_width - width) / 2, (page_height - width) / 2,
+                             width, width, preserveAspectRatio=True, anchor="c", mask="auto")
+            canvas.restoreState()
+
+        if cari_watermark:
+            doc.build(story, onFirstPage=draw_cari_watermark, onLaterPages=draw_cari_watermark)
+        else:
+            doc.build(story)
 
     def check_due_cheques(self):
         today=date.today(); soon=(today+timedelta(days=7)).isoformat(); today_s=today.isoformat()
