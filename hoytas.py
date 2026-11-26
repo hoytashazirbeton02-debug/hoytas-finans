@@ -780,8 +780,10 @@ def resolve_customer_id(connection, value, allowed_types=("Müşteri", "Diğer")
         if not row or (allowed_types and row[1] not in allowed_types):
             raise ValueError("Seçilen cari hesap bulunamadı veya bu işlem için uygun değil.")
         return row[0]
-    rows = connection.execute("SELECT id,unvan FROM cari WHERE tur IN (%s) ORDER BY id" %
-                              ",".join("?" for _ in allowed_types), tuple(allowed_types)).fetchall()
+    sql = "SELECT id,unvan FROM cari"
+    if allowed_types:
+        sql += " WHERE tur IN (" + ",".join("?" for _ in allowed_types) + ")"
+    rows = connection.execute(sql + " ORDER BY id", allowed_types or ()).fetchall()
     query = normalize_search_text(value)
     exact = [row[0] for row in rows if normalize_search_text(row[1]) == query]
     if len(exact) == 1:
@@ -2135,6 +2137,15 @@ class HoytasApp(tk.Tk):
         ttk.Label(self.dashboard, text="Genel Bakış", font=("Segoe UI", 19, "bold")).pack(anchor="w")
         if os.name == "nt":
             ttk.Button(self.dashboard, text="Yazdır", command=self._print_dashboard).pack(anchor="w")
+        self.dashboard_dates = ("0001-01-01", "9999-12-31")
+        self.dashboard_period = tk.StringVar(value="Tüm zamanlar")
+        filters = ttk.Frame(self.dashboard)
+        filters.pack(fill="x", pady=(8, 4))
+        self._action_menu(filters, "Gelir / Gider Dönemi", [
+            (label, lambda period=label: self._set_dashboard_period(period))
+            for label in ("Bugün", "Bu Ay", "Tarih Aralığı", "Tüm zamanlar")
+        ]).pack(side="left")
+        ttk.Label(filters, textvariable=self.dashboard_period).pack(side="left", padx=8)
         self.metrics = ttk.Frame(self.dashboard)
         self.metrics.pack(fill="x", pady=4)
         self.metric_labels = {}
@@ -2202,7 +2213,7 @@ class HoytasApp(tk.Tk):
         return tree
 
     def _print_dashboard(self):
-        rows = [("Gösterge", "Değer")]
+        rows = [("Gösterge", "Değer"), ("Gelir / Gider Dönemi", self.dashboard_period.get())]
         rows.extend((label.master.cget("text"), label.cget("text"))
                     for label in self.metric_labels.values())
         self._print_report_rows("Genel Bakış", rows)
@@ -3974,12 +3985,12 @@ class HoytasApp(tk.Tk):
         # Formlar doğrudan veritabanındaki kayıt alanlarını düzenler; ID değişmez.
         specs={
           "cari":[("tur","Tür","combo",["Müşteri","Tedarikçi","Diğer"]),("unvan","Ünvan / Ad Soyad","entry",None),("telefon","Telefon","entry",None),("vergi_no","Vergi / T.C. No","entry",None),("notlar","Notlar","entry",None)],
-          "hareket":[("tarih","Tarih (GG.AA.YYYY)","entry",None),("tur","Tür","combo",["Gelir","Gider","Borç","Alacak"]),("kategori","Kategori","entry",None),("cari_id","Cari ID (boş bırakılabilir)","entry",None),("aciklama","Açıklama","entry",None),("tutar","Tutar (TL)","entry",None),("odeme_yontemi","Ödeme yöntemi","entry",None)],
-          "cek":[("yon","Yön","combo",["Alınan","Verilen"]),("banka","Banka adı","entry",None),("banka_kodu","Banka kodu","entry",None),("cari_id","Cari ID (boş bırakılabilir)","entry",None),("cek_no","Çek No","entry",None),("kesideci_lehtar","Keşideci / Lehtar","entry",None),("vade","Vade (GG.AA.YYYY)","entry",None),("tutar","Tutar (TL)","entry",None),("durum","Durum","combo",list(CHEQUE_STATES)),("notlar","Notlar","entry",None)],
+          "hareket":[("tarih","Tarih (GG.AA.YYYY)","entry",None),("tur","Tür","combo",["Gelir","Gider","Borç","Alacak"]),("kategori","Kategori","entry",None),("cari_id","Cari hesap ara / seçin","combo_search",None),("aciklama","Açıklama","entry",None),("tutar","Tutar (TL)","entry",None),("odeme_yontemi","Ödeme yöntemi","entry",None)],
+          "cek":[("yon","Yön","combo",["Alınan","Verilen"]),("banka","Banka adı","entry",None),("banka_kodu","Banka kodu","entry",None),("cari_id","Cari hesap ara / seçin","combo_search",None),("cek_no","Çek No","entry",None),("kesideci_lehtar","Keşideci / Lehtar","entry",None),("vade","Vade (GG.AA.YYYY)","entry",None),("tutar","Tutar (TL)","entry",None),("durum","Durum","combo",list(CHEQUE_STATES)),("notlar","Notlar","entry",None)],
           "stok":[("kod","Stok Kodu","entry",None),("ad","Malzeme Adı","entry",None),("birim","Birim","combo",["Adet","Kg","Ton","m³","Litre","Metre","Paket"]),("miktar","Miktar","entry",None),("birim_fiyat","Birim Fiyat (TL)","entry",None)],
           "personel":[("ad","Ad Soyad","entry",None),("gorev","Görev","entry",None),("telefon","Telefon","entry",None),("maas","Aylık Maaş (TL)","entry",None),("notlar","Notlar","entry",None)],
-          "beton_satis":[("tarih","Tarih (GG.AA.YYYY)","entry",None),("cari_id","Cari ID (boş bırakılabilir)","entry",None),("santiye_id","Gideceği şantiye (boş bırakılabilir, elle yazılabilir)","combo_edit",[]),("beton_cinsi","Beton Cinsi","combo",["C16","C20","C25","C30","C35","C40","Şap"]),("miktar_m3","Miktar (m³; ör. 30,5)","entry",None),("birim_fiyat","Birim Fiyat (TL/m³)","entry",None),("pompa_ucreti","Pompa Ücreti (TL)","entry",None),("odeme_durumu","Ödeme Durumu","combo",["Vadeli / Tahsil Edilmedi","Tahsil Edildi"]),("aciklama","Açıklama","entry",None)],
-          "fatura":[("tarih","Tarih (GG.AA.YYYY)","entry",None),("cari_id","Cari ID (boş bırakılabilir)","entry",None),("belge_no","Belge No","entry",None),("aciklama","Açıklama","entry",None),("miktar_m3","Miktar (m³)","entry",None),("birim_fiyat","Birim Fiyat","entry",None),("kdv_oran","KDV (%)","entry",None),("durum","Durum","combo",["Taslak","Hazır","İptal edildi"])],
+          "beton_satis":[("tarih","Tarih (GG.AA.YYYY)","entry",None),("cari_id","Cari hesap ara / seçin","combo_search",None),("santiye_id","Gideceği şantiye (boş bırakılabilir, elle yazılabilir)","combo_edit",[]),("beton_cinsi","Beton Cinsi","combo",["C16","C20","C25","C30","C35","C40","Şap"]),("miktar_m3","Miktar (m³; ör. 30,5)","entry",None),("birim_fiyat","Birim Fiyat (TL/m³)","entry",None),("pompa_ucreti","Pompa Ücreti (TL)","entry",None),("odeme_durumu","Ödeme Durumu","combo",["Vadeli / Tahsil Edilmedi","Tahsil Edildi"]),("aciklama","Açıklama","entry",None)],
+          "fatura":[("tarih","Tarih (GG.AA.YYYY)","entry",None),("cari_id","Cari hesap ara / seçin","combo_search",None),("belge_no","Belge No","entry",None),("aciklama","Açıklama","entry",None),("miktar_m3","Miktar (m³)","entry",None),("birim_fiyat","Birim Fiyat","entry",None),("kdv_oran","KDV (%)","entry",None),("durum","Durum","combo",["Taslak","Hazır","İptal edildi"])],
           "nakit_kasa":[("tarih","Tarih (GG.AA.YYYY)","entry",None),("yon","İşlem","combo",["Para Girişi","Para Çıkışı"]),("kaynak","Kaynak","entry",None),("aciklama","Açıklama","entry",None),("tutar","Tutar (TL)","entry",None)],
           "santiye":[("ad","Şantiye adı","entry",None),("adres","Adres","entry",None),("yetkili","Yetkili","entry",None),("telefon","Telefon","entry",None),("notlar","Notlar","entry",None)],
           "stok_hareket":[("tarih","Tarih","entry",None),("stok_id","Stok ID","entry",None),("yon","Yön","combo",["Giriş","Çıkış"]),("miktar","Miktar","entry",None),("aciklama","Açıklama","entry",None)],
@@ -3993,6 +4004,13 @@ class HoytasApp(tk.Tk):
         initial=dict(zip(cols,row))
         for spec,val in zip(specs[table],row):
             key,label,kind,opts=spec
+            if key == "cari_id":
+                with connect() as c:
+                    customers = c.execute("SELECT id,unvan FROM cari ORDER BY unvan COLLATE NOCASE,id").fetchall()
+                choices = {cid: f"{cid} - {name}" for cid, name in customers}
+                empty = "(Cari seçilmedi)"
+                opts = [empty, *choices.values()]
+                initial[key] = choices.get(val, empty)
             if table=="beton_satis" and key=="santiye_id":
                 with connect() as c: sites=c.execute("SELECT id,ad FROM santiye ORDER BY ad").fetchall()
                 opts=[f"{sid} - {name}" for sid,name in sites]
@@ -4008,7 +4026,10 @@ class HoytasApp(tk.Tk):
                 v=d[key]
                 if table=="beton_satis" and key=="santiye_id":
                     v=self._resolve_site(v)
-                elif key in ("cari_id","santiye_id","stok_id","personel_id"):
+                elif key == "cari_id":
+                    with connect() as c:
+                        v = resolve_customer_id(c, v, allowed_types=None)
+                elif key in ("santiye_id","stok_id","personel_id"):
                     v=int(v) if str(v).strip() else None
                 elif key in ("tutar","miktar","miktar_m3","birim_fiyat","pompa_ucreti","maas","kdv_oran"):
                     v=parse_amount(v) if str(v).strip() else 0
@@ -4827,11 +4848,44 @@ class HoytasApp(tk.Tk):
         tree._all_rows = list(rows)
         self._apply_tree_search(tree)
 
+    def _set_dashboard_period(self, period):
+        today = date.today()
+        if period == "Tarih Aralığı":
+            last_start, last_end = self.dashboard_dates
+            fields = [("start", "Başlangıç (GG.AA.YYYY)", "entry", None),
+                      ("end", "Bitiş (GG.AA.YYYY)", "entry", None)]
+            initial = {"start": display_date(last_start) if last_start != "0001-01-01" else display_date(today.replace(day=1)),
+                       "end": display_date(last_end) if last_end != "9999-12-31" else display_date(today)}
+            values = self.prompt("Gelir / Gider Tarih Aralığı", fields, initial)
+            if not values:
+                return
+            try:
+                start = normalize_date(values["start"])
+                end = normalize_date(values["end"])
+                if not start or not end or start > end:
+                    raise ValueError()
+            except ValueError:
+                return messagebox.showerror("Tarih aralığı", "Başlangıç ve bitiş tarihlerini GG.AA.YYYY biçiminde ve sırasıyla girin.", parent=self)
+        elif period == "Bugün":
+            start = end = today.isoformat()
+        elif period == "Bu Ay":
+            start = today.replace(day=1).isoformat()
+            end = today.replace(day=monthrange(today.year, today.month)[1]).isoformat()
+        else:
+            start, end = "0001-01-01", "9999-12-31"
+        self.dashboard_dates = (start, end)
+        label = period if period != "Tarih Aralığı" else f"{display_date(start)} – {display_date(end)}"
+        self.dashboard_period.set(label)
+        self.refresh_dashboard()
+
     def refresh_dashboard(self):
         with connect() as c:
             cari = c.execute("SELECT COUNT(*) FROM cari").fetchone()[0]
-            gelir = c.execute("SELECT COALESCE(SUM(tutar),0) FROM hareket WHERE tur='Gelir'").fetchone()[0]
-            gider = c.execute("SELECT COALESCE(SUM(tutar),0) FROM hareket WHERE tur='Gider'").fetchone()[0]
+            gelir, gider = c.execute("""SELECT
+                COALESCE(SUM(CASE WHEN tur='Gelir' THEN tutar END),0),
+                COALESCE(SUM(CASE WHEN tur='Gider' THEN tutar END),0)
+                FROM hareket WHERE tarih BETWEEN ? AND ? AND tur IN ('Gelir','Gider')""",
+                self.dashboard_dates).fetchone()
             cek = c.execute("SELECT COALESCE(SUM(tutar),0) FROM cek WHERE durum IN ('Bekliyor','Portföyde','Tahsilde')").fetchone()[0]
             stok = c.execute("SELECT COUNT(*) FROM stok").fetchone()[0]
             debt_rows = c.execute("SELECT cari_id,bakiye,toplam_alacak FROM cari_bakiye WHERE bakiye>0.005").fetchall()
@@ -4844,7 +4898,7 @@ class HoytasApp(tk.Tk):
         self.metric_labels["stok"].config(text=str(stok))
         self.metric_labels["acik_borc"].config(text=f"{acik_borc:,.2f} TL")
         if hasattr(self, "debt_alert_label"):
-            self.debt_alert_label.config(text=f"⚠ ÖDEME BEKLEYEN CARİ: {odemesiz} hesapta alacak kaydı yok. Toplam açık cari bakiyesi: {acik_borc:,.2f} TL. Cari Hesaplar sekmesinde kırmızı/turuncu uyarılarla işaretlenir.")
+            self.debt_alert_label.config(text=f"Açık borçlu cari: {len(debt_rows)}. Alacak kaydı olmayan: {odemesiz}. Toplam açık cari bakiyesi: {acik_borc:,.2f} TL. Cari Hesaplar sekmesinde kırmızı/turuncu uyarılarla işaretlenir.")
 
     def _refresh_selected_module(self):
         page = self.tabs.select()
@@ -4942,7 +4996,7 @@ class HoytasApp(tk.Tk):
 
     def pdf_menu(self):
         with connect() as c: cariler=c.execute("SELECT id,unvan FROM cari ORDER BY unvan").fetchall()
-        choices=["Cari Hesap Ekstresi","Gelir-Gider Raporu","Çek Listesi","Alınan Çekler Dökümü","Verilen Çekler Dökümü",*CHEQUE_STATUS_REPORTS,"Beton Satış Raporu","Beton Satışları Dökümü","Fatura Taslağı PDF","Gelen Alış Faturaları","Kasa ve Banka Raporu"]
+        choices=["Cari Hesap Ekstresi","Gelir-Gider Raporu","Çek Listesi","Alınan Çekler Dökümü","Verilen Çekler Dökümü",*CHEQUE_STATUS_REPORTS,"Fatura Taslağı PDF","Gelen Alış Faturaları","Kasa ve Banka Raporu"]
         d=self.prompt("PDF Raporu Oluştur",[("rapor","Rapor Türü","combo",choices)])
         if not d: return
         cari_id=None
