@@ -2470,10 +2470,9 @@ class HoytasApp(tk.Tk):
             sales_status.pack(side="bottom", anchor="w", before=st.master, pady=(6, 0))
         actions = ttk.Frame(win, padding=(12, 0, 12, 10))
         actions.pack(side="bottom", fill="x", before=nb)
-        self._action_menu(actions, "Döküm Al", [
-            ("Cari Hesap PDF", lambda: self.export_single_cari_pdf(cari_id, "Cari Hesap Ekstresi")),
-            ("Beton Cari PDF", lambda: self.export_single_cari_pdf(cari_id, "Cari Beton Satış Dökümü")),
-            ("Cari Ekstresi Excel", lambda: self.export_single_cari_excel(cari_id, unvan)),
+        self._action_menu(actions, "Cari Ekstresi", [
+            ("PDF", lambda: self.export_single_cari_pdf(cari_id, "Cari Hesap Ekstresi")),
+            ("Excel", lambda: self.export_single_cari_excel(cari_id, unvan)),
         ]).pack(side="left", padx=(0, 8))
         ttk.Button(actions, text="Beton-Cari Bağlantısını Kontrol Et",
                    command=lambda: self.repair_cari_beton_links(cari_id, win)).pack(side="left")
@@ -2914,8 +2913,8 @@ class HoytasApp(tk.Tk):
         ttk.Button(bar, text="Yeni Cari Ekle", command=self.add_cari).pack(side="right")
         ttk.Button(bar,text="Tüm Cari Borçları Kontrol Et",command=self.bulk_cari_audit).pack(side="right",padx=6)
         legend=ttk.Frame(self.cari_tab); legend.pack(fill="x",pady=(6,0))
-        ttk.Label(legend,text="● Ödeme yapılmamış borç",foreground="#9B1C1C",font=("Segoe UI",9,"bold")).pack(side="left",padx=(0,14))
-        ttk.Label(legend,text="● Kısmi ödeme / kalan borç",foreground="#8A4B08",font=("Segoe UI",9,"bold")).pack(side="left",padx=(0,14))
+        ttk.Label(legend,text="● Alacak kaydı olmayan borç",foreground="#9B1C1C",font=("Segoe UI",9,"bold")).pack(side="left",padx=(0,14))
+        ttk.Label(legend,text="● Alacak kaydı olan açık borç",foreground="#8A4B08",font=("Segoe UI",9,"bold")).pack(side="left",padx=(0,14))
         ttk.Label(legend,text="● Borç kapalı",foreground="#216438",font=("Segoe UI",9,"bold")).pack(side="left")
         self.cari_tree = self._tree(self.cari_tab, ("id","tur","unvan","telefon","vergi_no","borc","alacak","bakiye"),
                                     ("ID","Tür","Ünvan","Telefon","Vergi No","Borç (TL)","Alacak (TL)","Kalan Borç (TL)"),
@@ -2930,10 +2929,9 @@ class HoytasApp(tk.Tk):
         row=ttk.Frame(self.cari_tab); row.pack(fill="x",pady=8)
         ttk.Button(row,text="Seçili Kaydı Düzenle",command=lambda:self.edit_selected(self.cari_tree,"cari")).pack(side="left")
         ttk.Button(row,text="Cari Kartını Aç",command=self.show_cari_hareketleri).pack(side="left",padx=(0,8))
-        self._action_menu(row, "Döküm Al", [
-            ("Cari Ekstresi PDF", lambda: self.export_selected_cari_pdf("Cari Hesap Ekstresi")),
-            ("Cari Hareket PDF", lambda: self.export_selected_cari_pdf("Cari Hareket Dökümü")),
-            ("Cari Ekstresi Excel", self.export_selected_cari_excel),
+        self._action_menu(row, "Cari Ekstresi", [
+            ("PDF", lambda: self.export_selected_cari_pdf("Cari Hesap Ekstresi")),
+            ("Excel", self.export_selected_cari_excel),
         ]).pack(side="left", padx=(0, 8))
         ttk.Button(row,text="Tahsilat Al / Cari Borcunu Düş",command=self.cari_tahsilat).pack(side="left",padx=8)
         self._action_menu(row, "Cari İşlemleri", [
@@ -2947,7 +2945,7 @@ class HoytasApp(tk.Tk):
         ttk.Label(bar, text="Cari Borç Takip Listesi", font=("Segoe UI", 16, "bold")).pack(side="left")
         self.borc_tree = self._tree(self.borc_takip_tab,
             ("id", "unvan", "borc", "odenen", "kalan", "durum"),
-            ("ID", "Cari Ünvanı", "Toplam Borç (TL)", "Ödenen (TL)", "Kalan Borç (TL)", "Durum"),
+            ("ID", "Cari Ünvanı", "Toplam Borç (TL)", "Toplam Alacak (TL)", "Kalan Borç (TL)", "Durum"),
             (50, 270, 130, 115, 135, 125), show_id=False, search_label="Cari ara:", print_button=False)
         self.borc_tree.bind("<Double-1>", self._open_debt_row)
         self.borc_tree.bind("<Return>", lambda _event: self._open_selected_debt_cari())
@@ -2958,8 +2956,8 @@ class HoytasApp(tk.Tk):
                                           font=("Segoe UI", 12, "bold"), foreground="#9B1C1C")
         self.borc_total_label.pack(side="left")
         actions = ttk.Frame(self.borc_takip_tab); actions.pack(fill="x", pady=(2, 0))
-        ttk.Button(actions, text="Cari Hareketleri", command=self._open_selected_debt_cari).pack(side="left")
-        ttk.Button(actions, text="PDF Al", command=self._export_debt_list).pack(side="left")
+        ttk.Button(actions, text="Cari Kartını Aç", command=self._open_selected_debt_cari).pack(side="left")
+        ttk.Button(actions, text="Açık Borç Listesi PDF", command=self._export_debt_list).pack(side="left")
         if os.name == "nt":
             ttk.Button(actions, text="Yazdır", command=lambda: self._export_debt_list(print_dialog=True)).pack(side="left")
         ttk.Button(actions, text="Listeyi Yenile", command=self._refresh_from_button).pack(side="left")
@@ -2979,7 +2977,7 @@ class HoytasApp(tk.Tk):
         headings = tuple(tree.heading(column, "text") for column in tree["displaycolumns"])
         summary = ("TOPLAM", *(f"{amount:,.2f}" for amount in amounts), f"{len(rows)} cari")
         try:
-            self._preview_then_save_pdf("Cari Borç Takip Raporu", rows=[headings, *rows, summary],
+            self._preview_then_save_pdf("Açık Borç Listesi", rows=[headings, *rows, summary],
                                         print_dialog=print_dialog)
         except (OSError, ValueError, RuntimeError, ImportError) as error:
             messagebox.showerror("Borç Takip Raporu", str(error), parent=self)
@@ -2996,11 +2994,11 @@ class HoytasApp(tk.Tk):
         rows = self._debt_rows()
         visible = []
         tags = {}
-        for cid, name, debt, paid, remaining in rows:
-            partial = safe_float(paid or 0) > 0.005
-            status = "Kısmi ödeme" if partial else "Ödeme bekliyor"
+        for cid, name, debt, credit, remaining in rows:
+            partial = safe_float(credit or 0) > 0.005
+            status = "Alacak kaydı var" if partial else "Alacak kaydı yok"
             tags[str(cid)] = "debt_partial" if partial else "debt_unpaid"
-            visible.append((cid, name, f"{debt:,.2f}", f"{paid:,.2f}", f"{remaining:,.2f}", status))
+            visible.append((cid, name, f"{debt:,.2f}", f"{credit:,.2f}", f"{remaining:,.2f}", status))
         self.borc_tree._row_tags = tags
         self.fill_tree(self.borc_tree, visible)
 
@@ -3795,9 +3793,11 @@ class HoytasApp(tk.Tk):
             (45,100,190,100,95,125,125,120,125,200))
         row=ttk.Frame(self.beton_tab); row.pack(fill="x",pady=8)
         ttk.Button(row,text="Seçili Satışı Düzenle",command=lambda:self.edit_selected(self.beton_tree,"beton_satis")).pack(side="left")
-        ttk.Button(row,text="Beton Satışları PDF Dökümü",command=lambda:self.export_pdf_report("Beton Satışları Dökümü")).pack(side="left",padx=(8,0))
-        ttk.Button(row,text="Seçili Satışın Cari PDF",command=self.export_selected_beton_cari_pdf).pack(side="left",padx=(8,0))
-        ttk.Button(row,text="Cari Seçerek PDF",command=self.export_beton_cari_sec_pdf).pack(side="left",padx=(8,0))
+        self._action_menu(row, "Beton Satış Dökümü", [
+            ("Tüm Beton Satışları PDF", lambda: self.export_pdf_report("Beton Satışları Dökümü")),
+            ("Seçili Satışın Müşterisi PDF", self.export_selected_beton_cari_pdf),
+            ("Müşteri Seçerek PDF", self.export_beton_cari_sec_pdf),
+        ]).pack(side="left", padx=(8, 0))
         ttk.Button(row,text="Listeyi Yenile",command=self.refresh_all).pack(side="left",padx=(8,0))
         ttk.Button(row, text="Seçili Satışı Sil", command=lambda: self.delete_selected(self.beton_tree,"beton_satis")).pack(side="right")
 
@@ -4829,7 +4829,7 @@ class HoytasApp(tk.Tk):
         self.metric_labels["stok"].config(text=str(stok))
         self.metric_labels["acik_borc"].config(text=f"{acik_borc:,.2f} TL")
         if hasattr(self, "debt_alert_label"):
-            self.debt_alert_label.config(text=f"⚠ ÖDEME BEKLEYEN CARİ: {odemesiz} hesapta hiç tahsilat yok. Toplam açık cari bakiyesi: {acik_borc:,.2f} TL. Cari Hesaplar sekmesinde kırmızı/turuncu uyarılarla işaretlenir.")
+            self.debt_alert_label.config(text=f"⚠ ÖDEME BEKLEYEN CARİ: {odemesiz} hesapta alacak kaydı yok. Toplam açık cari bakiyesi: {acik_borc:,.2f} TL. Cari Hesaplar sekmesinde kırmızı/turuncu uyarılarla işaretlenir.")
 
     def _refresh_selected_module(self):
         page = self.tabs.select()
@@ -4927,7 +4927,7 @@ class HoytasApp(tk.Tk):
 
     def pdf_menu(self):
         with connect() as c: cariler=c.execute("SELECT id,unvan FROM cari ORDER BY unvan").fetchall()
-        choices=["Cari Hesap Ekstresi","Cari Hareket Dökümü","Cari Beton Satış Dökümü","Gelir-Gider Raporu","Çek Listesi","Alınan Çekler Dökümü","Verilen Çekler Dökümü",*CHEQUE_STATUS_REPORTS,"Beton Satış Raporu","Beton Satışları Dökümü","Fatura Taslağı PDF","Gelen Alış Faturaları","Kasa ve Banka Raporu"]
+        choices=["Cari Hesap Ekstresi","Gelir-Gider Raporu","Çek Listesi","Alınan Çekler Dökümü","Verilen Çekler Dökümü",*CHEQUE_STATUS_REPORTS,"Beton Satış Raporu","Beton Satışları Dökümü","Fatura Taslağı PDF","Gelen Alış Faturaları","Kasa ve Banka Raporu"]
         d=self.prompt("PDF Raporu Oluştur",[("rapor","Rapor Türü","combo",choices)])
         if not d: return
         cari_id=None
@@ -4937,7 +4937,7 @@ class HoytasApp(tk.Tk):
             q=self.prompt("Fatura Taslağı Seç",[("fatura","Taslak","combo",[f"{i} - {no} ({tarih})" for i,no,tarih in invoices])])
             if not q:return
             cari_id=int(q["fatura"].split(" - ",1)[0])
-        if d["rapor"] in ("Cari Hesap Ekstresi", "Cari Hareket Dökümü", "Cari Beton Satış Dökümü"):
+        if d["rapor"] == "Cari Hesap Ekstresi":
             names=[f"{i} - {n}" for i,n in cariler]
             if not names: return messagebox.showinfo("Bilgi","Cari ekstresi için önce cari hesap ekleyin.")
             q=self.prompt("Cari Seç",[("cari","Cari Hesap","combo",names)])
@@ -5077,17 +5077,17 @@ class HoytasApp(tk.Tk):
                     rows.append([display_date(tarih),tur,kategori,Paragraph(escape(acik),normal),odeme,f"{tutar:,.2f}" if tur == "Borç" else "",f"{tutar:,.2f}" if tur == "Alacak" else "",f"{balance:,.2f}"])
                 debit=sum(r[5] for r in moves if r[1] == "Borç"); credit=sum(r[5] for r in moves if r[1] == "Alacak")
                 rows.append(["","","","TOPLAM","",f"{debit:,.2f}",f"{credit:,.2f}",f"{balance:,.2f}"])
-            elif report_type=="Cari Borç Takip Raporu":
-                rows=[["Cari Ünvanı", "Toplam Borç (TL)", "Ödenen (TL)", "Kalan Borç (TL)", "Durum"]]
+            elif report_type=="Açık Borç Listesi":
+                rows=[["Cari Ünvanı", "Toplam Borç (TL)", "Toplam Alacak (TL)", "Kalan Borç (TL)", "Durum"]]
                 debt_rows=c.execute("""SELECT unvan,toplam_borc,toplam_alacak,bakiye
                     FROM cari_bakiye WHERE bakiye > 0.005
                     ORDER BY bakiye DESC,unvan COLLATE NOCASE""").fetchall()
-                total_debt=total_paid=total_remaining=0.0
-                for name, debt, paid, remaining in debt_rows:
-                    status="Kısmi ödeme" if paid > 0.005 else "Ödeme bekliyor"
-                    rows.append([Paragraph(escape(name),normal),f"{debt:,.2f}",f"{paid:,.2f}",f"{remaining:,.2f}",status])
-                    total_debt += safe_float(debt or 0); total_paid += safe_float(paid or 0); total_remaining += safe_float(remaining or 0)
-                rows.append(["TOPLAM",f"{total_debt:,.2f}",f"{total_paid:,.2f}",f"{total_remaining:,.2f}",f"{len(debt_rows)} cari"])
+                total_debt=total_credit=total_remaining=0.0
+                for name, debt, credit, remaining in debt_rows:
+                    status="Alacak kaydı var" if credit > 0.005 else "Alacak kaydı yok"
+                    rows.append([Paragraph(escape(name),normal),f"{debt:,.2f}",f"{credit:,.2f}",f"{remaining:,.2f}",status])
+                    total_debt += safe_float(debt or 0); total_credit += safe_float(credit or 0); total_remaining += safe_float(remaining or 0)
+                rows.append(["TOPLAM",f"{total_debt:,.2f}",f"{total_credit:,.2f}",f"{total_remaining:,.2f}",f"{len(debt_rows)} cari"])
                 story.insert(2, Paragraph(f"Borçlu cari sayısı: <b>{len(debt_rows)}</b> &nbsp;&nbsp; | &nbsp;&nbsp; TOPLAM CARİ BORCU: <b>{total_remaining:,.2f} TL</b>", normal))
                 if not debt_rows:
                     rows.append(["Borç bakiyesi bulunan cari hesap yok.","","","",""])
@@ -5257,7 +5257,7 @@ class HoytasApp(tk.Tk):
             "Fatura Taslağı PDF": [0.45, 2.20, 0.85, 1.20, 0.80, 1.35],
             "Gelen Alış Faturaları": [0.85, 0.85, 1.45, 1.05, 1.55, 1.00, 1.00, 1.00, 0.95],
             "Kasa ve Banka Raporu": [0.85, 1.00, 1.15, 1.05, 2.10, 1.00, 1.00],
-            "Cari Borç Takip Raporu": [2.20, 1.05, 1.05, 1.15, 1.20],
+            "Açık Borç Listesi": [2.20, 1.05, 1.05, 1.15, 1.20],
         }.get(report_type)
         col_count = max(1, max(len(r) for r in wrapped_rows))
         if not width_ratios or len(width_ratios) != col_count:
