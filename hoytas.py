@@ -76,6 +76,62 @@ def normalize_dropbox_download_url(url):
     return url
 
 
+def save_cari_excel_with_watermark(workbook, path, logo_path):
+    """Store the logo as an XLSX worksheet background behind editable cells."""
+    from io import BytesIO
+    from xml.etree import ElementTree as ET
+    from PIL import Image
+
+    sheet_ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    document_ns = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    package_ns = "http://schemas.openxmlformats.org/package/2006/relationships"
+    types_ns = "http://schemas.openxmlformats.org/package/2006/content-types"
+    backgrounds = {}
+    parts = {}
+    with Image.open(logo_path) as source:
+        logo = source.convert("RGBA")
+    logo.thumbnail((270, 230), Image.Resampling.LANCZOS)
+    logo.putalpha(logo.getchannel("A").point(lambda alpha: round(alpha * 0.09)))
+
+    for index, sheet in enumerate(workbook.worksheets, 1):
+        width = sum(round(column.width * 7 + 5) for column in sheet.column_dimensions.values())
+        tile = Image.new("RGB", (max(width, logo.width), 560), "white")
+        tile.paste(logo, ((tile.width - logo.width) // 2, 48), logo)
+        png = BytesIO()
+        tile.save(png, format="PNG")
+        sheet_part = f"xl/worksheets/sheet{index}.xml"
+        media_name = f"cari-watermark-{index}.png"
+        backgrounds[sheet_part] = media_name
+        parts[f"xl/media/{media_name}"] = png.getvalue()
+
+    with tempfile.TemporaryFile() as saved:
+        workbook.save(saved)
+        with zipfile.ZipFile(saved) as source, zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as output:
+            for entry in source.infolist():
+                data = source.read(entry)
+                if entry.filename in backgrounds:
+                    sheet = ET.fromstring(data)
+                    # The cari sheets have no drawings, hyperlinks or other relationships.
+                    ET.SubElement(sheet, f"{{{sheet_ns}}}picture", {f"{{{document_ns}}}id": "rId1"})
+                    data = ET.tostring(sheet, encoding="utf-8")
+                    media_name = backgrounds[entry.filename]
+                    rels = ET.Element(f"{{{package_ns}}}Relationships")
+                    ET.SubElement(rels, f"{{{package_ns}}}Relationship", {
+                        "Id": "rId1",
+                        "Type": f"{document_ns}/image",
+                        "Target": f"../media/{media_name}",
+                    })
+                    output.writestr("xl/worksheets/_rels/" + os.path.basename(entry.filename) + ".rels",
+                                    ET.tostring(rels, encoding="utf-8"))
+                elif entry.filename == "[Content_Types].xml":
+                    types = ET.fromstring(data)
+                    ET.SubElement(types, f"{{{types_ns}}}Default", {"Extension": "png", "ContentType": "image/png"})
+                    data = ET.tostring(types, encoding="utf-8")
+                output.writestr(entry, data)
+            for name, png in parts.items():
+                output.writestr(name, png)
+
+
 def open_pdf_in_viewer(path, *, print_dialog=False):
     """PDF'yi Edge'e veya tarayıcıya yönlendirmeden Adobe Acrobat/Reader ile aç."""
     path = os.path.abspath(path)
@@ -2650,7 +2706,6 @@ class HoytasApp(tk.Tk):
             return
         try:
             from openpyxl import Workbook, load_workbook
-            from openpyxl.drawing.image import Image as XLImage
             from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
             from openpyxl.utils import get_column_letter
             with connect() as c:
@@ -2663,12 +2718,7 @@ class HoytasApp(tk.Tk):
             wb = Workbook()
             summary = wb.active; summary.title = "Cari Özeti"
             logo_path = os.path.join(APP_DIR, "hoytas_logo.png")
-            if os.path.isfile(logo_path):
-                logo = XLImage(logo_path)
-                scale = 85 / max(logo.width, logo.height)
-                logo.width *= scale
-                logo.height *= scale
-                summary.add_image(logo, "D2")
+            has_logo = os.path.isfile(logo_path)
             summary.append(["HOYTAŞ HAZIR BETON | CARİ HESAP EKSTRESİ"])
             summary.append(["Cari Ünvanı", cari[0]])
             summary.append(["Telefon", cari[1] or "-"])
@@ -2723,7 +2773,8 @@ class HoytasApp(tk.Tk):
                     ws.row_dimensions[1].height = 30
                     for rr in range(2, ws.max_row + 1):
                         ws.cell(rr, 1).font = label_font
-                        ws.cell(rr, 1).fill = accent_fill
+                        if not has_logo:
+                            ws.cell(rr, 1).fill = accent_fill
                     ws.column_dimensions["A"].width = 34
                     ws.column_dimensions["B"].width = 48
                 else:
@@ -2734,7 +2785,7 @@ class HoytasApp(tk.Tk):
                     ws.row_dimensions[1].height = 32
                     ws.auto_filter.ref = ws.dimensions
                     for rr in range(2, ws.max_row + 1):
-                        if rr % 2 == 0:
+                        if not has_logo and rr % 2 == 0:
                             for cell in ws[rr]:
                                 cell.fill = accent_fill
                     if ws.max_row >= 2 and str(ws.cell(ws.max_row, 5).value or "").startswith("TOPLAM"):
@@ -2753,7 +2804,10 @@ class HoytasApp(tk.Tk):
                         if cell.column in (6, 7, 8) and ws.title == "Cari Hareketleri": cell.number_format = '#,##0.00'
                         if ws.title == "Beton Satışları" and cell.column in (4, 5, 6): cell.number_format = '#,##0.00'
                         if ws.title == "Bağlı Çekler" and cell.column == 6: cell.number_format = '#,##0.00'
-            wb.save(path)
+            if has_logo:
+                save_cari_excel_with_watermark(wb, path, logo_path)
+            else:
+                wb.save(path)
             check = load_workbook(path, read_only=True, data_only=True)
             expected = {"Cari Özeti", "Cari Hareketleri", "Beton Satışları", "Bağlı Çekler"}
             if not expected.issubset(set(check.sheetnames)):
@@ -4927,7 +4981,9 @@ class HoytasApp(tk.Tk):
         invoice_totals = []
         beton_summary_rows=None
         cari_summary_rows=None
-        if report_type != "Fatura Taslağı PDF" and os.path.exists(logo_path):
+        has_logo = os.path.isfile(logo_path)
+        cari_watermark = has_logo and report_type in ("Cari Hesap Ekstresi", "Cari Hareket Dökümü")
+        if has_logo and not cari_watermark and report_type != "Fatura Taslağı PDF":
             logo=RLImage(logo_path, width=64, height=64, kind="proportional", mask="auto")
             logo.hAlign="CENTER"
             story.extend([logo, Spacer(1,4)])
@@ -5204,9 +5260,10 @@ class HoytasApp(tk.Tk):
         header_bg=colors.HexColor("#315C16") if report_type=="Cari Hesap Ekstresi" else colors.HexColor("#315C16")
         header_fg=colors.white
         alternate=colors.HexColor("#F4F8EF") if report_type=="Cari Hesap Ekstresi" else colors.HexColor("#f2f5f8")
+        body_backgrounds = [None, colors.Color(244 / 255, 248 / 255, 239 / 255, alpha=0.35)] if cari_watermark else [colors.white, alternate]
         table.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),header_bg),("TEXTCOLOR",(0,0),(-1,0),header_fg),
             ("FONTNAME",(0,0),(-1,-1),font_name),("FONTSIZE",(0,0),(-1,-1),7),("GRID",(0,0),(-1,-1),0.35,colors.HexColor("#cbd0d4")),
-            ("VALIGN",(0,0),(-1,-1),"TOP"),("ROWBACKGROUNDS",(0,1),(-1,-1),[colors.white,alternate]),
+            ("VALIGN",(0,0),(-1,-1),"TOP"),("ROWBACKGROUNDS",(0,1),(-1,-1),body_backgrounds),
             ("LEFTPADDING",(0,0),(-1,-1),4),("RIGHTPADDING",(0,0),(-1,-1),4),("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),4)]))
         story.append(table)
         if invoice_totals:
@@ -5226,14 +5283,26 @@ class HoytasApp(tk.Tk):
         if cari_summary_rows:
             story.extend([Spacer(1,12), Paragraph("CARİ HESAP ÖZETİ", title_style), Spacer(1,5)])
             summary_table=Table(cari_summary_rows,colWidths=[page_width*0.58,page_width*0.42],hAlign="LEFT")
-            summary_table.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),colors.HexColor("#315C16")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("FONTNAME",(0,0),(-1,-1),font_name),("FONTSIZE",(0,0),(-1,-1),8),("GRID",(0,0),(-1,-1),0.35,colors.HexColor("#cbd0d4")),("ROWBACKGROUNDS",(0,1),(-1,-1),[colors.white,colors.HexColor("#F4F8EF")]),("ALIGN",(1,1),(1,-1),"RIGHT"),("TOPPADDING",(0,0),(-1,-1),6),("BOTTOMPADDING",(0,0),(-1,-1),6)]))
+            summary_table.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),colors.HexColor("#315C16")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("FONTNAME",(0,0),(-1,-1),font_name),("FONTSIZE",(0,0),(-1,-1),8),("GRID",(0,0),(-1,-1),0.35,colors.HexColor("#cbd0d4")),("ROWBACKGROUNDS",(0,1),(-1,-1),body_backgrounds),("ALIGN",(1,1),(1,-1),"RIGHT"),("TOPPADDING",(0,0),(-1,-1),6),("BOTTOMPADDING",(0,0),(-1,-1),6)]))
             story.append(summary_table)
         if beton_summary_rows:
             story.extend([Spacer(1,12), Paragraph("BETON M³ ÖZETİ", title_style), Spacer(1,5)])
             summary_table=Table(beton_summary_rows,colWidths=[page_width*0.38,page_width*0.16,page_width*0.22,page_width*0.24],repeatRows=1)
             summary_table.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),colors.HexColor("#315C16")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("FONTNAME",(0,0),(-1,-1),font_name),("FONTSIZE",(0,0),(-1,-1),8),("GRID",(0,0),(-1,-1),0.35,colors.HexColor("#cbd0d4")),("ROWBACKGROUNDS",(0,1),(-1,-1),[colors.white,colors.HexColor("#F4F8EF")]),("ALIGN",(1,1),(-1,-1),"RIGHT"),("TOPPADDING",(0,0),(-1,-1),5),("BOTTOMPADDING",(0,0),(-1,-1),5)]))
             story.append(summary_table)
-        doc.build(story)
+        def draw_cari_watermark(canvas, document):
+            page_width, page_height = document.pagesize
+            width = page_width * 0.48
+            canvas.saveState()
+            canvas.setFillAlpha(0.09)
+            canvas.drawImage(logo_path, (page_width - width) / 2, (page_height - width) / 2,
+                             width, width, preserveAspectRatio=True, anchor="c", mask="auto")
+            canvas.restoreState()
+
+        if cari_watermark:
+            doc.build(story, onFirstPage=draw_cari_watermark, onLaterPages=draw_cari_watermark)
+        else:
+            doc.build(story)
 
     def check_due_cheques(self):
         today=date.today(); soon=(today+timedelta(days=7)).isoformat(); today_s=today.isoformat()
