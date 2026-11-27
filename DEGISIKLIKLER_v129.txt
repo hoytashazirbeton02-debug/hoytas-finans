@@ -1,0 +1,6 @@
+HOYTAŞ v129
+
+- Cari kartında Cari Hareketleri ve Beton Satışları için ayrı PDF düğmeleri ve yazdırma başlıkları.
+- Müşteri bazlı ve genel beton PDF raporlarında ilk sayfada ve toplam satırında toplam m³.
+- Beton satışında pompa ücretinin altında isteğe bağlı mikser nakliye ücreti. Satış toplamına, bağlı cari kaydına ve raporlara yansır.
+- Önceki satışlar için nakliye ücreti sıfırdır. Şema yükseltilmeden önce veritabanı yedeklenir.

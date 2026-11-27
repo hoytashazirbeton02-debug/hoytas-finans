@@ -74,6 +74,10 @@ def _reverse_row(db, table, record_id, previous, written):
     columns = [column[1] for column in db.execute(f"PRAGMA table_info({table})")]
     old = json.loads(previous) if previous is not None else None
     new = json.loads(written) if written is not None else None
+    if table == "beton_satis" and "mikser_nakliye_ucreti" in columns:
+        for row in (old, new):
+            if isinstance(row, dict):
+                row.setdefault("mikser_nakliye_ucreti", 0)
     if any(row is not None and (row.keys() != set(columns) or row["id"] != record_id) for row in (old, new)):
         raise UndoUnavailable("Kayıt yapısı değiştiği için bu işlem geri alınamadı.")
     current = db.execute(f"SELECT * FROM {table} WHERE id=?", (record_id,)).fetchone()

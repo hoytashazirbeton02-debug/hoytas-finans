@@ -49,9 +49,9 @@ for name in ("linked_beton_sale_id", "index_beton_movements", "audit_beton_cari_
 ns["format_beton_aciklama"] = lambda *a, **k: "Beton"
 db = sqlite3.connect(":memory:")
 db.executescript("""
-CREATE TABLE beton_satis(id INTEGER,tarih TEXT,cari_id INTEGER,beton_cinsi TEXT,miktar_m3 REAL,birim_fiyat REAL,pompa_ucreti REAL,toplam REAL,aciklama TEXT,odeme_durumu TEXT);
+CREATE TABLE beton_satis(id INTEGER,tarih TEXT,cari_id INTEGER,beton_cinsi TEXT,miktar_m3 REAL,birim_fiyat REAL,pompa_ucreti REAL,toplam REAL,aciklama TEXT,odeme_durumu TEXT,mikser_nakliye_ucreti REAL DEFAULT 0);
 CREATE TABLE hareket(id INTEGER PRIMARY KEY,cari_id INTEGER,tarih TEXT,tutar REAL,aciklama TEXT,tur TEXT,kategori TEXT,odeme_yontemi TEXT);
-INSERT INTO beton_satis VALUES(12,'2026-11-18',1,'C30',28,4200,5000,122600,'','Vadeli');
+INSERT INTO beton_satis VALUES(12,'2026-11-18',1,'C30',28,4200,5000,122600,'','Vadeli',0);
 INSERT INTO hareket VALUES(1,1,'2026-11-18',111200,'[SATIŞ:12]','Borç','Satış','Vadeli');
 INSERT INTO hareket VALUES(2,2,'2026-11-18',100,'Beton satış #123 - eski','Borç','Satış','Vadeli');
 INSERT INTO hareket VALUES(3,1,'2026-11-18',200000,'Tahsilat','Alacak','Tahsilat','Banka');

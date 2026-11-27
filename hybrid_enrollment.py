@@ -67,6 +67,8 @@ def install_baseline(target, legacy, client, session, connect, relay):
                 tables["fatura"] = [{"belge_bilgileri": "{}", **row} for row in tables["fatura"]]
             if "arsivli" in {column[1] for column in db.execute("PRAGMA table_info(cari)")}:
                 tables["cari"] = [{"arsivli": 0, **row} for row in tables["cari"]]
+            if "mikser_nakliye_ucreti" in {column[1] for column in db.execute("PRAGMA table_info(beton_satis)")}:
+                tables["beton_satis"] = [{"mikser_nakliye_ucreti": 0, **row} for row in tables["beton_satis"]]
             for table in (*TABLES, *BASELINE_HISTORY):
                 if table in BASELINE_HISTORY and table not in history:
                     continue

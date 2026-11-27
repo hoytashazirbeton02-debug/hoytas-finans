@@ -30,8 +30,8 @@ from hybrid_branding import set_brand_logo
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
-TARGET_SCHEMA_VERSION = 60
-APP_VERSION = 128
+TARGET_SCHEMA_VERSION = 61
+APP_VERSION = 129
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 ISOLATED_PROFILE_DIR = os.environ.get("HOYTAS_PROFILE_DIR", "").strip()
 USER_DATA_DIR = ISOLATED_PROFILE_DIR or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
@@ -221,6 +221,7 @@ CREATE TABLE IF NOT EXISTS beton_satis (
  id INTEGER PRIMARY KEY AUTOINCREMENT, tarih TEXT NOT NULL, cari_id INTEGER, santiye_id INTEGER,
  miktar_m3 REAL NOT NULL, birim_fiyat REAL NOT NULL, toplam REAL NOT NULL,
  pompa_ucreti REAL NOT NULL DEFAULT 0,
+ mikser_nakliye_ucreti REAL NOT NULL DEFAULT 0,
  beton_cinsi TEXT NOT NULL DEFAULT '', odeme_durumu TEXT NOT NULL, aciklama TEXT,
  FOREIGN KEY(cari_id) REFERENCES cari(id), FOREIGN KEY(santiye_id) REFERENCES santiye(id)
 );
@@ -564,7 +565,7 @@ def connect(path=None):
     migrations = {
         "cari": [("arsivli", "INTEGER NOT NULL DEFAULT 0 CHECK(arsivli IN (0,1))")],
         "cek": [("banka_kodu", "TEXT"), ("cari_id", "INTEGER")],
-        "beton_satis": [("santiye_id", "INTEGER"), ("beton_cinsi", "TEXT NOT NULL DEFAULT ''"), ("pompa_ucreti", "REAL NOT NULL DEFAULT 0")],
+        "beton_satis": [("santiye_id", "INTEGER"), ("beton_cinsi", "TEXT NOT NULL DEFAULT ''"), ("pompa_ucreti", "REAL NOT NULL DEFAULT 0"), ("mikser_nakliye_ucreti", "REAL NOT NULL DEFAULT 0")],
         "kullanici": [("kurtarma_hash", "TEXT"), ("kurtarma_salt", "TEXT")],
         "banka_hareket": [("karsi_taraf", "TEXT NOT NULL DEFAULT ''")],
         "maas_odeme": [("islem_turu", "TEXT NOT NULL DEFAULT 'Maaş'")],
@@ -626,6 +627,9 @@ def connect(path=None):
     if current_version < 60:
         for action in ("insert", "update", "delete"):
             con.execute(f"DROP TRIGGER IF EXISTS audit_cari_{action}")
+    if current_version < 61:
+        for action in ("insert", "update", "delete"):
+            con.execute(f"DROP TRIGGER IF EXISTS audit_beton_satis_{action}")
     _install_audit_triggers(con)
     from operation_undo import create_journal
 
@@ -801,14 +805,15 @@ def linked_beton_sale_id(description):
     return int(match.group(1)) if match else None
 
 
-def concrete_sale_totals(m3_value, price_value="", pump_value="0"):
+def concrete_sale_totals(m3_value, price_value="", pump_value="0", transport_value="0"):
     """M³ is mandatory; an omitted unit price means a zero-value cari sale."""
     miktar = parse_amount(m3_value)
     fiyat = parse_amount(price_value or "0")
     pompa = parse_amount(pump_value or "0")
-    if miktar <= 0 or fiyat < 0 or pompa < 0:
-        raise ValueError("Metreküp sıfırdan büyük; fiyat ve pompa ücreti negatif olmamalı.")
-    return miktar, fiyat, pompa, round(miktar * fiyat + pompa, 2)
+    nakliye = parse_amount(transport_value or "0")
+    if miktar <= 0 or min(fiyat, pompa, nakliye) < 0:
+        raise ValueError("Metreküp sıfırdan büyük; fiyat, pompa ve mikser nakliye ücreti geçerli ve negatif olmayan değerler olmalı.")
+    return miktar, fiyat, pompa, nakliye, round(miktar * fiyat + pompa + nakliye, 2)
 
 
 def display_date(value):
@@ -830,16 +835,19 @@ def format_m3(value):
 
 
 def format_beton_aciklama(cinsi, miktar, birim_fiyat, pompa_ucreti=0, toplam=None,
-                          santiye="", notlar="", odeme_durumu=""):
+                          santiye="", notlar="", odeme_durumu="", mikser_nakliye_ucreti=0):
     """Beton satışını her ekranda aynı, eksiksiz ve okunaklı dille açıkla."""
     m3 = safe_float(miktar or 0)
     fiyat = safe_float(birim_fiyat or 0)
     pompa = safe_float(pompa_ucreti or 0)
-    genel = safe_float(toplam) if toplam is not None else round(m3 * fiyat + pompa, 2)
+    nakliye = safe_float(mikser_nakliye_ucreti or 0)
+    genel = safe_float(toplam) if toplam is not None else round(m3 * fiyat + pompa + nakliye, 2)
     parts = [f"{(cinsi or 'Hazır beton').strip()} beton",
              f"{format_m3(m3)} m³",
              f"{fiyat:,.2f} TL/m³"]
     parts.append(f"Pompa: {pompa:,.2f} TL (Var)" if pompa > 0.005 else "Pompa: Yok")
+    if nakliye:
+        parts.append(f"Mikser nakliye: {nakliye:,.2f} TL")
     parts.append(f"Toplam: {genel:,.2f} TL")
     if santiye and str(santiye).strip():
         parts.append(f"Şantiye: {str(santiye).strip()}")
@@ -857,11 +865,11 @@ def sync_beton_sale_cari_movement(db, sale_id):
     receipts/payments or unrelated manual cari movements.
     """
     sale = db.execute("""SELECT tarih,cari_id,beton_cinsi,miktar_m3,birim_fiyat,
-        COALESCE(pompa_ucreti,0),toplam,COALESCE(aciklama,''),COALESCE(odeme_durumu,'')
+        COALESCE(pompa_ucreti,0),toplam,COALESCE(aciklama,''),COALESCE(odeme_durumu,''),mikser_nakliye_ucreti
         FROM beton_satis WHERE id=?""", (sale_id,)).fetchone()
     if not sale:
         raise ValueError(f"Beton satış kaydı bulunamadı: {sale_id}")
-    tarih,cari_id,cinsi,m3,fiyat,pompa,toplam,notlar,durum = sale
+    tarih,cari_id,cinsi,m3,fiyat,pompa,toplam,notlar,durum,nakliye = sale
     linked = [(mid,) for mid, desc in db.execute(
         "SELECT id,aciklama FROM hareket WHERE kategori='Satış' AND tur='Borç' ORDER BY id")
         if linked_beton_sale_id(desc) == sale_id]
@@ -869,7 +877,7 @@ def sync_beton_sale_cari_movement(db, sale_id):
         for (movement_id,) in linked:
             db.execute("DELETE FROM hareket WHERE id=?", (movement_id,))
         return None
-    description = format_beton_aciklama(cinsi,m3,fiyat,pompa,toplam,notlar=notlar,odeme_durumu=durum)
+    description = format_beton_aciklama(cinsi,m3,fiyat,pompa,toplam,notlar=notlar,odeme_durumu=durum,mikser_nakliye_ucreti=nakliye)
     description = f"{description} [SATIŞ:{sale_id}]"
     if linked:
         keep_id = linked[0][0]
@@ -2165,7 +2173,7 @@ class HoytasApp(tk.Tk):
         self.dashboard.bind("<Configure>", lambda event: self.debt_alert_label.configure(
             wraplength=max(event.width - 36, 1)))
 
-    def _tree(self, parent, columns, headings, widths=None, *, show_id=True, search_label="Listede Ara:", print_button=True):
+    def _tree(self, parent, columns, headings, widths=None, *, show_id=True, search_label="Listede Ara:", print_button=True, print_title=None):
         searchbar = ttk.Frame(parent)
         searchbar.pack(fill="x", pady=(6, 0))
         ttk.Label(searchbar, text=search_label).pack(side="left")
@@ -2179,7 +2187,7 @@ class HoytasApp(tk.Tk):
         if not show_id:
             tree.configure(displaycolumns=tuple(col for col in columns if col != "id"))
         numeric = {"borc", "alacak", "bakiye", "tutar", "toplam", "kalan", "odenen",
-                   "pompa", "fiyat", "m3", "miktar", "maas", "ara", "kdv", "tevkifat", "net"}
+                   "pompa", "nakliye", "fiyat", "m3", "miktar", "maas", "ara", "kdv", "tevkifat", "net"}
         for i, (col, head) in enumerate(zip(columns, headings)):
             anchor = "e" if col in numeric else "w"
             tree.heading(col, text=head, anchor=anchor)
@@ -2204,7 +2212,9 @@ class HoytasApp(tk.Tk):
         tree.bind("<Button-3>", lambda event, w=tree: self._tree_context_menu(event, w))
         tree.bind("<Control-Button-1>", lambda event, w=tree: self._tree_context_menu(event, w))
         if print_button and os.name == "nt":
-            if str(parent) in self.tabs.tabs():
+            if print_title:
+                title = print_title
+            elif str(parent) in self.tabs.tabs():
                 title = self.tabs.tab(parent, "text").replace("\n", " ")
             else:
                 title = parent.winfo_toplevel().title()
@@ -2223,8 +2233,19 @@ class HoytasApp(tk.Tk):
         if not items:
             return messagebox.showinfo("Yazdır", "Bu listede yazdırılacak kayıt yok.", parent=tree)
         columns = tree["columns"]
-        rows = [tuple(tree.heading(column, "text") for column in columns)]
-        rows.extend(tuple(tree.item(item, "values")) for item in items)
+        visible = tree["displaycolumns"]
+        visible = columns if visible == ("#all",) else visible
+        indices = [columns.index(column) for column in visible]
+        rows = [tuple(tree.heading(column, "text") for column in visible)]
+        values = [tree.item(item, "values") for item in items]
+        rows.extend(tuple(row[index] for index in indices) for row in values)
+        if "m3" in visible and "nakliye" in visible:
+            totals = {column: sum(float(str(row[columns.index(column)]).replace(",", "")) for row in values
+                                  if row[columns.index(column)] not in ("-", "Yok", ""))
+                      for column in ("m3", "nakliye", "toplam")}
+            footer = {"tarih": "GENEL TOPLAM", "m3": f"{format_m3(totals['m3'])} m³",
+                      "nakliye": f"{totals['nakliye']:,.2f}", "toplam": f"{totals['toplam']:,.2f}"}
+            rows.append(tuple(footer.get(column, "") for column in visible))
         self._print_report_rows(title, rows)
 
     def _print_report_rows(self, title, rows):
@@ -2368,7 +2389,7 @@ class HoytasApp(tk.Tk):
         with connect() as c:
             totals=c.execute("SELECT toplam_borc,toplam_alacak FROM cari_bakiye WHERE cari_id=?",(cari_id,)).fetchone() or (0,0)
             moves=c.execute("SELECT h.id,h.tarih,h.tur,h.kategori,COALESCE(h.aciklama,''),COALESCE(h.odeme_yontemi,''),h.tutar FROM hareket h WHERE h.cari_id=? ORDER BY h.tarih ASC,h.id ASC",(cari_id,)).fetchall()
-            sales=c.execute("SELECT b.id,b.tarih,COALESCE(b.beton_cinsi,''),b.miktar_m3,b.birim_fiyat,COALESCE(b.pompa_ucreti,0),b.toplam,COALESCE(b.odeme_durumu,''),COALESCE(b.aciklama,''),COALESCE(s.ad,'') FROM beton_satis b LEFT JOIN santiye s ON s.id=b.santiye_id WHERE b.cari_id=? ORDER BY b.tarih ASC,b.id ASC",(cari_id,)).fetchall()
+            sales=c.execute("SELECT b.id,b.tarih,COALESCE(b.beton_cinsi,''),b.miktar_m3,b.birim_fiyat,COALESCE(b.pompa_ucreti,0),b.toplam,COALESCE(b.odeme_durumu,''),COALESCE(b.aciklama,''),COALESCE(s.ad,''),b.mikser_nakliye_ucreti FROM beton_satis b LEFT JOIN santiye s ON s.id=b.santiye_id WHERE b.cari_id=? ORDER BY b.tarih ASC,b.id ASC",(cari_id,)).fetchall()
             checks=c.execute("SELECT id,yon,COALESCE(banka,''),COALESCE(cek_no,''),vade,tutar,durum FROM cek WHERE cari_id=? ORDER BY vade ASC,id ASC",(cari_id,)).fetchall()
         balance=totals[0]-totals[1]
         total_m3 = sum(safe_float(r[3] or 0) for r in sales)
@@ -2384,9 +2405,12 @@ class HoytasApp(tk.Tk):
         movement_actions.pack(side="bottom", fill="x", pady=(6, 0))
         mt = self._tree(mf, ("id", "tarih", "tur", "kategori", "aciklama", "odeme", "borc", "alacak", "bakiye"),
                         ("ID", "Tarih", "Tür", "Kategori", "Açıklama", "Ödeme", "Borç TL", "Alacak TL", "Bakiye TL"),
-                        (45, 94, 70, 98, 270, 85, 95, 95, 105), show_id=False)
+                        (45, 94, 70, 98, 270, 85, 95, 95, 105), show_id=False,
+                        print_title=f"{unvan} – Cari Hareketleri")
         ttk.Button(movement_actions, text="Hareketi Düzenle",
                    command=lambda: refresh_card(lambda _cari: self.edit_selected(mt, "hareket"))).pack(side="left")
+        ttk.Button(movement_actions, text="Cari Hareketleri PDF",
+                   command=lambda: self.export_single_cari_pdf(cari_id, "Cari Hareket Dökümü")).pack(side="left", padx=8)
         bal=0
         sales_by_id = {int(r[0]): r for r in sales}
         import re
@@ -2399,21 +2423,24 @@ class HoytasApp(tk.Tk):
             match = re.search(r"(?:\[SATIŞ:(\d+)\]|Beton satış #?(\d+))", description, re.IGNORECASE)
             if match and r[2] == "Borç" and int(match.group(1) or match.group(2)) in sales_by_id:
                 sale = sales_by_id[int(match.group(1) or match.group(2))]
-                description = format_beton_aciklama(sale[2], sale[3], sale[4], sale[5], sale[6], sale[9], sale[8], sale[7])
+                description = format_beton_aciklama(sale[2], sale[3], sale[4], sale[5], sale[6], sale[9], sale[8], sale[7], sale[10])
             movement_rows.append((r[0],r[1],r[2],r[3],description,r[5],f"{debt:,.2f}" if debt else "-",f"{credit:,.2f}" if credit else "-",f"{bal:,.2f}"))
         self.fill_tree(mt, movement_rows)
         sf = ttk.Frame(nb, padding=6)
         nb.add(sf, text="Beton Satışları")
         ttk.Label(sf, text=f"{len(sales)} satış   |   {format_m3(total_m3)} m³   |   {sales_total_tl:,.2f} TL",
                   font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        ttk.Button(sf, text="Beton Satışları PDF",
+                   command=lambda: self.export_single_cari_pdf(cari_id, "Cari Beton Satış Dökümü")).pack(anchor="w")
         sales_status = ttk.Label(sf, font=("Segoe UI", 9, "bold"))
-        st = self._tree(sf, ("id", "tarih", "cinsi", "m3", "fiyat", "pompa", "toplam", "durum", "santiye", "aciklama"),
-                        ("ID", "Tarih", "Beton Cinsi", "Miktar m³", "Birim Fiyat TL/m³", "Pompa TL", "Toplam TL", "Ödeme Durumu", "Şantiye", "Açıklama"),
-                        (42, 90, 95, 85, 128, 95, 110, 135, 130, 250), show_id=False)
+        st = self._tree(sf, ("id", "tarih", "cinsi", "m3", "fiyat", "pompa", "nakliye", "toplam", "durum", "santiye", "aciklama"),
+                        ("ID", "Tarih", "Beton Cinsi", "Miktar m³", "Birim Fiyat TL/m³", "Pompa TL", "Nakliye TL", "Toplam TL", "Ödeme Durumu", "Şantiye", "Açıklama"),
+                        (42, 90, 95, 85, 128, 95, 95, 110, 135, 130, 250), show_id=False,
+                        print_title=f"{unvan} – Beton Satışları")
         sales_rows = []
         for r in sales:
-            detail = format_beton_aciklama(r[2],r[3],r[4],r[5],r[6],r[9],r[8],r[7])
-            sales_rows.append((r[0],r[1],r[2],format_m3(r[3]),f"{r[4]:,.2f}",f"{r[5]:,.2f}" if r[5] else "Yok",f"{r[6]:,.2f}",r[7],r[9] or "-",detail))
+            detail = format_beton_aciklama(r[2],r[3],r[4],r[5],r[6],r[9],r[8],r[7],r[10])
+            sales_rows.append((r[0],r[1],r[2],format_m3(r[3]),f"{r[4]:,.2f}",f"{r[5]:,.2f}" if r[5] else "Yok",f"{r[10]:,.2f}" if r[10] else "-",f"{r[6]:,.2f}",r[7],r[9] or "-",detail))
         self.fill_tree(st, sales_rows)
         cf = ttk.Frame(nb, padding=6)
         nb.add(cf, text="Bağlı Çekler")
@@ -2722,7 +2749,7 @@ class HoytasApp(tk.Tk):
                 if not cari:
                     raise ValueError("Cari hesap bulunamadı.")
                 moves = c.execute("SELECT tarih,tur,kategori,COALESCE(aciklama,''),COALESCE(odeme_yontemi,''),tutar FROM hareket WHERE cari_id=? AND tur IN ('Borç','Alacak') ORDER BY tarih ASC,id ASC", (cari_id,)).fetchall()
-                sales = c.execute("SELECT b.tarih,COALESCE(b.beton_cinsi,''),b.miktar_m3,b.birim_fiyat,COALESCE(b.pompa_ucreti,0),b.toplam,COALESCE(b.odeme_durumu,''),COALESCE(b.aciklama,''),COALESCE(s.ad,'') FROM beton_satis b LEFT JOIN santiye s ON s.id=b.santiye_id WHERE b.cari_id=? ORDER BY b.tarih ASC,b.id ASC", (cari_id,)).fetchall()
+                sales = c.execute("SELECT b.tarih,COALESCE(b.beton_cinsi,''),b.miktar_m3,b.birim_fiyat,COALESCE(b.pompa_ucreti,0),b.toplam,COALESCE(b.odeme_durumu,''),COALESCE(b.aciklama,''),COALESCE(s.ad,''),b.mikser_nakliye_ucreti FROM beton_satis b LEFT JOIN santiye s ON s.id=b.santiye_id WHERE b.cari_id=? ORDER BY b.tarih ASC,b.id ASC", (cari_id,)).fetchall()
                 checks = c.execute("SELECT yon,COALESCE(banka,''),COALESCE(banka_kodu,''),COALESCE(cek_no,''),vade,tutar,durum,COALESCE(notlar,'') FROM cek WHERE cari_id=? ORDER BY vade ASC,id ASC", (cari_id,)).fetchall()
             wb = Workbook()
             summary = wb.active; summary.title = "Cari Özeti"
@@ -2751,8 +2778,8 @@ class HoytasApp(tk.Tk):
             prices = {price for _, price in quantities_and_prices}
             unit_price = (sum(quantity * price for quantity, price in quantities_and_prices) / total_m3
                           if total_m3 > 0 and prices and min(prices) > 0 else None)
-            price_label = ("Ort. Birim Fiyat (pompa hariç)" if len(prices) > 1
-                           else "Birim Fiyat (pompa hariç)")
+            price_label = ("Ort. Birim Fiyat (pompa ve nakliye hariç)" if len(prices) > 1
+                           else "Birim Fiyat (pompa ve nakliye hariç)")
             total_pump = sum(safe_float(row[4] or 0) for row in sales)
             total_sales_amount = sum(safe_float(r[5] or 0) for r in sales)
             total_collected = sum(safe_float(r[5] or 0) for r in moves if r[1] == "Alacak" and ("tahsilat" in str(r[2]).casefold() or "tahsilat" in str(r[3]).casefold()))
@@ -2763,6 +2790,9 @@ class HoytasApp(tk.Tk):
             summary.cell(summary.max_row, 2).number_format = '#,##0.00 "TL/m³"'
             money_rows = [("Toplam Satış Tutarı (TL)", total_sales_amount),
                           ("Toplam Tahsilat (TL)", total_collected)]
+            total_transport = sum(row[9] for row in sales)
+            if total_transport:
+                money_rows.insert(0, ("Toplam Mikser Nakliye (TL)", total_transport))
             if total_pump:
                 money_rows.insert(0, ("Toplam Pompa Ücreti (TL)", total_pump))
             for label, amount in money_rows:
@@ -2777,11 +2807,11 @@ class HoytasApp(tk.Tk):
                 sh.append([display_date(r[0]), r[1], r[2], r[3], r[4], safe_float(r[5] or 0) if r[1] == "Borç" else 0, safe_float(r[5] or 0) if r[1] == "Alacak" else 0, balance])
             sh.append(["", "", "", "", "TOPLAM", debt, credit, balance])
             ss = wb.create_sheet("Beton Satışları")
-            ss.append(["Tarih", "Beton Cinsi", "Miktar (m³)", "Birim Fiyat (TL/m³)", "Pompa Ücreti (TL)", "Toplam (TL)", "Ödeme Durumu", "Açıklama"])
-            for r in sales: ss.append([display_date(r[0]), r[1], safe_float(r[2] or 0), r[3], r[4], r[5], r[6], format_beton_aciklama(r[1],r[2],r[3],r[4],r[5],r[8],r[7],r[6])])
+            ss.append(["Tarih", "Beton Cinsi", "Miktar (m³)", "Birim Fiyat (TL/m³)", "Pompa Ücreti (TL)", "Mikser Nakliye (TL)", "Toplam (TL)", "Ödeme Durumu", "Açıklama"])
+            for r in sales: ss.append([display_date(r[0]), r[1], safe_float(r[2] or 0), r[3], r[4], r[9], r[5], r[6], format_beton_aciklama(r[1],r[2],r[3],r[4],r[5],r[8],r[7],r[6],r[9])])
             sales_total_row = ss.max_row + 1
             ss.append(["", "TOPLAM BETON (m³)", f"=SUM(C2:C{sales_total_row - 1})" if sales else 0,
-                       "", "", f"=SUM(F2:F{sales_total_row - 1})" if sales else 0, "", ""])
+                       "", "", sum(row[9] for row in sales), f"=SUM(G2:G{sales_total_row - 1})" if sales else 0, "", ""])
             sc = wb.create_sheet("Bağlı Çekler")
             sc.append(["Yön", "Banka", "Banka Kodu", "Çek No", "Vade", "Tutar (TL)", "Durum", "Notlar"])
             for r in checks: sc.append([r[0], r[1], r[2], r[3], display_date(r[4]), r[5], r[6], r[7]])
@@ -2837,7 +2867,7 @@ class HoytasApp(tk.Tk):
                 for row in ws.iter_rows(min_row=2):
                     for cell in row:
                         if cell.column in (6, 7, 8) and ws.title == "Cari Hareketleri": cell.number_format = '#,##0.00'
-                        if ws.title == "Beton Satışları" and cell.column in (4, 5, 6): cell.number_format = '#,##0.00'
+                        if ws.title == "Beton Satışları" and cell.column in (4, 5, 6, 7): cell.number_format = '#,##0.00'
                         if ws.title == "Bağlı Çekler" and cell.column == 6: cell.number_format = '#,##0.00'
             prepare_cari_excel_print_layout(wb, logo_path)
             wb.save(path)
@@ -3814,9 +3844,9 @@ class HoytasApp(tk.Tk):
         bar = ttk.Frame(self.beton_tab); bar.pack(fill="x")
         ttk.Label(bar, text="Beton Satış ve Metreküp Takibi", font=("Segoe UI", 16, "bold")).pack(side="left")
         ttk.Button(bar, text="Yeni Beton Satışı", command=self.add_beton).pack(side="right")
-        self.beton_tree = self._tree(self.beton_tab, ("id","tarih","cari","cinsi","m3","fiyat","pompa","toplam","durum","aciklama"),
-            ("ID","Tarih","Müşteri","Beton Cinsi","Miktar (m³)","Birim Fiyat (TL)","Pompa Ücreti (TL)","Toplam (TL)","Ödeme Durumu","Açıklama"),
-            (45,100,190,100,95,125,125,120,125,200))
+        self.beton_tree = self._tree(self.beton_tab, ("id","tarih","cari","cinsi","m3","fiyat","pompa","nakliye","toplam","durum","aciklama"),
+            ("ID","Tarih","Müşteri","Beton Cinsi","Miktar (m³)","Birim Fiyat (TL)","Pompa Ücreti (TL)","Nakliye (TL)","Toplam (TL)","Ödeme Durumu","Açıklama"),
+            (45,100,190,100,95,125,125,110,120,125,200))
         row=ttk.Frame(self.beton_tab); row.pack(fill="x",pady=8)
         ttk.Button(row,text="Seçili Satışı Düzenle",command=lambda:self.edit_selected(self.beton_tree,"beton_satis")).pack(side="left")
         self._action_menu(row, "Beton Satış Dökümü", [
@@ -3989,7 +4019,7 @@ class HoytasApp(tk.Tk):
           "cek":[("yon","Yön","combo",["Alınan","Verilen"]),("banka","Banka adı","entry",None),("banka_kodu","Banka kodu","entry",None),("cari_id","Cari hesap ara / seçin","combo_search",None),("cek_no","Çek No","entry",None),("kesideci_lehtar","Keşideci / Lehtar","entry",None),("vade","Vade (GG.AA.YYYY)","entry",None),("tutar","Tutar (TL)","entry",None),("durum","Durum","combo",list(CHEQUE_STATES)),("notlar","Notlar","entry",None)],
           "stok":[("kod","Stok Kodu","entry",None),("ad","Malzeme Adı","entry",None),("birim","Birim","combo",["Adet","Kg","Ton","m³","Litre","Metre","Paket"]),("miktar","Miktar","entry",None),("birim_fiyat","Birim Fiyat (TL)","entry",None)],
           "personel":[("ad","Ad Soyad","entry",None),("gorev","Görev","entry",None),("telefon","Telefon","entry",None),("maas","Aylık Maaş (TL)","entry",None),("notlar","Notlar","entry",None)],
-          "beton_satis":[("tarih","Tarih (GG.AA.YYYY)","entry",None),("cari_id","Cari hesap ara / seçin","combo_search",None),("santiye_id","Gideceği şantiye (boş bırakılabilir, elle yazılabilir)","combo_edit",[]),("beton_cinsi","Beton Cinsi","combo",["C16","C20","C25","C30","C35","C40","Şap"]),("miktar_m3","Miktar (m³; ör. 30,5)","entry",None),("birim_fiyat","Birim Fiyat (TL/m³)","entry",None),("pompa_ucreti","Pompa Ücreti (TL)","entry",None),("odeme_durumu","Ödeme Durumu","combo",["Vadeli / Tahsil Edilmedi","Tahsil Edildi"]),("aciklama","Açıklama","entry",None)],
+          "beton_satis":[("tarih","Tarih (GG.AA.YYYY)","entry",None),("cari_id","Cari hesap ara / seçin","combo_search",None),("santiye_id","Gideceği şantiye (boş bırakılabilir, elle yazılabilir)","combo_edit",[]),("beton_cinsi","Beton Cinsi","combo",["C16","C20","C25","C30","C35","C40","Şap"]),("miktar_m3","Miktar (m³; ör. 30,5)","entry",None),("birim_fiyat","Birim Fiyat (TL/m³)","entry",None),("pompa_ucreti","Pompa Ücreti (TL)","entry",None),("mikser_nakliye_ucreti","Mikser Nakliye Ücreti (TL)","entry",None),("odeme_durumu","Ödeme Durumu","combo",["Vadeli / Tahsil Edilmedi","Tahsil Edildi"]),("aciklama","Açıklama","entry",None)],
           "fatura":[("tarih","Tarih (GG.AA.YYYY)","entry",None),("cari_id","Cari hesap ara / seçin","combo_search",None),("belge_no","Belge No","entry",None),("aciklama","Açıklama","entry",None),("miktar_m3","Miktar (m³)","entry",None),("birim_fiyat","Birim Fiyat","entry",None),("kdv_oran","KDV (%)","entry",None),("durum","Durum","combo",["Taslak","Hazır","İptal edildi"])],
           "nakit_kasa":[("tarih","Tarih (GG.AA.YYYY)","entry",None),("yon","İşlem","combo",["Para Girişi","Para Çıkışı"]),("kaynak","Kaynak","entry",None),("aciklama","Açıklama","entry",None),("tutar","Tutar (TL)","entry",None)],
           "santiye":[("ad","Şantiye adı","entry",None),("adres","Adres","entry",None),("yetkili","Yetkili","entry",None),("telefon","Telefon","entry",None),("notlar","Notlar","entry",None)],
@@ -4031,19 +4061,17 @@ class HoytasApp(tk.Tk):
                         v = resolve_customer_id(c, v, allowed_types=None)
                 elif key in ("santiye_id","stok_id","personel_id"):
                     v=int(v) if str(v).strip() else None
-                elif key in ("tutar","miktar","miktar_m3","birim_fiyat","pompa_ucreti","maas","kdv_oran"):
+                elif key in ("tutar","miktar","miktar_m3","birim_fiyat","pompa_ucreti","mikser_nakliye_ucreti","maas","kdv_oran"):
                     v=parse_amount(v) if str(v).strip() else 0
                 vals.append(v)
             data=dict(zip(cols,vals))
             if "tarih" in data and data["tarih"]: datetime.strptime(data["tarih"],"%Y-%m-%d")
             if table=="beton_satis":
-                data["miktar_m3"]=parse_amount(data["miktar_m3"])
-                if data["miktar_m3"]<=0: raise ValueError("Metreküp sıfırdan büyük olmalı.")
-                if data["birim_fiyat"] < 0: raise ValueError("Birim fiyat negatif olamaz.")
+                *_, data["toplam"] = concrete_sale_totals(
+                    data["miktar_m3"], data["birim_fiyat"], data["pompa_ucreti"], data["mikser_nakliye_ucreti"])
                 if data["cari_id"] is not None:
                     with connect() as check_c: 
                         if not check_c.execute("SELECT 1 FROM cari WHERE id=?",(data["cari_id"],)).fetchone(): raise ValueError("Seçilen cari hesap bulunamadı.")
-                data["toplam"]=round(data["miktar_m3"]*data["birim_fiyat"]+data.get("pompa_ucreti",0),2)
             if table=="fatura":
                 data["miktar_m3"]=parse_amount(data["miktar_m3"]); data["ara_toplam"]=round(data["miktar_m3"]*data["birim_fiyat"],2); data["kdv_tutar"]=round(data["ara_toplam"]*data["kdv_oran"]/100,2); data["genel_toplam"]=round(data["ara_toplam"]+data["kdv_tutar"],2); data["tahsil_edilecek"]=data["genel_toplam"]
             if table in ("stok","personel") and any(v is None for v in vals): raise ValueError("Zorunlu alanları kontrol edin.")
@@ -4669,6 +4697,7 @@ class HoytasApp(tk.Tk):
             ("cari","Müşteri ara (ünvan yazın) / seçin","combo_search",names),("santiye","Gideceği şantiye (elle yazabilirsiniz)","combo_edit",site_names),("beton_cinsi","Beton Cinsi","combo",["C16","C20","C25","C30","C35","C40","Şap"]),("m3","Miktar (m³; ör. 30,5)","entry",None),
             ("fiyat","Birim Fiyat (TL/m³)","entry",None),
             ("pompa_ucreti","Pompa Ücreti (TL, yoksa 0)","entry",None),
+            ("mikser_nakliye_ucreti","Mikser Nakliye Ücreti (TL, isteğe bağlı)","entry",None),
             ("durum","Ödeme Durumu","combo",["Vadeli / Tahsil Edilmedi","Tahsil Edildi"]),
             ("odeme_yontemi","Tahsilat yöntemi (ödendiyse)","combo",["Nakit","Banka Havalesi / EFT","Çek"]),
             ("banka","Banka adı (banka/çek ise)","entry",None),
@@ -4679,7 +4708,8 @@ class HoytasApp(tk.Tk):
         try:
             tarih=d["tarih"] or datetime.now().strftime("%Y-%m-%d")
             datetime.strptime(tarih,"%Y-%m-%d")
-            miktar,fiyat,pompa_ucreti,toplam=concrete_sale_totals(d["m3"],d.get("fiyat"),d.get("pompa_ucreti"))
+            miktar,fiyat,pompa_ucreti,nakliye,toplam=concrete_sale_totals(
+                d["m3"],d.get("fiyat"),d.get("pompa_ucreti"),d.get("mikser_nakliye_ucreti"))
             cari_value = (d.get("cari") or "").strip()
             with connect() as lookup_db:
                 cari_id = resolve_customer_id(lookup_db, cari_value)
@@ -4687,10 +4717,10 @@ class HoytasApp(tk.Tk):
             if d["durum"] == "Tahsil Edildi" and d.get("odeme_yontemi") == "Çek":
                 datetime.strptime(d.get("vade") or tarih,"%Y-%m-%d")
         except ValueError:
-            return messagebox.showerror("Hatalı bilgi","Tarih GG.AA.YYYY olmalı; metreküp sıfırdan büyük olmalı. Fiyatı boş bırakabilirsiniz (0 TL kaydedilir); fiyat ve pompa ücreti negatif olamaz. 30,5 gibi küsurat girebilirsiniz.")
+            return messagebox.showerror("Hatalı bilgi","Tarih GG.AA.YYYY olmalı; metreküp sıfırdan büyük olmalı. Fiyatı boş bırakabilirsiniz (0 TL kaydedilir); fiyat, pompa ve mikser nakliye ücreti negatif olamaz. 30,5 gibi küsurat girebilirsiniz.")
         with connect() as c:
-            cur=c.insert_shared("INSERT INTO beton_satis(tarih,cari_id,santiye_id,beton_cinsi,miktar_m3,birim_fiyat,pompa_ucreti,toplam,odeme_durumu,aciklama) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                (tarih,cari_id,santiye_id,d["beton_cinsi"],miktar,fiyat,pompa_ucreti,toplam,d["durum"],d["aciklama"]))
+            cur=c.insert_shared("INSERT INTO beton_satis(tarih,cari_id,santiye_id,beton_cinsi,miktar_m3,birim_fiyat,pompa_ucreti,mikser_nakliye_ucreti,toplam,odeme_durumu,aciklama) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (tarih,cari_id,santiye_id,d["beton_cinsi"],miktar,fiyat,pompa_ucreti,nakliye,toplam,d["durum"],d["aciklama"]))
             sale_id=cur.lastrowid
             # Her satış için cari bağlantısını tek ortak fonksiyon üzerinden oluştur.
             sync_beton_sale_cari_movement(c, sale_id)
@@ -4934,12 +4964,12 @@ class HoytasApp(tk.Tk):
             self.fill_tree(self.personel_tree, c.execute("SELECT id,ad,gorev,telefon,printf('%.2f',maas),notlar FROM personel ORDER BY ad").fetchall())
         if page is None or page == str(self.beton_tab):
             beton_rows = c.execute("""SELECT b.id,b.tarih,COALESCE(c.unvan,''),COALESCE(b.beton_cinsi,''),b.miktar_m3,
-                b.birim_fiyat,COALESCE(b.pompa_ucreti,0),b.toplam,b.odeme_durumu,COALESCE(b.aciklama,''),COALESCE(s.ad,'')
+                b.birim_fiyat,COALESCE(b.pompa_ucreti,0),b.toplam,b.odeme_durumu,COALESCE(b.aciklama,''),COALESCE(s.ad,''),b.mikser_nakliye_ucreti
                 FROM beton_satis b LEFT JOIN cari c ON c.id=b.cari_id LEFT JOIN santiye s ON s.id=b.santiye_id ORDER BY b.tarih ASC,b.id ASC""").fetchall()
             beton_display = []
             for b in beton_rows:
-                detail = format_beton_aciklama(b[3],b[4],b[5],b[6],b[7],b[10],b[9],b[8])
-                beton_display.append((b[0],b[1],(b[2] + (" / " + b[10] if b[10] else "")),b[3],format_m3(b[4]),f"{safe_float(b[5]):,.2f}",f"{safe_float(b[6]):,.2f}" if safe_float(b[6]) else "Yok",f"{safe_float(b[7]):,.2f}",b[8],detail))
+                detail = format_beton_aciklama(b[3],b[4],b[5],b[6],b[7],b[10],b[9],b[8],b[11])
+                beton_display.append((b[0],b[1],(b[2] + (" / " + b[10] if b[10] else "")),b[3],format_m3(b[4]),f"{safe_float(b[5]):,.2f}",f"{safe_float(b[6]):,.2f}" if safe_float(b[6]) else "Yok",f"{b[11]:,.2f}" if b[11] else "-",f"{safe_float(b[7]):,.2f}",b[8],detail))
             self.fill_tree(self.beton_tree, beton_display)
             if hasattr(self, "santiye_tree"):
                 try:
@@ -5101,7 +5131,7 @@ class HoytasApp(tk.Tk):
                     ('BOTTOMPADDING',(0,0),(-1,-1),6)]))
                 story.extend([info,Spacer(1,10)])
                 rows=[["Tarih","Fiş No","İşlem Türü","Belge No","Açıklama","Borç (TL)","Alacak (TL)","Bakiye (TL)"]]
-                sales_for_pdf = {r[0]: r[1:] for r in c.execute("SELECT b.id,COALESCE(b.beton_cinsi,''),b.miktar_m3,b.birim_fiyat,COALESCE(b.pompa_ucreti,0),b.toplam,COALESCE(b.aciklama,''),COALESCE(b.odeme_durumu,''),COALESCE(s.ad,'') FROM beton_satis b LEFT JOIN santiye s ON s.id=b.santiye_id WHERE b.cari_id=?", (cari_id,)).fetchall()}
+                sales_for_pdf = {r[0]: r[1:] for r in c.execute("SELECT b.id,COALESCE(b.beton_cinsi,''),b.miktar_m3,b.birim_fiyat,COALESCE(b.pompa_ucreti,0),b.toplam,COALESCE(b.aciklama,''),COALESCE(b.odeme_durumu,''),COALESCE(s.ad,''),b.mikser_nakliye_ucreti FROM beton_satis b LEFT JOIN santiye s ON s.id=b.santiye_id WHERE b.cari_id=?", (cari_id,)).fetchall()}
                 bal=0.0
                 for move_id,tarih,tur,kat,acik,odeme,tutar in moves:
                     import re
@@ -5109,8 +5139,8 @@ class HoytasApp(tk.Tk):
                     if sale_match and tur == "Borç":
                         sid = int(sale_match.group(1) or sale_match.group(2)); sale=sales_for_pdf.get(sid)
                         if sale:
-                            cinsi,m3,fiyat,pompa,toplam_satis,notlar,durum,santiye=sale
-                            acik=format_beton_aciklama(cinsi,m3,fiyat,pompa,toplam_satis,santiye,notlar,durum)
+                            cinsi,m3,fiyat,pompa,toplam_satis,notlar,durum,santiye,nakliye=sale
+                            acik=format_beton_aciklama(cinsi,m3,fiyat,pompa,toplam_satis,santiye,notlar,durum,nakliye)
                     bal += tutar if tur=="Borç" else -tutar
                     balance_label=f"{abs(bal):,.2f} ({'B' if bal>=0 else 'A'})"
                     rows.append([display_date(tarih),f"{move_id:07d}",kat,"",Paragraph(escape(acik),normal),f"{tutar:,.2f}" if tur=="Borç" else "",f"{tutar:,.2f}" if tur=="Alacak" else "",balance_label])
@@ -5126,14 +5156,15 @@ class HoytasApp(tk.Tk):
             elif report_type=="Cari Beton Satış Dökümü":
                 cari=c.execute("SELECT unvan,telefon,vergi_no FROM cari WHERE id=?",(cari_id,)).fetchone()
                 if not cari: raise ValueError("Cari hesap bulunamadı.")
-                sales=c.execute("SELECT b.tarih,COALESCE(b.beton_cinsi,''),b.miktar_m3,b.birim_fiyat,COALESCE(b.pompa_ucreti,0),b.toplam,COALESCE(b.odeme_durumu,''),COALESCE(s.ad,''),COALESCE(b.aciklama,'') FROM beton_satis b LEFT JOIN santiye s ON s.id=b.santiye_id WHERE b.cari_id=? ORDER BY b.tarih ASC,b.id ASC",(cari_id,)).fetchall()
+                sales=c.execute("SELECT b.tarih,COALESCE(b.beton_cinsi,''),b.miktar_m3,b.birim_fiyat,COALESCE(b.pompa_ucreti,0),b.toplam,COALESCE(b.odeme_durumu,''),COALESCE(s.ad,''),COALESCE(b.aciklama,''),b.mikser_nakliye_ucreti FROM beton_satis b LEFT JOIN santiye s ON s.id=b.santiye_id WHERE b.cari_id=? ORDER BY b.tarih ASC,b.id ASC",(cari_id,)).fetchall()
                 story.append(Paragraph(f"<b>Cari:</b> {escape(cari[0])} &nbsp;&nbsp; <b>Telefon:</b> {escape(cari[1] or '-')}",normal))
-                rows=[["Tarih","Beton Cinsi","Miktar (m³)","Birim Fiyat (TL)","Pompa (TL)","Toplam (TL)","Ödeme Durumu","Şantiye","Açıklama"]]
+                rows=[["Tarih","Beton Cinsi","Miktar (m³)","Birim Fiyat (TL)","Pompa (TL)","Mikser Nakliye (TL)","Toplam (TL)","Ödeme Durumu","Şantiye","Açıklama"]]
                 for r in sales:
-                    rows.append([display_date(r[0]),r[1],format_m3(r[2]),f"{r[3]:,.2f}",f"{r[4]:,.2f}" if r[4] else "-",f"{r[5]:,.2f}",r[6],Paragraph(escape(r[7] or '-'),normal),Paragraph(escape(r[8]),normal)])
+                    rows.append([display_date(r[0]),r[1],format_m3(r[2]),f"{r[3]:,.2f}",f"{r[4]:,.2f}" if r[4] else "-",f"{r[9]:,.2f}" if r[9] else "-",f"{r[5]:,.2f}",r[6],Paragraph(escape(r[7] or '-'),normal),Paragraph(escape(r[8]),normal)])
                 total_m3=sum(safe_float(r[2] or 0) for r in sales); total_amount=sum(safe_float(r[5] or 0) for r in sales)
-                rows.append(["GENEL TOPLAM","",format_m3(total_m3),"","",f"{total_amount:,.2f}","","",f"{len(sales)} satış"])
-                story.insert(2,Paragraph(f"Toplam beton miktarı: <b>{format_m3(total_m3)} m³</b> &nbsp;&nbsp; | &nbsp;&nbsp; Toplam satış: <b>{total_amount:,.2f} TL</b>",normal))
+                rows.append(["GENEL TOPLAM","",f"{format_m3(total_m3)} m³","",f"{sum(r[4] for r in sales):,.2f}",
+                             f"{sum(r[9] for r in sales):,.2f}",f"{total_amount:,.2f}","","",f"{len(sales)} satış"])
+                story.append(Paragraph(f"Toplam beton miktarı: <b>{format_m3(total_m3)} m³</b> &nbsp;&nbsp; | &nbsp;&nbsp; Toplam satış: <b>{total_amount:,.2f} TL</b>",normal))
             elif report_type=="Cari Hareket Dökümü":
                 cari=c.execute("SELECT unvan FROM cari WHERE id=?",(cari_id,)).fetchone()
                 if not cari: raise ValueError("Cari hesap bulunamadı.")
@@ -5280,12 +5311,15 @@ class HoytasApp(tk.Tk):
                 rows.append(["","","","","TOPLAM GİRİŞ",f"{totals[0]+bt[0]:,.2f}",""])
                 rows.append(["","","","","TOPLAM ÇIKIŞ","",f"{totals[1]+bt[1]:,.2f}"])
             else:
-                rows=[["Tarih","Müşteri","Beton Cinsi","Miktar (m³)","Birim Fiyat","Pompa Ücreti","Toplam (TL)","Ödeme Durumu","Açıklama"]]
-                for r in c.execute("SELECT b.tarih,COALESCE(c.unvan,''),COALESCE(b.beton_cinsi,''),b.miktar_m3,b.birim_fiyat,COALESCE(b.pompa_ucreti,0),b.toplam,b.odeme_durumu,COALESCE(b.aciklama,''),COALESCE(s.ad,'') FROM beton_satis b LEFT JOIN cari c ON c.id=b.cari_id LEFT JOIN santiye s ON s.id=b.santiye_id ORDER BY b.tarih ASC,b.id ASC"):
-                    detail = format_beton_aciklama(r[2],r[3],r[4],r[5],r[6],r[9],r[8],r[7])
-                    rows.append([display_date(r[0]),Paragraph(escape(r[1]),normal),r[2],format_m3(r[3]),f"{r[4]:,.2f}",f"{r[5]:,.2f}" if r[5] else "Yok",f"{r[6]:,.2f}",r[7],Paragraph(escape(detail),normal)])
-                total=c.execute("SELECT COALESCE(SUM(miktar_m3),0),COALESCE(SUM(toplam),0),COUNT(*) FROM beton_satis").fetchone()
-                rows.append(["","GENEL TOPLAM",format_m3(total[0]),"","","",f"{total[1]:,.2f}","",""])
+                rows=[["Tarih","Müşteri","Beton Cinsi","Miktar (m³)","Birim Fiyat","Pompa Ücreti","Mikser Nakliye (TL)","Toplam (TL)","Ödeme Durumu","Açıklama"]]
+                for r in c.execute("SELECT b.tarih,COALESCE(c.unvan,''),COALESCE(b.beton_cinsi,''),b.miktar_m3,b.birim_fiyat,COALESCE(b.pompa_ucreti,0),b.toplam,b.odeme_durumu,COALESCE(b.aciklama,''),COALESCE(s.ad,''),b.mikser_nakliye_ucreti FROM beton_satis b LEFT JOIN cari c ON c.id=b.cari_id LEFT JOIN santiye s ON s.id=b.santiye_id ORDER BY b.tarih ASC,b.id ASC"):
+                    detail = format_beton_aciklama(r[2],r[3],r[4],r[5],r[6],r[9],r[8],r[7],r[10])
+                    rows.append([display_date(r[0]),Paragraph(escape(r[1]),normal),r[2],format_m3(r[3]),f"{r[4]:,.2f}",f"{r[5]:,.2f}" if r[5] else "Yok",f"{r[10]:,.2f}" if r[10] else "-",f"{r[6]:,.2f}",r[7],Paragraph(escape(detail),normal)])
+                total=c.execute("SELECT COALESCE(SUM(miktar_m3),0),COALESCE(SUM(toplam),0),COUNT(*),COALESCE(SUM(pompa_ucreti),0),COALESCE(SUM(mikser_nakliye_ucreti),0) FROM beton_satis").fetchone()
+                rows.append(["","GENEL TOPLAM","",f"{format_m3(total[0])} m³","",f"{total[3]:,.2f}",
+                             f"{total[4]:,.2f}",f"{total[1]:,.2f}","",""])
+                story.append(Paragraph(f"Toplam beton miktarı: <b>{format_m3(total[0])} m³</b>"
+                                       f" &nbsp;&nbsp; | &nbsp;&nbsp; Toplam satış: <b>{total[1]:,.2f} TL</b>",normal))
                 # Ana listeyi başka modüllerle karıştırmadan beton türü özeti ekle.
                 beton_summary_rows=[["Beton Cinsi","Satış Adedi","Toplam Miktar (m³)","Toplam Tutar (TL)"]]
                 by_type=c.execute("SELECT CASE WHEN TRIM(COALESCE(beton_cinsi,''))='' THEN 'Belirtilmemiş' ELSE beton_cinsi END, COUNT(*), COALESCE(SUM(miktar_m3),0), COALESCE(SUM(toplam),0) FROM beton_satis GROUP BY CASE WHEN TRIM(COALESCE(beton_cinsi,''))='' THEN 'Belirtilmemiş' ELSE beton_cinsi END ORDER BY 1 COLLATE NOCASE").fetchall()
@@ -5298,7 +5332,7 @@ class HoytasApp(tk.Tk):
         wrapped_rows=[]
         invoice_header = ParagraphStyle("InvoiceTableHeader", parent=normal, textColor=colors.white)
         for row_index, row in enumerate(rows):
-            row_style = invoice_header if invoice_totals and row_index == 0 else normal
+            row_style = invoice_header if row_index == 0 else normal
             wrapped=[]
             for cell in row:
                 if isinstance(cell, RLParagraph):
@@ -5320,9 +5354,9 @@ class HoytasApp(tk.Tk):
             "Verilen Çekler Dökümü": [0.65, 0.90, 0.85, 0.95, 1.45, 0.85, 0.95, 0.85, 1.35],
             **{title: [0.65, 0.90, 0.85, 0.95, 1.45, 0.85, 0.95, 0.85, 1.35] for title in CHEQUE_STATUS_REPORTS},
             "Cari Hareket Dökümü": [0.8, 0.8, 1.0, 2.0, 1.0, 1.0, 1.0, 1.0],
-            "Cari Beton Satış Dökümü": [0.75, 0.9, 0.75, 0.9, 0.75, 0.9, 1.0, 1.0, 1.8],
-            "Beton Satış Raporu": [0.78, 1.65, 0.90, 0.70, 0.90, 0.90, 1.00, 1.05, 1.60],
-            "Beton Satışları Dökümü": [0.78, 1.65, 0.90, 0.70, 0.90, 0.90, 1.00, 1.05, 1.60],
+            "Cari Beton Satış Dökümü": [0.75, 0.9, 0.75, 0.9, 0.75, 0.85, 0.9, 1.0, 1.0, 1.6],
+            "Beton Satış Raporu": [0.78, 1.45, 0.90, 0.70, 0.90, 0.85, 0.85, 1.00, 1.05, 1.45],
+            "Beton Satışları Dökümü": [0.78, 1.45, 0.90, 0.70, 0.90, 0.85, 0.85, 1.00, 1.05, 1.45],
             "Fatura Taslağı PDF": [0.45, 2.20, 0.85, 1.20, 0.80, 1.35],
             "Gelen Alış Faturaları": [0.85, 0.85, 1.45, 1.05, 1.55, 1.00, 1.00, 1.00, 0.95],
             "Kasa ve Banka Raporu": [0.85, 1.00, 1.15, 1.05, 2.10, 1.00, 1.00],
