@@ -1,4 +1,4 @@
-"""Windows Tk smoke test for the revised customer card."""
+"""Windows Tk smoke test for the embedded customer card and its outputs."""
 from pathlib import Path
 from unittest.mock import patch
 
@@ -47,8 +47,11 @@ def verify():
         app.update()
         app.show_cari_hareketleri((cid, "Deneme Cari"), selected_tab=1)
         app.update()
-        card = next(widget for widget in app.winfo_children() if isinstance(widget, h.tk.Toplevel)
-                    and widget.title().startswith("Cari Kartı"))
+        card = app.cari_card_page
+        assert card.master is app.tabs and app.tabs.select() == str(card)
+        assert card.winfo_ismapped() and card.winfo_width() >= app.tabs.winfo_width() - 8
+        assert not any(isinstance(widget, h.tk.Toplevel) for widget in app.winfo_children())
+        assert app.module_navigation.winfo_ismapped()
         widgets = list(descendants(card))
         notebook = next(widget for widget in widgets if isinstance(widget, h.ttk.Notebook))
         page = card.nametowidget(notebook.select())
@@ -92,7 +95,24 @@ def verify():
             edit.assert_called_once_with(table, "beton_satis")
         refreshed = next(w for w in descendants(card) if isinstance(w, h.ttk.Combobox))
         assert refreshed.get() == "Çiftlik"
-        card.destroy()
+        app._refresh_from_button()
+        assert app.tabs.select() == str(card)
+        assert next(w for w in descendants(card) if isinstance(w, h.ttk.Combobox)).get() == "Çiftlik"
+        back = next(w for w in descendants(card) if isinstance(w, h.ttk.Button) and "Carilere Dön" in w.cget("text"))
+        back.invoke()
+        app.update()
+        assert app.tabs.select() == str(app.cari_tab)
+        assert app.tabs.tab(card, "state") == "hidden"
+        customer_row = next(item for item in app.cari_tree.get_children()
+                            if int(app.cari_tree.set(item, "id")) == cid)
+        app.cari_tree.selection_set(customer_row)
+        open_customer = next(w for w in descendants(app.cari_tab)
+                             if isinstance(w, h.ttk.Button) and w.cget("text") == "Cari Kartını Aç")
+        open_customer.invoke()
+        app.update()
+        assert app.tabs.select() == str(card)
+        app._close_module()
+        assert app.tabs.select() == str(app.cari_tab)
         app._open_module(app.beton_tab)
         app.refresh_all()
         app.update()

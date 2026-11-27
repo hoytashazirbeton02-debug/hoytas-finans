@@ -1,0 +1,6 @@
+HOYTAŞ v131
+
+- Cari kartı ana pencerenin çalışma alanında açılır.
+- Carilere Dön, açık sekmeler ve üst modül menüsü birlikte çalışır.
+- Cari özeti ve beton liste toplamı tek zemin üzerinde daha belirgin gösterilir.
+- Cari kartı yenilendiğinde şantiye seçimi ve arama korunur.

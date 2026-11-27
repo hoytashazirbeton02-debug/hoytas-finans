@@ -31,7 +31,7 @@ from hybrid_branding import set_brand_logo
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
 TARGET_SCHEMA_VERSION = 61
-APP_VERSION = 130
+APP_VERSION = 131
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 ISOLATED_PROFILE_DIR = os.environ.get("HOYTAS_PROFILE_DIR", "").strip()
 USER_DATA_DIR = ISOLATED_PROFILE_DIR or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
@@ -1061,6 +1061,10 @@ class HoytasApp(tk.Tk):
         self.style.configure("TLabelframe.Label", background="#FFFFFF", foreground="#315B46", font=("Segoe UI", 9, "bold"))
         self.style.configure("Metric.TLabelframe", background="#FFFFFF", bordercolor="#D8E0DB", relief="solid")
         self.style.configure("Metric.TLabel", background="#FFFFFF", foreground="#1F3028", font=("Segoe UI", 18, "bold"))
+        self.style.map("CariCard.TNotebook.Tab", background=[("selected", "#DCEBDB")],
+                       foreground=[("selected", "#174D30")])
+        self.style.configure("CariSummary.TFrame", background="#E9F0E5")
+        self.style.configure("CariSummary.TLabel", background="#E9F0E5", foreground="#174D30")
         self._build()
         self._adapt_action_rows(self)
         # Other modules load when opened. Avoid repeating the initial dashboard refresh.
@@ -1457,18 +1461,16 @@ class HoytasApp(tk.Tk):
         ttk.Button(row, text="Taslağı Sil", command=lambda: self.delete_selected(self.fatura_tree, "fatura")).pack(side="right")
 
     def _build(self):
-        header = tk.Frame(self, bg="#F7FAF1")
+        header = tk.Frame(self, bg="#174D30")
         header.pack(fill="x")
         logo = ttk.Label(header, text="HOYTAŞ", style="Brand.TLabel")
-        set_brand_logo(logo, max_size=52)
+        set_brand_logo(logo, max_size=42)
         logo.pack(side="left", padx=(20, 14), pady=6)
-        header.configure(height=max(100, logo.winfo_reqheight() + 12))
-        tk.Frame(header, bg="#FFB800", width=3).pack(side="left", fill="y", pady=10, padx=(0, 14))
-        tk.Label(header, text="Finans ve İşletme Yönetimi", bg="#F7FAF1", fg="#19220E",
+        tk.Label(header, text="HOYTAŞ | Finans ve İşletme", bg="#174D30", fg="#FFFFFF",
                  font=("Segoe UI", 13, "bold")).pack(side="left", pady=8)
         who = getattr(self, "current_user", {})
         user_text = f"KULLANICI  {who.get('username', '—')}   |   {who.get('role', '')}"
-        tk.Label(header, text=user_text, bg="#F7FAF1", fg="#28341C",
+        tk.Label(header, text=user_text, bg="#174D30", fg="#FFFFFF",
                  font=("Segoe UI", 9)).pack(side="right", padx=24)
         tk.Frame(self, bg="#56BA00", height=3).pack(fill="x")
         self.style.layout("Workspace.TNotebook.Tab", [])
@@ -1490,6 +1492,7 @@ class HoytasApp(tk.Tk):
         self.stok_hareket_tab = ttk.Frame(self.tabs, padding=12)
         self.maas_tab = ttk.Frame(self.tabs, padding=12)
         self.banka_tab = ttk.Frame(self.tabs, padding=12)
+        self.cari_card_page = ttk.Frame(self.tabs)
         # Keep tab indices stable for the existing keyboard shortcuts.
         modules = {
             self.dashboard: "Genel Bakış", self.cari_tab: "Cari Hesaplar",
@@ -1500,6 +1503,7 @@ class HoytasApp(tk.Tk):
             self.fatura_tab: "Satış Faturaları", self.gelen_fatura_tab: "Alış Faturaları",
             self.kasa_tab: "Nakit Kasa", self.stok_hareket_tab: "Stok Hareketleri",
             self.maas_tab: "Maaş Ödemeleri", self.banka_tab: "Banka İşlemleri",
+            self.cari_card_page: "Cari Kartı",
         }
         for frame, title in modules.items():
             self.tabs.add(frame, text=title)
@@ -1533,6 +1537,7 @@ class HoytasApp(tk.Tk):
             nav_items.append(button)
             nav_groups.update((str(frame), button) for frame in frames)
 
+        nav_groups[str(self.cari_card_page)] = nav_groups[str(self.cari_tab)]
         nav.configure(height=overview.winfo_reqheight() + 4)
         nav.bind("<Configure>", lambda _event: self._layout_module_navigation(nav, nav_items))
 
@@ -1653,7 +1658,9 @@ class HoytasApp(tk.Tk):
 
     def _close_module(self, _event=None, *, page=None):
         page = str(page) if page is not None else self.tabs.select()
-        if page and page != str(self.dashboard):
+        if page == str(self.cari_card_page) and self.tabs.select() == page:
+            self._return_from_cari_card()
+        elif page and page != str(self.dashboard):
             self.tabs.hide(page)
             self._layout_workspace_tabs()
         return "break"
@@ -2375,31 +2382,39 @@ class HoytasApp(tk.Tk):
                       else (key, label, kind, options) for key, label, kind, options in fields]
         return self.prompt(title, fields)
 
-    def show_cari_hareketleri(self, cari_context=None, win=None, selected_tab=0):
-        """Seçili carinin borç/alacak hareketlerini ve bağlı satış/çeklerini göster."""
+    def _return_from_cari_card(self):
+        self._open_module(self.cari_tab)
+        self.tabs.hide(self.cari_card_page)
+        self._layout_workspace_tabs()
+        self.cari_tree.focus_set()
+
+    def show_cari_hareketleri(self, cari_context=None, selected_tab=0):
+        """Open the customer card in the main workspace."""
         if cari_context is None:
             sel = self.cari_tree.selection()
             if not sel:
                 return messagebox.showinfo("Cari seçin", "Önce bir cari seçin.", parent=self)
             vals = self.cari_tree.item(sel[0], "values")
             cari_context = int(vals[0]), str(vals[2])
+        self._render_cari_card(cari_context, selected_tab)
+        self._open_module(self.cari_card_page)
+
+    def _render_cari_card(self, cari_context, selected_tab):
         cari_id, unvan = cari_context
+        card = self.cari_card_page
         sales_search = ""
         selected_site = "Tüm şantiyeler"
-        if win is not None and hasattr(win, "_sales_filter"):
-            sales_search, selected_site = (variable.get() for variable in win._sales_filter)
-        if win is None:
-            win = tk.Toplevel(self)
-            win.title(f"Cari Kartı - {unvan}")
-            win.geometry(f"{min(1100, self.winfo_screenwidth()-32)}x{min(650, self.winfo_screenheight()-80)}")
-            win.minsize(850, 450)
-            win.transient(self)
-        else:
-            for child in win.winfo_children():
-                child.destroy()
-        top=ttk.Frame(win,padding=12); top.pack(fill="x")
-        ttk.Button(top, text="‹ Carilere Dön", command=win.destroy).pack(anchor="w", pady=(0, 4))
-        name = ttk.Label(top, text=unvan, font=("Segoe UI", 15, "bold"))
+        if getattr(card, "_customer_id", None) == cari_id and hasattr(card, "_sales_filter"):
+            sales_search, selected_site = (variable.get() for variable in card._sales_filter)
+        for child in card.winfo_children():
+            child.destroy()
+        card._customer_id = cari_id
+        top = ttk.Frame(card, padding=(12, 8, 12, 8))
+        top.pack(fill="x")
+        header_actions = ttk.Frame(top)
+        header_actions.pack(fill="x", pady=(0, 4))
+        ttk.Button(header_actions, text="‹ Carilere Dön", command=self._return_from_cari_card).pack(side="left")
+        name = ttk.Label(top, text=unvan, font=("Segoe UI", 21, "bold"), foreground="#174D30")
         name.pack(anchor="w")
         top.bind("<Configure>", lambda event: name.configure(wraplength=max(event.width - 24, 1)))
         with connect() as c:
@@ -2409,7 +2424,7 @@ class HoytasApp(tk.Tk):
             checks=c.execute("SELECT id,yon,COALESCE(banka,''),COALESCE(cek_no,''),vade,tutar,durum FROM cek WHERE cari_id=? ORDER BY vade ASC,id ASC",(cari_id,)).fetchall()
         balance=totals[0]-totals[1]
         total_m3 = sum(safe_float(r[3] or 0) for r in sales)
-        summary = ttk.Frame(top)
+        summary = ttk.Frame(top, style="CariSummary.TFrame")
         summary.pack(fill="x", pady=(6, 0))
         for column, (label, value) in enumerate((
             ("Toplam Borç", f"{totals[0]:,.2f} TL"),
@@ -2418,10 +2433,12 @@ class HoytasApp(tk.Tk):
             ("Toplam Beton", f"{format_m3(total_m3)} m³"),
         )):
             summary.columnconfigure(column, weight=1, uniform="cari")
-            metric = ttk.LabelFrame(summary, text=label, padding=(8, 3))
+            metric = ttk.Frame(summary, padding=(10, 6), style="CariSummary.TFrame")
             metric.grid(row=0, column=column, sticky="ew", padx=(0, 4))
-            ttk.Label(metric, text=value, font=("Segoe UI", 11, "bold")).pack(anchor="w")
-        nb = ttk.Notebook(win)
+            ttk.Label(metric, text=label, style="CariSummary.TLabel").pack(anchor="w")
+            ttk.Label(metric, text=value, style="CariSummary.TLabel",
+                      font=("Segoe UI", 12, "bold")).pack(anchor="w")
+        nb = ttk.Notebook(card, style="CariCard.TNotebook")
         nb.pack(fill="both", expand=True, padx=12, pady=(0, 6))
         mf = ttk.Frame(nb, padding=6)
         nb.add(mf, text="Cari Hareketleri")
@@ -2458,7 +2475,7 @@ class HoytasApp(tk.Tk):
         self.fill_tree(mt, movement_rows)
         sf = ttk.Frame(nb, padding=6)
         nb.add(sf, text="Beton Satışları")
-        sales_total = ttk.Label(sf, font=("Segoe UI", 10, "bold"))
+        sales_total = ttk.Label(sf, font=("Segoe UI", 10, "bold"), style="CariSummary.TLabel", padding=(10, 6))
         sales_total.pack(side="bottom", fill="x", pady=(5, 0))
         sales_status = ttk.Label(sf, font=("Segoe UI", 9, "bold"))
         st = self._tree(sf, ("id", "tarih", "santiye", "cinsi", "m3", "fiyat", "pompa", "nakliye", "toplam", "durum", "aciklama"),
@@ -2467,10 +2484,10 @@ class HoytasApp(tk.Tk):
                         search_label="Satışlarda Ara", print_button=False)
         toolbar = st._search_entry.master
         sites = ("Tüm şantiyeler", *sorted({r[9] for r in sales if r[9]}))
-        site = tk.StringVar(win, value=selected_site if selected_site in sites else sites[0])
-        win._sales_filter = (st._search_var, site)
+        site = tk.StringVar(card, value=selected_site if selected_site in sites else sites[0])
+        card._sales_filter = (st._search_var, site)
         st._search_var.set(sales_search)
-        site_picker = ttk.Combobox(toolbar, textvariable=site, state="readonly", width=18,
+        site_picker = ttk.Combobox(toolbar, textvariable=site, state="readonly", width=15,
                                    values=sites)
         site_picker.pack(side="left", padx=5)
         ttk.Button(toolbar, text="Yeni Beton Satışı",
@@ -2490,7 +2507,7 @@ class HoytasApp(tk.Tk):
             ("Beton Satışları Excel", lambda: self.export_concrete_rows_excel(st, unvan)),
             ("Yazdır", lambda: self._print_tree(st, f"{unvan} – Beton Satışları")),
         ]).pack(side="right", padx=(4, 0))
-        st._search_entry.configure(width=15)
+        st._search_entry.configure(width=13)
         st._row_filter = lambda row: site.get() == "Tüm şantiyeler" or row[2] == site.get()
         st._on_search = lambda rows: sales_total.configure(text=(
             f"{len(rows)} satış   |   Toplam {format_m3(sum(float(str(row[4]).replace(',', '')) for row in rows))} m³"
@@ -2539,7 +2556,9 @@ class HoytasApp(tk.Tk):
             current_tab = nb.index(nb.select()) if tab is None else tab
             if operation is not None:
                 operation(cari_context)
-            self.show_cari_hareketleri(cari_context, win, current_tab)
+            self._render_cari_card(cari_context, current_tab)
+
+        self._refresh_open_cari_card = refresh_card
 
         for tree, table in ((mt, "hareket"), (st, "beton_satis"), (ct, "cek"), (invoice_tree, "cari_invoice")):
             tree._undo_table = table
@@ -2553,41 +2572,38 @@ class HoytasApp(tk.Tk):
 
         st.bind("<Double-1>", edit_sale)
 
-        commands = ttk.Frame(win, padding=(12, 0, 12, 8))
-        commands.pack(fill="x", before=nb)
-        self._action_menu(commands, "Cari İşlemleri", [
+        self._action_menu(header_actions, "Cari İşlemleri", [
             ("Çek Girişi", lambda: refresh_card(self.add_cek, 2)),
             ("Satış Faturası Taslağı", lambda: refresh_card(self.add_fatura, 3)),
             ("Alış Faturası", lambda: refresh_card(self.add_gelen_fatura, 3)),
             ("Cari Hareket Ekle", lambda: refresh_card(self.add_hareket, 0)),
-            ("Beton-Cari Bağlantısını Kontrol Et", lambda: self.repair_cari_beton_links(cari_id, win)),
-        ]).pack(side="left")
-        ttk.Button(commands, text="Yenile", command=refresh_card).pack(side="right")
+            ("Beton-Cari Bağlantısını Kontrol Et", lambda: self.repair_cari_beton_links(cari_id, refreshed=refresh_card)),
+        ]).pack(side="right", padx=(4, 0))
+        ttk.Button(header_actions, text="Yenile", command=refresh_card).pack(side="right")
         with connect() as audit_db:
             missing_sales, wrong_sales, ambiguous_sales = audit_beton_cari_amounts(audit_db, cari_id)
         if missing_sales or wrong_sales or ambiguous_sales:
             sales_status.configure(text=f"Cari bağlantısı: {len(missing_sales)} eksik, "
                                    f"{len(wrong_sales)} tutar hatası, {len(ambiguous_sales)} belirsiz.")
             sales_status.pack(side="bottom", anchor="w", before=st.master, pady=(6, 0))
-        self._adapt_action_rows(win)
 
-    def repair_cari_beton_links(self, cari_id, window=None):
+    def repair_cari_beton_links(self, cari_id, *, refreshed):
         """Backed-up, explicit correction of identifiable movements only."""
         with connect() as db:
             missing, mismatched, ambiguous = audit_beton_cari_amounts(db, cari_id)
             if not missing and not mismatched and not ambiguous:
-                return messagebox.showinfo("Cari bağlantısı", "Satış bağlantıları ve tutarları uyumlu görünüyor.", parent=window or self)
+                return messagebox.showinfo("Cari bağlantısı", "Satış bağlantıları ve tutarları uyumlu görünüyor.", parent=self)
             summary = (f"Eksik bağlantı: {len(missing)}\n"
                        f"Yanlış tutarlı/bağlantılı hareket: {len(mismatched)}\n"
                        f"Belirsiz kayıt (otomatik değişmez): {len(ambiguous)}\n\n"
                        f"Eksik borç toplamı: {sum(x[2] for x in missing):,.2f} TL\n"
                        f"Bağlı tutar farkı: {sum(x[2]-x[4] for x in mismatched):,.2f} TL")
             if not missing and not mismatched:
-                return messagebox.showwarning("Cari bağlantısı inceleme", summary + "\n\nBelirsiz kayıtlar elle incelenmelidir.", parent=window or self)
+                return messagebox.showwarning("Cari bağlantısı inceleme", summary + "\n\nBelirsiz kayıtlar elle incelenmelidir.", parent=self)
             if not messagebox.askyesno("Cari bağlantısı onarımı", summary +
                     "\n\nÖNEMLİ: Bu işlem cari bakiyesini değiştirebilir."
                     "\nÖnce veritabanı yedeği alınarak yalnızca kesin eşleşen"
-                    " kayıtlar düzeltilecek. Onaylıyor musunuz?", parent=window or self):
+                    " kayıtlar düzeltilecek. Onaylıyor musunuz?", parent=self):
                 return
             backup = _verified_sqlite_backup(db, "beton_cari_v77_onarim_oncesi")
             db.execute("BEGIN IMMEDIATE")
@@ -2601,9 +2617,7 @@ class HoytasApp(tk.Tk):
             except Exception:
                 db.rollback()
                 raise
-        if window and window.winfo_exists():
-            window.destroy()
-        self._refresh_selected_module()
+        refreshed()
         messagebox.showinfo("Cari bağlantısı", f"{len(again_missing)} eksik, {len(again_mismatch)} hatalı hareket onarıldı.\n"
                             f"Belirsiz kayıt: {len(again_ambiguous)}\nYedek: {backup}", parent=self)
 
@@ -5160,6 +5174,8 @@ class HoytasApp(tk.Tk):
         self.refresh_cari()
         self.refresh_borc_takip()
         self.refresh_dashboard()
+        if self.tabs.select() == str(self.cari_card_page):
+            self._refresh_open_cari_card()
 
         if hasattr(self, 'alisveris_tree'):
             self.refresh_alisveris_cari()
