@@ -34,8 +34,13 @@ from invoice_matching import (GIB_TEBLIG, WITHHOLDING_LABELS, cents, concrete_in
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
+CARI_STATEMENT_REPORTS = (
+    "Cari Hesap Ekstresi",
+    "Faturalı Cari Ekstresi",
+    "Faturasız Cari Ekstresi",
+)
 TARGET_SCHEMA_VERSION = 62
-APP_VERSION = 134
+APP_VERSION = 135
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 ISOLATED_PROFILE_DIR = os.environ.get("HOYTAS_PROFILE_DIR", "").strip()
 USER_DATA_DIR = ISOLATED_PROFILE_DIR or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
@@ -1453,6 +1458,7 @@ class HoytasApp(tk.Tk):
         bar=ttk.Frame(self.fatura_tab); bar.pack(fill="x")
         ttk.Label(bar,text="Fatura / Belge Taslakları",font=("Segoe UI",16,"bold")).pack(side="left")
         ttk.Button(bar,text="Yeni Fatura Taslağı",command=self.add_fatura).pack(side="right")
+        ttk.Button(bar, text="Fatura Türleri ve Mevzuat", command=self.show_invoice_tax_options).pack(side="right", padx=6)
         ttk.Label(self.fatura_tab, text="Satış taslakları cari karta bağlıdır. Önizleme ve cari kontrolü yerel olarak yapılır.",
                   foreground="#7a4b00", wraplength=900).pack(anchor="w", pady=(8, 0))
         row = ttk.Frame(self.fatura_tab)
@@ -2235,15 +2241,21 @@ class HoytasApp(tk.Tk):
         # Sağ tık bağlam menüsü; sol tık ve çift tık davranışları korunur.
         tree.bind("<Button-3>", lambda event, w=tree: self._tree_context_menu(event, w))
         tree.bind("<Control-Button-1>", lambda event, w=tree: self._tree_context_menu(event, w))
-        if print_button and os.name == "nt":
+        is_module = str(parent) in self.tabs.tabs()
+        if print_button and (is_module or os.name == "nt"):
             if print_title:
                 title = print_title
-            elif str(parent) in self.tabs.tabs():
+            elif is_module:
                 title = self.tabs.tab(parent, "text").replace("\n", " ")
             else:
                 title = parent.winfo_toplevel().title()
-            ttk.Button(searchbar, text="Yazdır", command=lambda: self._print_tree(tree, title)).pack(
-                side="left", padx=(8, 0))
+            if is_module and parent not in (self.cari_tab, self.beton_tab, self.cek_tab, self.fatura_tab, self.borc_takip_tab):
+                pdf_button = ttk.Button(searchbar, text="PDF",
+                                        command=lambda: self._print_tree(tree, title, print_dialog=False))
+                tree._pdf_button = pdf_button
+            if os.name == "nt":
+                ttk.Button(searchbar, text="Yazdır", command=lambda: self._print_tree(tree, title)).pack(
+                    side="left", padx=(8, 0))
         return tree
 
     def _print_dashboard(self):
@@ -2252,7 +2264,7 @@ class HoytasApp(tk.Tk):
                     for label in self.metric_labels.values())
         self._print_report_rows("Genel Bakış", rows)
 
-    def _print_tree(self, tree, title):
+    def _print_tree(self, tree, title, *, print_dialog=True):
         items = tree.get_children()
         if not items:
             return messagebox.showinfo("Yazdır", "Bu listede yazdırılacak kayıt yok.", parent=tree)
@@ -2270,11 +2282,11 @@ class HoytasApp(tk.Tk):
             footer = {"tarih": "GENEL TOPLAM", "m3": f"{format_m3(totals['m3'])} m³",
                       "nakliye": f"{totals['nakliye']:,.2f}", "toplam": f"{totals['toplam']:,.2f}"}
             rows.append(tuple(footer.get(column, "") for column in visible))
-        self._print_report_rows(title, rows)
+        self._print_report_rows(title, rows, print_dialog=print_dialog)
 
-    def _print_report_rows(self, title, rows):
+    def _print_report_rows(self, title, rows, *, print_dialog=True):
         try:
-            self._preview_then_save_pdf(title + " Listesi", rows=rows, print_dialog=True)
+            self._preview_then_save_pdf(title + " Listesi", rows=rows, print_dialog=print_dialog)
         except (OSError, ValueError, RuntimeError, ImportError) as error:
             messagebox.showerror("Yazdırma açılamadı", str(error), parent=self)
 
@@ -2433,19 +2445,22 @@ class HoytasApp(tk.Tk):
         total_m3 = sum(safe_float(r[3] or 0) for r in sales)
         summary = ttk.Frame(top, style="CariSummary.TFrame")
         summary.pack(fill="x", pady=(6, 0))
-        for column, (label, value) in enumerate((
+        metrics = [
             ("Toplam Borç", f"{totals[0]:,.2f} TL"),
             ("Toplam Alacak", f"{totals[1]:,.2f} TL"),
             ("Cari Bakiye", f"{balance:,.2f} TL"),
-            ("Toplam Beton", f"{format_m3(total_m3)} m³"),
-        )):
+        ]
+        if sales:
+            metrics.append(("Toplam Beton", f"{format_m3(total_m3)} m³"))
+        for column, (label, value) in enumerate(metrics):
             summary.columnconfigure(column, weight=1, uniform="cari")
             metric = ttk.Frame(summary, padding=(10, 6), style="CariSummary.TFrame")
             metric.grid(row=0, column=column, sticky="ew", padx=(0, 4))
             ttk.Label(metric, text=label, style="CariSummary.TLabel").pack(anchor="w")
             ttk.Label(metric, text=value, style="CariSummary.TLabel",
                       font=("Segoe UI", 12, "bold")).pack(anchor="w")
-        ttk.Label(top, text=(f"Faturalı kalan: {invoice_money(open_invoice / 100)} TL   |   "
+        if open_invoice:
+            ttk.Label(top, text=(f"Faturalı kalan: {invoice_money(open_invoice / 100)} TL   |   "
                   f"Faturaya bağlanmamış: {unbilled_count} satış · {invoice_money(unbilled_amount / 100)} TL"),
                   style="CariSummary.TLabel", padding=(10, 4)).pack(fill="x", pady=(3, 0))
         nb = ttk.Notebook(card, style="CariCard.TNotebook")
@@ -2458,16 +2473,20 @@ class HoytasApp(tk.Tk):
                         ("ID", "Tarih", "Tür", "Kategori", "Açıklama", "Ödeme", "Borç TL", "Alacak TL", "Bakiye TL"),
                         (45, 94, 70, 98, 270, 85, 95, 95, 105), show_id=False,
                         print_button=False)
-        ttk.Button(movement_actions, text="Hareketi Düzenle",
-                   command=lambda: refresh_card(lambda _cari: self.edit_selected(mt, "hareket"))).pack(side="left")
+        edit_movement = ttk.Button(movement_actions, text="Hareketi Düzenle",
+                                   command=lambda: refresh_card(lambda _cari: self.edit_selected(mt, "hareket")))
+        mt.bind("<<TreeviewSelect>>", lambda _event:
+                edit_movement.pack(side="left") if mt.selection() else edit_movement.pack_forget())
         ttk.Button(movement_actions, text="Tahsilat Al",
                    command=lambda: refresh_card(self.cari_tahsilat, 0)).pack(side="left", padx=6)
-        self._action_menu(movement_actions, "Çıktı Al", [
+        movement_output = self._action_menu(movement_actions, "Çıktı Al", [
             ("Cari Hareketleri PDF", lambda: self.export_single_cari_pdf(cari_id, "Cari Hareket Dökümü")),
-            ("Cari Hesap Ekstresi PDF", lambda: self.export_single_cari_pdf(cari_id, "Cari Hesap Ekstresi")),
+            ("Cari Hesap Ekstresi PDF", lambda: self.choose_cari_statement_pdf(cari_id)),
             ("Cari Hesap Ekstresi Excel", lambda: self.export_single_cari_excel(cari_id, unvan, preview=True)),
             ("Yazdır", lambda: self._print_tree(mt, f"{unvan} – Cari Hareketleri")),
-        ]).pack(side="right")
+        ])
+        if moves:
+            movement_output.pack(side="right")
         bal=0
         sales_by_id = {int(r[0]): r for r in sales}
         import re
@@ -2483,27 +2502,32 @@ class HoytasApp(tk.Tk):
                 description = format_beton_aciklama(sale[2], sale[3], sale[4], sale[5], sale[6], sale[9], sale[8], sale[7], sale[10])
             movement_rows.append((r[0],r[1],r[2],r[3],description,r[5],f"{debt:,.2f}" if debt else "-",f"{credit:,.2f}" if credit else "-",f"{bal:,.2f}"))
         self.fill_tree(mt, movement_rows)
+        if not moves:
+            mt._search_entry.master.pack_forget()
         sf = ttk.Frame(nb, padding=6)
         nb.add(sf, text="Beton Satışları")
         sales_total = ttk.Label(sf, font=("Segoe UI", 10, "bold"), style="CariSummary.TLabel", padding=(10, 6))
-        sales_total.pack(side="bottom", fill="x", pady=(5, 0))
+        if sales:
+            sales_total.pack(side="bottom", fill="x", pady=(5, 0))
         sales_status = ttk.Label(sf, font=("Segoe UI", 9, "bold"))
         st = self._tree(sf, ("id", "tarih", "santiye", "cinsi", "m3", "fiyat", "pompa", "nakliye", "toplam", "durum", "aciklama"),
                         ("ID", "Tarih", "Şantiye", "Beton", "Miktar (m³)", "Birim Fiyat", "Pompa", "Mikser Nakliye", "Toplam", "Ödeme Durumu", "Açıklama"),
                         (42, 88, 135, 90, 85, 97, 85, 110, 100, 135, 250), show_id=False,
                         search_label="Satışlarda Ara", print_button=False)
         toolbar = st._search_entry.master
+        if not sales:
+            for widget in toolbar.winfo_children():
+                widget.pack_forget()
         sites = ("Tüm şantiyeler", *sorted({r[9] for r in sales if r[9]}))
         site = tk.StringVar(card, value=selected_site if selected_site in sites else sites[0])
         card._sales_filter = (st._search_var, site)
         st._search_var.set(sales_search)
         site_picker = ttk.Combobox(toolbar, textvariable=site, state="readonly", width=15,
                                    values=sites)
-        site_picker.pack(side="left", padx=5)
+        if len(sites) > 1:
+            site_picker.pack(side="left", padx=5)
         ttk.Button(toolbar, text="Yeni Beton Satışı",
                    command=lambda: refresh_card(self.add_beton, 1)).pack(side="left", padx=4)
-        ttk.Button(toolbar, text="Tahsilat Al",
-                   command=lambda: refresh_card(self.cari_tahsilat, 0)).pack(side="left", padx=4)
 
         def visible_sales():
             return [st.item(item, "values") for item in st.get_children()]
@@ -2512,16 +2536,23 @@ class HoytasApp(tk.Tk):
             ids = tuple(int(row[0]) for row in visible_sales())
             self.export_single_cari_pdf(cari_id, "Cari Beton Satış Dökümü", sale_ids=ids)
 
-        self._action_menu(toolbar, "Çıktı Al", [
+        sales_output = self._action_menu(toolbar, "Çıktı Al", [
             ("Beton Satışları PDF", sales_pdf),
             ("Beton Satışları Excel", lambda: self.export_concrete_rows_excel(st, unvan)),
             ("Yazdır", lambda: self._print_tree(st, f"{unvan} – Beton Satışları")),
-        ]).pack(side="right", padx=(4, 0))
+        ])
         st._search_entry.configure(width=13)
         st._row_filter = lambda row: site.get() == "Tüm şantiyeler" or row[2] == site.get()
-        st._on_search = lambda rows: sales_total.configure(text=(
-            f"{len(rows)} satış   |   Toplam {format_m3(sum(float(str(row[4]).replace(',', '')) for row in rows))} m³"
-            f"   |   {sum(safe_float(row[8]) for row in rows):,.2f} TL"))
+        def update_sales_summary(rows):
+            sales_total.configure(text=(
+                f"{len(rows)} satış   |   Toplam {format_m3(sum(float(str(row[4]).replace(',', '')) for row in rows))} m³"
+                f"   |   {sum(safe_float(row[8]) for row in rows):,.2f} TL"))
+            if rows:
+                sales_output.pack(side="right", padx=(4, 0))
+            else:
+                sales_output.pack_forget()
+
+        st._on_search = update_sales_summary
         site_picker.bind("<<ComboboxSelected>>", lambda _event: self._apply_tree_search(st))
         sales_rows = []
         for r in sales:
@@ -2537,6 +2568,12 @@ class HoytasApp(tk.Tk):
                         (45, 100, 160, 140, 110, 140, 150), show_id=False)
         self.fill_tree(ct, [(cid, direction, bank, number, due, f"{amount:,.2f}", status)
                             for cid, direction, bank, number, due, amount, status in checks])
+        if not checks:
+            nb.hide(cf)
+        else:
+            ttk.Button(ct._search_entry.master, text="PDF",
+                       command=lambda: self._print_tree(ct, f"{unvan} – Bağlı Çekler",
+                                                        print_dialog=False)).pack(side="right")
         with connect() as db:
             invoices = db.execute("""SELECT id, 'Satış', tarih, belge_no, genel_toplam, tahsil_edilecek,
                 odenen, tahsil_edilecek-odenen, durum,
@@ -2551,18 +2588,22 @@ class HoytasApp(tk.Tk):
         nb.add(invoice_frame, text="Faturalar")
         invoice_actions = ttk.Frame(invoice_frame)
         invoice_actions.pack(fill="x", pady=(0, 6))
-        self._action_menu(invoice_actions, "Fatura İşlemleri", [
-            ("Beton Satışını Faturaya Bağla", lambda: refresh_card(self.match_concrete_invoice, 3)),
+        new_invoice_actions = [
             ("Yeni Satış Faturası Taslağı", lambda: refresh_card(self.add_fatura, 3)),
             ("Cariye Yeni Fatura Borcu İşle", lambda: refresh_card(lambda customer: self.add_fatura(customer, post=True), 3)),
             ("Alış Faturası", lambda: refresh_card(self.add_gelen_fatura, 3)),
+        ]
+        if unbilled_count:
+            new_invoice_actions.insert(0, ("Beton Satışını Faturaya Bağla",
+                                          lambda: refresh_card(self.match_concrete_invoice, 3)))
+        self._action_menu(invoice_actions, "Fatura İşlemleri", new_invoice_actions).pack(side="left", padx=(0, 8))
+        invoice_documents = self._action_menu(invoice_actions, "Seçili Satış Faturası", [
             ("Satış Taslağı PDF", lambda: self.selected_invoice_document(invoice_tree)),
             ("Belge Bilgileri", lambda: self.selected_invoice_document(invoice_tree, edit=True)),
             ("Cari Kontrolü", lambda: self.selected_invoice_document(invoice_tree, review=True)),
-            ("Fatura Türleri ve Mevzuat", self.show_invoice_tax_options),
-        ]).pack(side="left", padx=(0, 8))
-        ttk.Button(invoice_actions, text="Seçili Faturadan Tahsilat Al",
-                   command=lambda: refresh_card(lambda _: self._collect_selected_invoice(invoice_tree), 3)).pack(side="left")
+        ])
+        collect_invoice = ttk.Button(invoice_actions, text="Seçili Faturadan Tahsilat Al",
+                                     command=lambda: refresh_card(lambda _: self._collect_selected_invoice(invoice_tree), 3))
         invoice_tree = self._tree(invoice_frame,
             ("id", "tur", "tarih", "belge", "toplam", "net", "odenen", "kalan", "durum", "aciklama"),
             ("ID", "Tür", "Tarih", "Belge No", "Fatura Toplamı", "Tahsil Edilecek", "Ödenen", "Kalan", "Durum", "Açıklama"),
@@ -2572,7 +2613,28 @@ class HoytasApp(tk.Tk):
              f"{safe_float(paid):,.2f}", f"{safe_float(remaining):,.2f}", status, detail or "")
             for invoice_id, kind, day, number, total, net, paid, remaining, status, detail in invoices
         ])
-        nb.select(selected_tab)
+
+        def update_invoice_actions(_event):
+            selection = invoice_tree.selection()
+            if selection and invoice_tree.set(selection[0], "tur") == "Satış":
+                invoice_documents.pack(side="left", padx=(0, 8))
+                if (invoice_tree.set(selection[0], "durum") != "İptal edildi"
+                        and safe_float(invoice_tree.set(selection[0], "kalan")) > 0.005):
+                    collect_invoice.pack(side="left")
+                    return
+            else:
+                invoice_documents.pack_forget()
+            collect_invoice.pack_forget()
+
+        invoice_tree.bind("<<TreeviewSelect>>", update_invoice_actions)
+        if invoices:
+            ttk.Button(invoice_actions, text="Fatura Listesi PDF",
+                       command=lambda: self._print_tree(invoice_tree, f"{unvan} – Faturalar",
+                                                        print_dialog=False)).pack(side="right")
+        else:
+            invoice_tree._search_entry.master.pack_forget()
+        if nb.tab(selected_tab, "state") != "hidden":
+            nb.select(selected_tab)
 
         def refresh_card(operation=None, tab=None):
             current_tab = nb.index(nb.select()) if tab is None else tab
@@ -2597,12 +2659,13 @@ class HoytasApp(tk.Tk):
         self._action_menu(header_actions, "Cari İşlemleri", [
             ("Çek Girişi", lambda: refresh_card(self.add_cek, 2)),
             ("Cari Hareket Ekle", lambda: refresh_card(self.add_hareket, 0)),
-            ("Beton-Cari Bağlantısını Kontrol Et", lambda: self.repair_cari_beton_links(cari_id, refreshed=refresh_card)),
         ]).pack(side="right", padx=(4, 0))
         ttk.Button(header_actions, text="Yenile", command=refresh_card).pack(side="right")
         with connect() as audit_db:
             missing_sales, wrong_sales, ambiguous_sales = audit_beton_cari_amounts(audit_db, cari_id)
         if missing_sales or wrong_sales or ambiguous_sales:
+            ttk.Button(toolbar, text="Cari Bağlantısını İncele",
+                       command=lambda: self.repair_cari_beton_links(cari_id, refreshed=refresh_card)).pack(side="left")
             sales_status.configure(text=f"Cari bağlantısı: {len(missing_sales)} eksik, "
                                    f"{len(wrong_sales)} tutar hatası, {len(ambiguous_sales)} belirsiz.")
             sales_status.pack(side="bottom", anchor="w", before=st.master, pady=(6, 0))
@@ -2718,7 +2781,7 @@ class HoytasApp(tk.Tk):
                 return False
             customer = None
             if cari_id is not None and report_type in (
-                "Cari Hesap Ekstresi", "Cari Hareket Dökümü", "Cari Beton Satış Dökümü"
+                *CARI_STATEMENT_REPORTS, "Cari Hareket Dökümü", "Cari Beton Satış Dökümü"
             ):
                 with connect() as db:
                     record = db.execute("SELECT unvan FROM cari WHERE id=?", (cari_id,)).fetchone()
@@ -2760,6 +2823,8 @@ class HoytasApp(tk.Tk):
             return messagebox.showinfo("Cari seçin", "PDF dökümü almak için önce cari hesap seçin.", parent=self)
         values = self.cari_tree.item(sel[0], "values")
         cari_id = int(values[0])
+        if report_type == CARI_STATEMENT_REPORTS[0]:
+            return self.choose_cari_statement_pdf(cari_id)
         try:
             self._preview_then_save_pdf(report_type, None, cari_id)
         except Exception as exc:
@@ -2809,6 +2874,13 @@ class HoytasApp(tk.Tk):
             self._preview_then_save_pdf(report_type, None)
         except Exception as exc:
             messagebox.showerror("PDF oluşturulamadı", str(exc), parent=self)
+
+    def choose_cari_statement_pdf(self, cari_id):
+        choice = self.prompt("Cari Ekstresi PDF", [
+            ("rapor", "Ekstre Türü", "combo", CARI_STATEMENT_REPORTS),
+        ])
+        if choice:
+            self.export_single_cari_pdf(cari_id, choice["rapor"])
 
     def export_single_cari_pdf(self, cari_id, report_type="Cari Hesap Ekstresi", *, sale_ids=None):
         """Cari hareket penceresindeki cari için doğrudan doğrulanmış PDF ekstresi üret."""
@@ -5308,6 +5380,12 @@ class HoytasApp(tk.Tk):
                 f"Hakediş {earned:.2f} TL   |   Ödenen {paid:.2f} TL   |   Kalan {earned - paid:.2f} TL"
             ).replace(".", ","))
         row_tags = getattr(tree, "_row_tags", {})
+        pdf_button = getattr(tree, "_pdf_button", None)
+        if pdf_button is not None:
+            if shown:
+                pdf_button.pack(side="left", padx=(8, 0))
+            else:
+                pdf_button.pack_forget()
         signature = (tuple(tuple(r) for r in shown), tuple(sorted(row_tags.items())))
         children = tree.get_children()
         if getattr(tree, "_render_signature", None) == signature and len(children) == len(shown):
@@ -5479,7 +5557,7 @@ class HoytasApp(tk.Tk):
 
     def pdf_menu(self):
         with connect() as c: cariler=c.execute("SELECT id,unvan FROM cari ORDER BY unvan").fetchall()
-        choices=["Cari Hesap Ekstresi","Gelir-Gider Raporu","Çek Listesi","Alınan Çekler Dökümü","Verilen Çekler Dökümü",*CHEQUE_STATUS_REPORTS,"Fatura Taslağı PDF","Gelen Alış Faturaları","Kasa ve Banka Raporu"]
+        choices=[*CARI_STATEMENT_REPORTS,"Gelir-Gider Raporu","Çek Listesi","Alınan Çekler Dökümü","Verilen Çekler Dökümü",*CHEQUE_STATUS_REPORTS,"Fatura Taslağı PDF","Gelen Alış Faturaları","Kasa ve Banka Raporu"]
         d=self.prompt("PDF Raporu Oluştur",[("rapor","Rapor Türü","combo",choices)])
         if not d: return
         cari_id=None
@@ -5489,7 +5567,7 @@ class HoytasApp(tk.Tk):
             q=self.prompt("Fatura Taslağı Seç",[("fatura","Taslak","combo",[f"{i} - {no} ({tarih})" for i,no,tarih in invoices])])
             if not q:return
             cari_id=int(q["fatura"].split(" - ",1)[0])
-        if d["rapor"] == "Cari Hesap Ekstresi":
+        if d["rapor"] in CARI_STATEMENT_REPORTS:
             names=[f"{i} - {n}" for i,n in cariler]
             if not names: return messagebox.showinfo("Bilgi","Cari ekstresi için önce cari hesap ekleyin.")
             q=self.prompt("Cari Seç",[("cari","Cari Hesap","combo",names)])
@@ -5543,7 +5621,7 @@ class HoytasApp(tk.Tk):
         beton_summary_rows=None
         cari_summary_rows=None
         has_logo = os.path.isfile(logo_path)
-        cari_watermark = has_logo and report_type in ("Cari Hesap Ekstresi", "Cari Hareket Dökümü")
+        cari_watermark = has_logo and report_type in (*CARI_STATEMENT_REPORTS, "Cari Hareket Dökümü")
         if has_logo and report_type != "Fatura Taslağı PDF":
             logo=RLImage(logo_path, width=64, height=64, kind="proportional", mask="auto")
             logo.hAlign="CENTER"
@@ -5562,6 +5640,42 @@ class HoytasApp(tk.Tk):
         with (nullcontext() if display_rows is not None else connect()) as c:
             if display_rows is not None:
                 rows = [[str(cell) for cell in row] for row in display_rows]
+            elif report_type in CARI_STATEMENT_REPORTS[1:]:
+                customer = c.execute("SELECT unvan FROM cari WHERE id=?", (cari_id,)).fetchone()
+                if not customer:
+                    raise ValueError("Cari hesap bulunamadı.")
+                story.append(Paragraph(f"<b>Cari:</b> {escape(customer[0])}", normal))
+                story.append(Spacer(1, 8))
+                if report_type == CARI_STATEMENT_REPORTS[1]:
+                    invoices = c.execute("""SELECT tarih, belge_no, tahsil_edilecek, odenen, belge_bilgileri
+                        FROM fatura WHERE cari_id=? AND durum<>'İptal edildi' ORDER BY tarih,id""",
+                        (cari_id,))
+                    records = [(day, number, cents(net), cents(paid))
+                               for day, number, net, paid, details in invoices
+                               if stored_details(details).get("cari_isleme")]
+                    if not records:
+                        raise ValueError("Bu carinin hesabına işlenmiş satış faturası yok.")
+                    rows = [["Tarih", "Fatura No", "Tahsil Edilecek (TL)", "Tahsilat (TL)", "Kalan (TL)"]]
+                    rows.extend([display_date(day), number or "-", invoice_money(net / 100),
+                                 invoice_money(paid / 100), invoice_money((net - paid) / 100)]
+                                for day, number, net, paid in records)
+                    net_total = sum(row[2] for row in records)
+                    paid_total = sum(row[3] for row in records)
+                    rows.append(["", "Toplam", invoice_money(net_total / 100),
+                                 invoice_money(paid_total / 100), invoice_money((net_total - paid_total) / 100)])
+                else:
+                    records = c.execute("""SELECT tarih, beton_cinsi, miktar_m3, birim_fiyat, toplam
+                        FROM beton_satis WHERE cari_id=? AND fatura_id IS NULL ORDER BY tarih,id""",
+                        (cari_id,)).fetchall()
+                    if not records:
+                        raise ValueError("Bu carinin faturaya bağlanmamış beton satışı yok.")
+                    rows = [["Tarih", "Beton Cinsi", "Miktar (m³)", "Birim Fiyat (TL)", "Satış Tutarı (TL)"]]
+                    rows.extend([display_date(day), kind or "-", format_m3(m3),
+                                 invoice_money(price), invoice_money(amount)]
+                                for day, kind, m3, price, amount in records)
+                    rows.append(["", "Toplam", format_m3(sum(row[2] for row in records)), "",
+                                 invoice_money(sum(cents(row[4]) for row in records) / 100)])
+                    story.append(Paragraph("Faturaya bağlanmamış beton satışları", normal))
             elif report_type=="Cari Hesap Ekstresi":
                 cari=c.execute("SELECT unvan,telefon,vergi_no FROM cari WHERE id=?",(cari_id,)).fetchone()
                 if not cari: raise ValueError("Cari hesap bulunamadı.")
@@ -5606,10 +5720,18 @@ class HoytasApp(tk.Tk):
                     ["Toplam Borç", f"{total_debit:,.2f} TL"],
                     ["Toplam Alacak", f"{total_credit:,.2f} TL"],
                     ["Toplam Tahsilat", f"{total_collected:,.2f} TL"],
-                    ["Faturalı Kalan Borç", f"{invoiced / 100:,.2f} TL"],
-                    ["Faturaya Bağlanmamış Satış Tutarı", f"{unbilled / 100:,.2f} TL ({unbilled_count} satış)"],
                     ["Genel Cari Bakiye", f"{abs(bal):,.2f} TL ({'Borç' if bal>=0 else 'Alacak'})"],
                 ]
+                if sales_for_pdf:
+                    m3 = sum(safe_float(sale[1] or 0) for sale in sales_for_pdf.values())
+                    cari_summary_rows.append(["Toplam Beton Miktarı", f"{format_m3(m3)} m³"])
+                invoice_details = c.execute(
+                    "SELECT belge_bilgileri FROM fatura WHERE cari_id=? AND durum<>'İptal edildi'", (cari_id,))
+                if any(stored_details(details).get("cari_isleme") for (details,) in invoice_details):
+                    cari_summary_rows.extend([
+                        ["Faturalı Kalan Borç", f"{invoiced / 100:,.2f} TL"],
+                        ["Faturaya Bağlanmamış Satış Tutarı", f"{unbilled / 100:,.2f} TL ({unbilled_count} satış)"],
+                    ])
             elif report_type=="Cari Beton Satış Dökümü":
                 cari=c.execute("SELECT unvan,telefon,vergi_no FROM cari WHERE id=?",(cari_id,)).fetchone()
                 if not cari: raise ValueError("Cari hesap bulunamadı.")
@@ -5778,7 +5900,7 @@ class HoytasApp(tk.Tk):
                 bt=c.execute("SELECT COALESCE(SUM(CASE WHEN yon='Para Girişi' THEN tutar ELSE 0 END),0),COALESCE(SUM(CASE WHEN yon='Para Çıkışı' THEN tutar ELSE 0 END),0) FROM banka_hareket").fetchone()
                 rows.append(["","","","","TOPLAM GİRİŞ",f"{totals[0]+bt[0]:,.2f}",""])
                 rows.append(["","","","","TOPLAM ÇIKIŞ","",f"{totals[1]+bt[1]:,.2f}"])
-            else:
+            elif report_type in ("Beton Satış Raporu", "Beton Satışları Dökümü"):
                 rows=[["Tarih","Müşteri","Beton Cinsi","Miktar (m³)","Birim Fiyat","Pompa Ücreti","Mikser Nakliye (TL)","Toplam (TL)","Ödeme Durumu","Açıklama"]]
                 for r in c.execute("SELECT b.tarih,COALESCE(c.unvan,''),COALESCE(b.beton_cinsi,''),b.miktar_m3,b.birim_fiyat,COALESCE(b.pompa_ucreti,0),b.toplam,b.odeme_durumu,COALESCE(b.aciklama,''),COALESCE(s.ad,''),b.mikser_nakliye_ucreti FROM beton_satis b LEFT JOIN cari c ON c.id=b.cari_id LEFT JOIN santiye s ON s.id=b.santiye_id ORDER BY b.tarih ASC,b.id ASC"):
                     detail = format_beton_aciklama(r[2],r[3],r[4],r[5],r[6],r[9],r[8],r[7],r[10])
@@ -5794,6 +5916,8 @@ class HoytasApp(tk.Tk):
                 for kind,count,m3,amount in by_type:
                     beton_summary_rows.append([kind,str(count),format_m3(m3),f"{amount:,.2f}"])
                 beton_summary_rows.append(["GENEL TOPLAM",str(total[2]),format_m3(total[0]),f"{total[1]:,.2f}"])
+            else:
+                raise ValueError(f"Bilinmeyen PDF raporu: {report_type}")
         # Uzun açıklama/unvanların sayfa dışına taşmasını engelle: tüm hücreleri
         # Paragraph yaparak satır kaydır ve tabloyu kullanılabilir sayfa genişliğine sığdır.
         from reportlab.platypus import Paragraph as RLParagraph
@@ -5811,11 +5935,11 @@ class HoytasApp(tk.Tk):
                 else:
                     wrapped.append(cell)
             wrapped_rows.append(wrapped)
-        page_width = (A4[0] if report_type in ("Cari Hesap Ekstresi", "Fatura Taslağı PDF") else landscape(A4)[0]) - 56
+        page_width = (A4[0] if report_type in (*CARI_STATEMENT_REPORTS, "Fatura Taslağı PDF") else landscape(A4)[0]) - 56
         # Her rapor türüne uygun sütun genişlikleri: tarih/tür gibi kısa alanlar
         # açıklama ve cari unvanı gibi uzun alanları ezmesin.
         width_ratios = {
-            "Cari Hesap Ekstresi": [0.72, 0.68, 0.78, 0.72, 2.05, 0.92, 0.92, 1.05],
+            "Cari Hesap Ekstresi": [0.87, 0.68, 0.78, 0.57, 2.05, 0.92, 0.92, 1.05],
             "Gelir-Gider Raporu": [0.78, 0.72, 0.95, 1.55, 2.20, 0.90, 1.00],
             "Çek Listesi": [0.65, 0.90, 0.85, 0.95, 1.45, 0.85, 0.95, 0.85, 1.35],
             "Alınan Çekler Dökümü": [0.65, 0.90, 0.85, 0.95, 1.45, 0.85, 0.95, 0.85, 1.35],

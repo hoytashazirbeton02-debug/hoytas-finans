@@ -1,7 +1,7 @@
 name: HOYTAS Release
 on:
   push:
-    branches: [release-v133]
+    branches: [release-v135]
     paths:
       - '.github/workflows/release.yml'
       - 'hoytas.py'
@@ -45,6 +45,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $env:HOYTAS_PROFILE_DIR = Join-Path $env:RUNNER_TEMP ([guid]::NewGuid().ToString())
           python test_v133_invoice_period.py --desktop
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:HOYTAS_PROFILE_DIR = Join-Path $env:RUNNER_TEMP ([guid]::NewGuid().ToString())
+          python test_v134_invoice.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:HOYTAS_PROFILE_DIR = Join-Path $env:RUNNER_TEMP ([guid]::NewGuid().ToString())
+          python test_v135_reports.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Remove-Item Env:HOYTAS_PROFILE_DIR
           $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP ([guid]::NewGuid().ToString())

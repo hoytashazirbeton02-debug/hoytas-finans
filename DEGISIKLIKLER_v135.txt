@@ -1,0 +1,5 @@
+HOYTAŞ v135
+- Genel, faturalı ve faturasız cari ekstreleri ayrı PDF raporları olarak seçilebilir.
+- Cari hareketi, beton, bağlı çek ve fatura çıktıları kendi kayıt ve başlıklarını kullanır.
+- Liste PDF'leri ilgili sekmenin görünür kayıtlarından hazırlanır. Boş listelerde PDF düğmesi gösterilmez.
+- Cari kartında düzenleme, fatura ve bağlantı işlemleri ilgili kayıt ve duruma göre gösterilir.
