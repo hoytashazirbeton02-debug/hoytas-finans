@@ -1,0 +1,6 @@
+HOYTAŞ v134
+
+- Cari Faturalar menüsü, brüt ve net tutarlar ve seçili faturadan tahsilat.
+- Tevkifat işlem kodu yalnızca tevkifatlı taslaklarda görünür.
+- Önceden elle yazılmış aynı tutardaki borcu inceleyip faturaya bağlama.
+- Cari ekstresi PDF’sinde faturalı kalan, faturaya bağlanmamış satış tutarı ve genel bakiye.

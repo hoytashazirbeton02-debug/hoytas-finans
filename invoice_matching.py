@@ -80,7 +80,27 @@ def invoice_quote(db, customer, invoice_id):
     return row
 
 
-def post_invoice(db, customer, invoice_id, invoice, sales):
+def manual_invoice_debits(db, customer, payable):
+    """Offer only unlinked manual debits of the same customer and exact amount."""
+    rows = db.execute("""SELECT id,tarih,kategori,COALESCE(aciklama,''),tutar
+        FROM hareket WHERE cari_id=? AND tur='Borç' AND ROUND(tutar,2)=?
+          AND COALESCE(kategori,'') NOT IN ('Fatura Farkı','Tahsilat') ORDER BY tarih,id""",
+        (customer, cents(payable) / 100))
+    return [row for row in rows if row[4] > 0 and not re.search(
+        r"\[(?:SATIŞ|FATURA):\d+\]|^Beton satış #\d+", row[3], re.IGNORECASE)]
+
+
+def manual_invoice_debit(db, customer, payable, movement_id):
+    if movement_id is None:
+        return None
+    row = next((row for row in manual_invoice_debits(db, customer, payable)
+                if row[0] == movement_id), None)
+    if row is None:
+        raise ValueError("Seçilen manuel borç değişti veya başka bir kayda bağlandı.")
+    return row
+
+
+def post_invoice(db, customer, invoice_id, invoice, sales, manual=None):
     """Apply only the net difference. Persist all rows in the caller's transaction."""
     day, number, payable, paid, stored, quantity = invoice
     if sales and abs(quantity - sum(row[2] for row in sales)) > 0.000001:
@@ -89,23 +109,31 @@ def post_invoice(db, customer, invoice_id, invoice, sales):
     net = cents(payable)
     if net <= 0 or cents(paid) > net:
         raise ValueError("Fatura tahsil edilecek tutarı ve önceki ödemeleri kontrol edin.")
-    delta = net - sale_debt
+    if manual is not None and manual_invoice_debit(db, customer, payable, manual[0]) != manual:
+        raise ValueError("Manuel borç değişti. İşlemi yeniden açın.")
+    manual_debt = cents(manual[4]) if manual else 0
+    delta = net - sale_debt - manual_debt
     for sale_id, *_ in sales:
         if db.execute("""UPDATE beton_satis SET fatura_id=?
             WHERE id=? AND cari_id=? AND fatura_id IS NULL""",
             (invoice_id, sale_id, customer)).rowcount != 1:
             raise ValueError("Satışın bağlantısı değişti. İşlemi yeniden açın.")
+    if manual:
+        db.execute("UPDATE hareket SET aciklama=? WHERE id=?",
+                   (f"{manual[3]} [FATURA:{invoice_id}]".strip(), manual[0]))
     move_id = None
     if delta:
         move_id = db.insert_shared("""INSERT INTO hareket
             (tarih,cari_id,tur,kategori,aciklama,tutar,odeme_yontemi) VALUES(?,?,?,?,?,?,?)""",
             (day, customer, "Borç" if delta > 0 else "Alacak",
-             "Fatura Farkı" if sales else "Fatura",
+             "Fatura Farkı" if sales or manual else "Fatura",
              f"Fatura {number} · {'Satış farkı' if sales else 'Satış faturası'} [FATURA:{invoice_id}]",
              abs(delta) / 100, "Fatura")).lastrowid
     details = stored_details(stored)
     details["cari_isleme"] = {"hareket_id": move_id, "satislar": [row[0] for row in sales],
-                               "satis_borcu_kurus": sale_debt, "fark_kurus": delta}
+                               "satis_borcu_kurus": sale_debt, "fark_kurus": delta,
+                               "manuel_borc_id": manual[0] if manual else None,
+                               "manuel_borc_kurus": manual_debt}
     db.execute("UPDATE fatura SET belge_bilgileri=? WHERE id=?",
                (json.dumps(details, ensure_ascii=False), invoice_id))
 

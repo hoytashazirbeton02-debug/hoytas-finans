@@ -29,12 +29,13 @@ from xml.sax.saxutils import escape
 from hybrid_branding import set_brand_logo
 from invoice_matching import (GIB_TEBLIG, WITHHOLDING_LABELS, cents, concrete_invoice_lines, invoice_quote,
                               post_invoice, record_is_posted, selected_sales, stored_details,
-                              customer_invoice_totals, sales_in_period, uninvoiced_sales)
+                              customer_invoice_totals, sales_in_period, uninvoiced_sales,
+                              manual_invoice_debits, manual_invoice_debit)
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
 TARGET_SCHEMA_VERSION = 62
-APP_VERSION = 133
+APP_VERSION = 134
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 ISOLATED_PROFILE_DIR = os.environ.get("HOYTAS_PROFILE_DIR", "").strip()
 USER_DATA_DIR = ISOLATED_PROFILE_DIR or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
@@ -2537,36 +2538,39 @@ class HoytasApp(tk.Tk):
         self.fill_tree(ct, [(cid, direction, bank, number, due, f"{amount:,.2f}", status)
                             for cid, direction, bank, number, due, amount, status in checks])
         with connect() as db:
-            invoices = db.execute("""SELECT id, 'Satış', tarih, belge_no, genel_toplam,
+            invoices = db.execute("""SELECT id, 'Satış', tarih, belge_no, genel_toplam, tahsil_edilecek,
                 odenen, tahsil_edilecek-odenen, durum,
                 CASE WHEN json_valid(belge_bilgileri) AND json_extract(belge_bilgileri,'$.cari_isleme') IS NOT NULL
                      THEN 'Cariye işlendi · ' || COALESCE(aciklama,'') ELSE aciklama END
                 FROM fatura WHERE cari_id=?
                 UNION ALL
-                SELECT id, 'Alış', tarih, belge_no, genel_toplam, odenen,
+                SELECT id, 'Alış', tarih, belge_no, genel_toplam, genel_toplam, odenen,
                 genel_toplam-odenen, durum, aciklama FROM gelen_fatura WHERE cari_id=?
                 ORDER BY 3, 2, 4""", (cari_id, cari_id)).fetchall()
         invoice_frame = ttk.Frame(nb, padding=6)
         nb.add(invoice_frame, text="Faturalar")
         invoice_actions = ttk.Frame(invoice_frame)
         invoice_actions.pack(fill="x", pady=(0, 6))
-        ttk.Button(invoice_actions, text="Beton Satışını Faturaya Bağla",
-                   command=lambda: refresh_card(self.match_concrete_invoice, 3)).pack(side="left", padx=(0, 8))
-        ttk.Button(invoice_actions, text="Fatura Türleri ve Mevzuat",
-                   command=self.show_invoice_tax_options).pack(side="left", padx=(0, 8))
-        ttk.Button(invoice_actions, text="Cari Kontrolü",
-                   command=lambda: self.selected_invoice_document(invoice_tree, review=True)).pack(side="left", padx=(0, 8))
-        ttk.Button(invoice_actions, text="Satış Taslağı PDF",
-                   command=lambda: self.selected_invoice_document(invoice_tree)).pack(side="left", padx=(0, 8))
-        ttk.Button(invoice_actions, text="Belge Bilgileri",
-                   command=lambda: self.selected_invoice_document(invoice_tree, edit=True)).pack(side="left")
-        invoice_tree = self._tree(invoice_frame, ("id", "tur", "tarih", "belge", "toplam", "odenen", "kalan", "durum", "aciklama"),
-                                  ("ID", "Tür", "Tarih", "Belge No", "Toplam TL", "Ödenen TL", "Kalan TL", "Durum", "Açıklama"),
-                                  (55, 75, 95, 115, 115, 115, 115, 110, 225), show_id=False)
+        self._action_menu(invoice_actions, "Fatura İşlemleri", [
+            ("Beton Satışını Faturaya Bağla", lambda: refresh_card(self.match_concrete_invoice, 3)),
+            ("Yeni Satış Faturası Taslağı", lambda: refresh_card(self.add_fatura, 3)),
+            ("Cariye Yeni Fatura Borcu İşle", lambda: refresh_card(lambda customer: self.add_fatura(customer, post=True), 3)),
+            ("Alış Faturası", lambda: refresh_card(self.add_gelen_fatura, 3)),
+            ("Satış Taslağı PDF", lambda: self.selected_invoice_document(invoice_tree)),
+            ("Belge Bilgileri", lambda: self.selected_invoice_document(invoice_tree, edit=True)),
+            ("Cari Kontrolü", lambda: self.selected_invoice_document(invoice_tree, review=True)),
+            ("Fatura Türleri ve Mevzuat", self.show_invoice_tax_options),
+        ]).pack(side="left", padx=(0, 8))
+        ttk.Button(invoice_actions, text="Seçili Faturadan Tahsilat Al",
+                   command=lambda: refresh_card(lambda _: self._collect_selected_invoice(invoice_tree), 3)).pack(side="left")
+        invoice_tree = self._tree(invoice_frame,
+            ("id", "tur", "tarih", "belge", "toplam", "net", "odenen", "kalan", "durum", "aciklama"),
+            ("ID", "Tür", "Tarih", "Belge No", "Fatura Toplamı", "Tahsil Edilecek", "Ödenen", "Kalan", "Durum", "Açıklama"),
+            (55, 65, 90, 100, 115, 120, 100, 100, 105, 170), show_id=False)
         self.fill_tree(invoice_tree, [
-            (invoice_id, kind, day, number or "", f"{safe_float(total):,.2f}",
+            (invoice_id, kind, day, number or "", f"{safe_float(total):,.2f}", f"{safe_float(net):,.2f}",
              f"{safe_float(paid):,.2f}", f"{safe_float(remaining):,.2f}", status, detail or "")
-            for invoice_id, kind, day, number, total, paid, remaining, status, detail in invoices
+            for invoice_id, kind, day, number, total, net, paid, remaining, status, detail in invoices
         ])
         nb.select(selected_tab)
 
@@ -2592,10 +2596,6 @@ class HoytasApp(tk.Tk):
 
         self._action_menu(header_actions, "Cari İşlemleri", [
             ("Çek Girişi", lambda: refresh_card(self.add_cek, 2)),
-            ("Satış Faturası Taslağı", lambda: refresh_card(self.add_fatura, 3)),
-            ("Beton Satışını Faturaya Bağla", lambda: refresh_card(self.match_concrete_invoice, 3)),
-            ("Cariye Yeni Fatura Borcu İşle", lambda: refresh_card(lambda customer: self.add_fatura(customer, post=True), 3)),
-            ("Alış Faturası", lambda: refresh_card(self.add_gelen_fatura, 3)),
             ("Cari Hareket Ekle", lambda: refresh_card(self.add_hareket, 0)),
             ("Beton-Cari Bağlantısını Kontrol Et", lambda: self.repair_cari_beton_links(cari_id, refreshed=refresh_card)),
         ]).pack(side="right", padx=(4, 0))
@@ -4066,12 +4066,14 @@ class HoytasApp(tk.Tk):
         win = tk.Toplevel(self); win.title(title); win.transient(self); win.grab_set()
         win.resizable(False, False)
         entries = {}
+        withholding_widgets = None
         body = ttk.Frame(win, padding=16); body.pack(fill="both", expand=True)
         ttk.Label(body, text="Bilgileri kontrol edin. Cari alanında serbestçe yazabilir, önerileri ok tuşuyla açabilirsiniz.",
                   foreground="#315B46", wraplength=590).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
         for r, (key, label, kind, options) in enumerate(fields):
             r += 1
-            ttk.Label(body, text=label).grid(row=r, column=0, sticky="w", padx=(0,12), pady=5)
+            field_label = ttk.Label(body, text=label)
+            field_label.grid(row=r, column=0, sticky="w", padx=(0,12), pady=5)
             if kind == "combo_search":
                 # Tek alanda arama + seçim: kullanıcı cari ünvanını yazar, eşleşmeler açılır.
                 widget = ttk.Combobox(body, values=options, state="normal", width=38)
@@ -4100,10 +4102,10 @@ class HoytasApp(tk.Tk):
                                                          if combo.get().strip() else original)))
                 entries[key] = widget
                 continue
-            if kind in ("combo", "combo_edit"):
-                widget = ttk.Combobox(body, values=options, state=("normal" if kind == "combo_edit" else "readonly"), width=30)
+            if kind in ("combo", "combo_edit", "withholding_code"):
+                widget = ttk.Combobox(body, values=options, state=("readonly" if kind == "combo" else "normal"), width=30)
                 widget.set(options[0] if options and kind != "combo_edit" else "")
-                if kind == "combo_edit":
+                if kind in ("combo_edit", "withholding_code"):
                     all_options = list(options or [])
                     def suggest_values(_event=None, combo=widget, original=all_options):
                         typed = combo.get()
@@ -4124,10 +4126,36 @@ class HoytasApp(tk.Tk):
                 except tk.TclError: pass
             widget.grid(row=r, column=1, pady=5)
             entries[key] = widget
+            if kind == "withholding_code":
+                basis = ttk.Label(body, wraplength=430)
+                basis.grid(row=r + 1, column=1, sticky="w", pady=(0, 5))
+                withholding_widgets = (field_label, widget, basis)
+        if withholding_widgets is not None:
+            code_label, code_picker, basis = withholding_widgets
+
+            def update_code(_event=None):
+                selected = WITHHOLDING_LABELS.get(code_picker.get())
+                basis.configure(text=(f"Tebliğ I/C-{selected[2]} · KDV tevkifat oranı {selected[1]}/10"
+                                      if selected else "İşlem kodunu listeden seçin."))
+
+            def update_invoice_type(_event=None):
+                for control in withholding_widgets:
+                    if entries["tur"].get() == "Tevkifatlı":
+                        control.grid()
+                    else:
+                        control.grid_remove()
+                update_code()
+
+            entries["tur"].bind("<<ComboboxSelected>>", update_invoice_type)
+            code_picker.bind("<<ComboboxSelected>>", update_code)
+            code_picker.bind("<KeyRelease>", update_code, add="+")
+            update_invoice_type()
+
         result = {}
         def save():
             for key, widget in entries.items():
-                result[key] = widget.get().strip()
+                result[key] = ("" if withholding_widgets is not None and key == "kod"
+                               and entries["tur"].get() == "Normal" else widget.get().strip())
                 if key.lower() in ("tarih", "vade") and result[key]:
                     try: result[key] = normalize_date(result[key])
                     except ValueError:
@@ -4136,7 +4164,7 @@ class HoytasApp(tk.Tk):
         # Alanlar 1..len(fields) satırlarında; düğmeler ayrı SON satırda olmalı.
         # Önceki sürümde row=len(fields) son alanla çakışıyordu.
         btns = ttk.Frame(body)
-        btns.grid(row=len(fields) + 1, column=0, columnspan=3,
+        btns.grid(row=len(fields) + (2 if withholding_widgets else 1), column=0, columnspan=3,
                   sticky="e", pady=(16, 2))
         win.bind("<Return>", lambda _e: save())
         win.bind("<Escape>", lambda _e: win.destroy())
@@ -4698,23 +4726,26 @@ class HoytasApp(tk.Tk):
                 invoice = invoice_quote(db, customer, invoice_id)
             if abs(invoice[5] - sum(row[2] for row in sales)) > 0.000001:
                 raise ValueError("Faturanın miktarı seçili beton satışlarının toplamına eşit olmalıdır.")
-            if not self._confirm_invoice_posting(cari_context, sales, invoice[2], invoice[3]):
+            approved, manual = choose_manual_invoice_debit(self.prompt, customer, invoice[2])
+            if not approved or not self._confirm_invoice_posting(cari_context, sales, invoice[2], invoice[3], manual=manual):
                 return
             with connect() as db:
                 db.execute("BEGIN IMMEDIATE")
                 if (invoice_quote(db, customer, invoice_id) != invoice or
                         selected_sales(db, customer, sale_ids, index_beton_movements(db)[0]) != sales):
                     raise ValueError("Satış veya fatura değişti. İşlemi yeniden açın.")
-                post_invoice(db, customer, invoice_id, invoice, sales)
+                post_invoice(db, customer, invoice_id, invoice, sales, manual)
             messagebox.showinfo("Fatura eşleştirildi", "Fatura bağlantısı ve cari farkı kaydedildi.", parent=self)
         except (ValueError, sqlite3.Error) as exc:
             messagebox.showerror("Fatura eşleştirilemedi", str(exc), parent=self)
 
-    def _confirm_invoice_posting(self, customer, sales, payable, paid=0, operation="", taxes=None, lines=()):
+    def _confirm_invoice_posting(self, customer, sales, payable, paid=0, operation="", taxes=None, lines=(), manual=None):
         sale_debt = sum(cents(row[3]) for row in sales)
-        delta = cents(payable) - sale_debt
+        manual_amount = cents(manual[4]) if manual else 0
+        delta = cents(payable) - sale_debt - manual_amount
         message = (f"{customer[1]}\n\n"
                    f"Mevcut satış borcu: {invoice_money(sale_debt / 100)} TL\n"
+                   f"Seçilen manuel fatura borcu: {invoice_money(manual_amount / 100)} TL\n"
                    f"Fatura tahsil edilecek: {invoice_money(payable)} TL\n"
                    f"Faturaya kaydedilmiş tahsilat: {invoice_money(paid)} TL\n"
                    f"Cariye işlenecek fark: {'+' if delta > 0 else ''}{invoice_money(delta / 100)} TL")
@@ -4735,7 +4766,10 @@ class HoytasApp(tk.Tk):
                         f"\nTevkifat: {invoice_money(withheld)} TL")
         if operation:
             message += f"\n{operation}"
-        message += "\n\nBu fatura için ayrıca borç kaydı girdiyseniz önce cari hareketleri kontrol edin."
+        if manual:
+            message += f"\nBağlanacak cari hareket: #{manual[0]} · {manual[3]}"
+        else:
+            message += "\n\nBu fatura için ayrıca borç kaydı girdiyseniz önce cari hareketleri kontrol edin."
         return messagebox.askyesno("Fatura ve Cari Farkı Önizleme", message, parent=self)
 
     def show_invoice_tax_options(self):
@@ -4783,8 +4817,7 @@ class HoytasApp(tk.Tk):
             ]),
             ("kdv", "KDV oranı (%)", "combo", ["20","10","1","0"]),
             ("tur", "Fatura türü", "combo", ["Normal", "Tevkifatlı"]),
-            ("kod", "GİB işlem kodu · işlem adı · oran", "combo_edit", ["Seçiniz", *WITHHOLDING_LABELS]),
-            ("tevkifat", "Kod seçilmediyse tevkifat oranı (eski taslak)", "combo_edit", ["0","4/10","5/10","7/10","9/10"])
+            ("kod", "GİB işlem kodu · işlem adı · oran", "withholding_code", list(WITHHOLDING_LABELS))
         ])
         if not d:
             return
@@ -4802,25 +4835,14 @@ class HoytasApp(tk.Tk):
             if miktar <= 0 or fiyat < 0 or not 0 <= kdv_oran <= 100:
                 raise ValueError("Miktar, fiyat veya KDV oranı geçersiz.")
             tur = d["tur"]
-            oran_metin = d["tevkifat"].strip()
             operation = WITHHOLDING_LABELS.get(d.get("kod", ""))
             if d.get("kod") not in ("", "Seçiniz", None) and operation is None:
                 raise ValueError("GİB işlem kodunu açıklamalı listeden seçin.")
             if tur == "Normal" and operation:
                 raise ValueError("GİB tevkifat kodu için fatura türünü Tevkifatlı seçin.")
-            if tur == "Tevkifatlı" and operation:
-                tevkifat_oran = operation[1] / 10
-            elif tur == "Tevkifatlı":
-                if post:
-                    raise ValueError("Cariye işlenecek tevkifatlı fatura için GİB işlem kodunu listeden seçin.")
-                if "/" not in oran_metin:
-                    raise ValueError("Tevkifat oranını 4/10 gibi girin.")
-                pay, payda = [int(x.strip()) for x in oran_metin.split("/", 1)]
-                if payda != 10 or not 0 < pay < payda:
-                    raise ValueError("Tevkifat oranı 1/10 ile 9/10 arasında olmalıdır.")
-                tevkifat_oran = pay / payda
-            else:
-                tevkifat_oran = 0.0
+            if tur == "Tevkifatlı" and operation is None:
+                raise ValueError("Tevkifatlı fatura için GİB işlem kodunu listeden seçin.")
+            tevkifat_oran = operation[1] / 10 if operation else 0.0
             if cari_context is None and d["cari"] not in names:
                 raise ValueError("Listeden kayıtlı bir cari hesap seçin.")
             cari_id = cari_context[0] if cari_context is not None else int(d["cari"].split(" - ", 1)[0])
@@ -4840,11 +4862,13 @@ class HoytasApp(tk.Tk):
                         "tevkifat_islem_kodu": operation[0]} if operation else {})
             if lines:
                 details["kalemler"] = lines
+            manual = None
             if post:
                 if net <= 0:
                     raise ValueError("Cariye işlenecek faturanın tahsil edilecek tutarı pozitif olmalıdır.")
-                if not self._confirm_invoice_posting(cari_context, sales, net, operation=operation_label,
-                                                     taxes=(ara, kdv_tutar, tevkifat_tutar), lines=lines):
+                approved, manual = choose_manual_invoice_debit(self.prompt, cari_id, net)
+                if not approved or not self._confirm_invoice_posting(cari_context, sales, net, operation=operation_label,
+                                                     taxes=(ara, kdv_tutar, tevkifat_tutar), lines=lines, manual=manual):
                     return
             with connect() as c:
                 c.execute("BEGIN IMMEDIATE")
@@ -4863,7 +4887,7 @@ class HoytasApp(tk.Tk):
                      kdv_tutar,toplam,"Taslak",tur,tevkifat_oran,tevkifat_tutar,net, json.dumps(details, ensure_ascii=False)))
                 if post:
                     posted = invoice_quote(c, cari_id, cur.lastrowid)
-                    post_invoice(c, cari_id, cur.lastrowid, posted, sales)
+                    post_invoice(c, cari_id, cur.lastrowid, posted, sales, manual)
             self._refresh_selected_module()
             messagebox.showinfo("Fatura taslağı kaydedildi",
                 f"Ara toplam: {ara:,.2f} TL\nKDV: {kdv_tutar:,.2f} TL\n"
@@ -4878,6 +4902,15 @@ class HoytasApp(tk.Tk):
         if not selected:
             return messagebox.showinfo("Fatura seçin", "Önce bir fatura seçin.", parent=self)
         invoice_id = int(self.fatura_tree.item(selected[0], "values")[0])
+        return self._collect_sales_invoice(invoice_id)
+
+    def _collect_selected_invoice(self, tree):
+        selection = tree.selection()
+        if not selection or tree.set(selection[0], "tur") != "Satış":
+            return messagebox.showinfo("Fatura seçin", "Önce tahsilat alınacak satış faturasını seçin.", parent=self)
+        return self._collect_sales_invoice(int(tree.set(selection[0], "id")))
+
+    def _collect_sales_invoice(self, invoice_id):
         with connect() as db:
             customer = db.execute("""SELECT c.id,c.unvan FROM fatura f JOIN cari c ON c.id=f.cari_id
                 WHERE f.id=? AND f.durum<>'İptal edildi' AND f.tahsil_edilecek-f.odenen>0.005""", (invoice_id,)).fetchone()
@@ -5567,12 +5600,15 @@ class HoytasApp(tk.Tk):
                 total_debit=sum(r[6] for r in moves if r[2]=='Borç'); total_credit=sum(r[6] for r in moves if r[2]=='Alacak')
                 rows.append(["","","","","Rapor Toplamı",f"{total_debit:,.2f}",f"{total_credit:,.2f}",f"{abs(bal):,.2f} ({'B' if bal>=0 else 'A'})"])
                 total_collected=c.execute("SELECT COALESCE(SUM(tutar),0) FROM hareket WHERE cari_id=? AND tur='Alacak' AND kategori NOT IN ('Fatura Farkı','Fatura') AND (kategori LIKE '%Tahsilat%' OR aciklama LIKE '%tahsilat%')",(cari_id,)).fetchone()[0]
+                invoiced, unbilled_count, unbilled = customer_invoice_totals(c, cari_id)
                 cari_summary_rows=[
                     ["CARİ HESAP ÖZETİ", "TOPLAM"],
                     ["Toplam Borç", f"{total_debit:,.2f} TL"],
                     ["Toplam Alacak", f"{total_credit:,.2f} TL"],
                     ["Toplam Tahsilat", f"{total_collected:,.2f} TL"],
-                    ["Kalan Cari Bakiye", f"{abs(bal):,.2f} TL ({'Borç' if bal>=0 else 'Alacak'})"],
+                    ["Faturalı Kalan Borç", f"{invoiced / 100:,.2f} TL"],
+                    ["Faturaya Bağlanmamış Satış Tutarı", f"{unbilled / 100:,.2f} TL ({unbilled_count} satış)"],
+                    ["Genel Cari Bakiye", f"{abs(bal):,.2f} TL ({'Borç' if bal>=0 else 'Alacak'})"],
                 ]
             elif report_type=="Cari Beton Satış Dökümü":
                 cari=c.execute("SELECT unvan,telefon,vergi_no FROM cari WHERE id=?",(cari_id,)).fetchone()
@@ -6054,6 +6090,24 @@ class HoytasApp(tk.Tk):
 
 
 INVOICE_DRAFT_PROFILES = ("", "TEMELFATURA", "TICARIFATURA", "EARSIVFATURA")
+
+
+def choose_manual_invoice_debit(prompt, customer, payable):
+    with connect() as db:
+        rows = manual_invoice_debits(db, customer, payable)
+    if not rows:
+        return True, None
+    choices = {
+        f"#{row[0]} · {display_date(row[1])} · {invoice_money(row[4])} TL · {row[3] or row[2]}": row
+        for row in rows
+    }
+    values = prompt("Daha Önce Cariye Yazılmış Fatura Borcu", [
+        ("hareket", "Bu faturaya ait borç", "combo",
+         ["Manuel borç bağlama", *choices]),
+    ])
+    if not values:
+        return False, None
+    return True, choices.get(values["hareket"])
 
 
 def invoice_document_details(stored, customer_id):
