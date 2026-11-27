@@ -137,3 +137,26 @@ def concrete_invoice_lines(sales):
          "fiyat": str(price), "tutar_kurus": cents(quantity * price)}
         for (label, price, unit), quantity in sorted(groups.items(), key=lambda item: item[0][2] != "m³")
     ]
+
+
+def uninvoiced_sales(db, customer):
+    return db.execute("""SELECT b.id,b.tarih,COALESCE(s.ad,'—'),b.miktar_m3,b.toplam
+        FROM beton_satis b LEFT JOIN santiye s ON s.id=b.santiye_id
+        WHERE b.cari_id=? AND b.fatura_id IS NULL ORDER BY b.tarih,b.id""",
+        (customer,)).fetchall()
+
+
+def sales_in_period(sales, start=None, end=None):
+    if start and end and start > end:
+        raise ValueError("Başlangıç tarihi bitiş tarihinden sonra olamaz.")
+    return [row for row in sales if (not start or row[1] >= start) and (not end or row[1] <= end)]
+
+
+def customer_invoice_totals(db, customer):
+    """Keep unbilled sales distinct from open balances tracked on posted invoices."""
+    invoices = db.execute("""SELECT tahsil_edilecek,odenen,belge_bilgileri FROM fatura
+        WHERE cari_id=? AND durum<>'İptal edildi' AND tahsil_edilecek>odenen""", (customer,))
+    open_invoice = sum(cents(payable) - cents(paid) for payable, paid, info in invoices
+                       if stored_details(info).get("cari_isleme"))
+    unbilled = uninvoiced_sales(db, customer)
+    return open_invoice, len(unbilled), sum(cents(row[4]) for row in unbilled)

@@ -28,12 +28,13 @@ from xml.sax.saxutils import escape
 
 from hybrid_branding import set_brand_logo
 from invoice_matching import (GIB_TEBLIG, WITHHOLDING_LABELS, cents, concrete_invoice_lines, invoice_quote,
-                              post_invoice, record_is_posted, selected_sales, stored_details)
+                              post_invoice, record_is_posted, selected_sales, stored_details,
+                              customer_invoice_totals, sales_in_period, uninvoiced_sales)
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
 TARGET_SCHEMA_VERSION = 62
-APP_VERSION = 132
+APP_VERSION = 133
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 ISOLATED_PROFILE_DIR = os.environ.get("HOYTAS_PROFILE_DIR", "").strip()
 USER_DATA_DIR = ISOLATED_PROFILE_DIR or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
@@ -2422,6 +2423,7 @@ class HoytasApp(tk.Tk):
         name.pack(anchor="w")
         top.bind("<Configure>", lambda event: name.configure(wraplength=max(event.width - 24, 1)))
         with connect() as c:
+            open_invoice, unbilled_count, unbilled_amount = customer_invoice_totals(c, cari_id)
             totals=c.execute("SELECT toplam_borc,toplam_alacak FROM cari_bakiye WHERE cari_id=?",(cari_id,)).fetchone() or (0,0)
             moves=c.execute("SELECT h.id,h.tarih,h.tur,h.kategori,COALESCE(h.aciklama,''),COALESCE(h.odeme_yontemi,''),h.tutar FROM hareket h WHERE h.cari_id=? ORDER BY h.tarih ASC,h.id ASC",(cari_id,)).fetchall()
             sales=c.execute("SELECT b.id,b.tarih,COALESCE(b.beton_cinsi,''),b.miktar_m3,b.birim_fiyat,COALESCE(b.pompa_ucreti,0),b.toplam,COALESCE(b.odeme_durumu,''),COALESCE(b.aciklama,''),COALESCE(s.ad,''),b.mikser_nakliye_ucreti,f.belge_no FROM beton_satis b LEFT JOIN santiye s ON s.id=b.santiye_id LEFT JOIN fatura f ON f.id=b.fatura_id WHERE b.cari_id=? ORDER BY b.tarih ASC,b.id ASC",(cari_id,)).fetchall()
@@ -2442,6 +2444,9 @@ class HoytasApp(tk.Tk):
             ttk.Label(metric, text=label, style="CariSummary.TLabel").pack(anchor="w")
             ttk.Label(metric, text=value, style="CariSummary.TLabel",
                       font=("Segoe UI", 12, "bold")).pack(anchor="w")
+        ttk.Label(top, text=(f"Faturalı kalan: {invoice_money(open_invoice / 100)} TL   |   "
+                  f"Faturaya bağlanmamış: {unbilled_count} satış · {invoice_money(unbilled_amount / 100)} TL"),
+                  style="CariSummary.TLabel", padding=(10, 4)).pack(fill="x", pady=(3, 0))
         nb = ttk.Notebook(card, style="CariCard.TNotebook")
         nb.pack(fill="both", expand=True, padx=12, pady=(0, 6))
         mf = ttk.Frame(nb, padding=6)
@@ -4590,9 +4595,7 @@ class HoytasApp(tk.Tk):
     def match_concrete_invoice(self, cari_context):
         customer, name = cari_context
         with connect() as db:
-            available = db.execute("""SELECT b.id,b.tarih,COALESCE(s.ad,'—'),b.miktar_m3,b.toplam
-                FROM beton_satis b LEFT JOIN santiye s ON s.id=b.santiye_id
-                WHERE b.cari_id=? AND b.fatura_id IS NULL ORDER BY b.tarih,b.id""", (customer,)).fetchall()
+            available = uninvoiced_sales(db, customer)
             invoices = db.execute("""SELECT id,belge_no,tahsil_edilecek,belge_bilgileri FROM fatura
                 WHERE cari_id=? AND durum<>'İptal edildi' ORDER BY tarih,id""", (customer,)).fetchall()
         if not available:
@@ -4616,19 +4619,62 @@ class HoytasApp(tk.Tk):
         picker.pack(fill="x", pady=6)
         ttk.Label(options, text="Normal ve tevkifatlı satış faturaları.\nİşlem kodu ve dayanak yeni taslak formunda.",
                   wraplength=240).pack(anchor="w", pady=6)
-        ttk.Label(body, text="Beton Satışları · Birden fazla satır için Ctrl tuşunu kullanın").pack(anchor="w")
+        dates = ttk.Frame(body)
+        dates.pack(fill="x", pady=(0, 6))
+        start = tk.StringVar(window)
+        end = tk.StringVar(window)
+        for label, variable in (("Başlangıç", start), ("Bitiş", end)):
+            ttk.Label(dates, text=label).pack(side="left", padx=(0, 4))
+            entry = ttk.Entry(dates, width=12, textvariable=variable)
+            entry.pack(side="left", padx=(0, 8))
+            entry.bind("<Return>", lambda _event: apply_period())
+        ttk.Button(dates, text="Uygula", command=lambda: apply_period()).pack(side="left")
+        ttk.Label(body, text="Tarih biçimi GG.AA.YYYY · Boş tarih sınır koymaz.").pack(anchor="w")
+        status = ttk.Label(body, style="CariSummary.TLabel", padding=(8, 5))
+        status.pack(side="bottom", fill="x", pady=(6, 0))
         table = self._tree(body, ("id", "tarih", "santiye", "m3", "borc"),
                            ("ID", "Tarih", "Şantiye", "Miktar (m³)", "Satış Borcu"),
                            (50, 90, 175, 100, 100), show_id=False, print_button=False)
         table.unbind("<Double-1>")
         table.unbind("<Button-3>")
         table.unbind("<Control-Button-1>")
-        self.fill_tree(table, [(sid, day, site, format_m3(qty), f"{value:,.2f}")
-                               for sid, day, site, qty, value in available])
+        table._search_entry.configure(width=18)
+        totals_by_id = {row[0]: (row[3], row[4]) for row in available}
+
+        def update_selection(_event=None):
+            amounts = [totals_by_id[int(table.set(item, "id"))] for item in table.selection()]
+            status.configure(text=f"{len(amounts)} satış seçili · "
+                             f"{format_m3(sum(row[0] for row in amounts))} m³ · "
+                             f"{invoice_money(sum(cents(row[1]) for row in amounts) / 100)} TL")
+
+        def apply_period():
+            try:
+                lower = normalize_fatura_tarihi(start.get()) if start.get().strip() else None
+                upper = normalize_fatura_tarihi(end.get()) if end.get().strip() else None
+                rows = sales_in_period(available, lower, upper)
+            except ValueError as exc:
+                messagebox.showinfo("Tarih aralığı", str(exc), parent=window)
+                return False
+            self.fill_tree(table, [(sid, day, site, format_m3(qty), f"{value:,.2f}")
+                                   for sid, day, site, qty, value in rows])
+            update_selection()
+            return True
+
+        def select_period():
+            if apply_period():
+                table.selection_set(table.get_children())
+                update_selection()
+
+        ttk.Button(table._search_entry.master, text="Listelenenleri Seç",
+                   command=select_period).pack(side="right", padx=(6, 0))
+        table.bind("<<TreeviewSelect>>", update_selection)
+        apply_period()
         selection = None
 
         def choose():
             nonlocal selection
+            if not apply_period():
+                return
             sales = tuple(int(table.set(item, "id")) for item in table.selection())
             invoice = invoice_choices.get(picker.get())
             if not sales or (mode.get() == "existing" and invoice is None):
@@ -4672,6 +4718,9 @@ class HoytasApp(tk.Tk):
                    f"Fatura tahsil edilecek: {invoice_money(payable)} TL\n"
                    f"Faturaya kaydedilmiş tahsilat: {invoice_money(paid)} TL\n"
                    f"Cariye işlenecek fark: {'+' if delta > 0 else ''}{invoice_money(delta / 100)} TL")
+        if sales:
+            days = sorted(row[1] for row in sales)
+            message += f"\nSatış dönemi: {display_date(days[0])} – {display_date(days[-1])}"
         if lines:
             totals = {}
             for line in lines:
@@ -4772,7 +4821,7 @@ class HoytasApp(tk.Tk):
                 tevkifat_oran = pay / payda
             else:
                 tevkifat_oran = 0.0
-            if d["cari"] not in names and cari_context is None:
+            if cari_context is None and d["cari"] not in names:
                 raise ValueError("Listeden kayıtlı bir cari hesap seçin.")
             cari_id = cari_context[0] if cari_context is not None else int(d["cari"].split(" - ", 1)[0])
             base_cents = (sum(line["tutar_kurus"] for line in lines) if lines else

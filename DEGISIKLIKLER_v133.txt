@@ -1,0 +1,5 @@
+HOYTAŞ v133
+
+- Faturaya bağlanmamış beton satışları başlangıç ve bitiş tarihine göre seçilebilir.
+- Cari kartında faturalı kalan tutar ve faturaya bağlanmamış satış toplamı ayrı gösterilir.
+- Önceki faturaların açık bakiyesi ve tahsilatları korunarak yeni dönem faturaları oluşturulabilir.
