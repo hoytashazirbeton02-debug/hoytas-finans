@@ -58,7 +58,8 @@ def selected_sales(db, customer, sale_ids, movement_index):
     """Return a quote only for available sales with individually verified debits."""
     rows = []
     for sale_id in sorted(set(sale_ids)):
-        row = db.execute("""SELECT id,tarih,miktar_m3,toplam FROM beton_satis
+        row = db.execute("""SELECT id,tarih,miktar_m3,toplam,birim_fiyat,beton_cinsi,
+            pompa_ucreti,mikser_nakliye_ucreti FROM beton_satis
             WHERE id=? AND cari_id=? AND fatura_id IS NULL""", (sale_id, customer)).fetchone()
         if row is None:
             raise ValueError("Satış başka bir cariye veya faturaya bağlı ya da artık mevcut değil.")
@@ -119,3 +120,20 @@ def record_is_posted(db, table, record_id):
         return bool(row and stored_details(row[0]).get("cari_isleme"))
     return False
 
+
+
+def concrete_invoice_lines(sales):
+    """Keep different concrete prices separate and aggregate equal service charges."""
+    groups = {}
+    for _, _, quantity, _, price, kind, pump, transport, _ in sales:
+        concrete = ("Hazır Beton" + (f" · {kind}" if kind else ""), Decimal(str(price)), "m³")
+        groups[concrete] = groups.get(concrete, Decimal(0)) + Decimal(str(quantity))
+        for name, amount in (("Pompa Hizmeti", pump), ("Mikser Nakliye", transport)):
+            if amount:
+                service = (name, Decimal(str(amount)), "hizmet")
+                groups[service] = groups.get(service, Decimal(0)) + 1
+    return [
+        {"ad": label, "miktar": str(quantity), "birim": unit,
+         "fiyat": str(price), "tutar_kurus": cents(quantity * price)}
+        for (label, price, unit), quantity in sorted(groups.items(), key=lambda item: item[0][2] != "m³")
+    ]

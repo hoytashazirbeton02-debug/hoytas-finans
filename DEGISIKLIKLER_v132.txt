@@ -4,3 +4,4 @@ HOYTAŞ v132
 - Onaydan önce satış borcu, fatura tahsil edilecek tutarı ve cari farkı görünür.
 - Satışa bağlı faturada yalnızca fark; bağımsız fatura seçeneğinde net tutar cariye işlenir.
 - Normal ve tevkifatlı satış faturaları, 27 kısmi tevkifat kodu, oran ve mevzuat dayanağı.
+- Seçili satıştan beton, pompa ve mikser nakliye kalemlerinin ayrı ayrı önizleme ve PDF'ye aktarılması.

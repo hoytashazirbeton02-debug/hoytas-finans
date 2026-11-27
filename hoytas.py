@@ -27,7 +27,7 @@ import time
 from xml.sax.saxutils import escape
 
 from hybrid_branding import set_brand_logo
-from invoice_matching import (GIB_TEBLIG, WITHHOLDING_LABELS, cents, invoice_quote,
+from invoice_matching import (GIB_TEBLIG, WITHHOLDING_LABELS, cents, concrete_invoice_lines, invoice_quote,
                               post_invoice, record_is_posted, selected_sales, stored_details)
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -4664,7 +4664,7 @@ class HoytasApp(tk.Tk):
         except (ValueError, sqlite3.Error) as exc:
             messagebox.showerror("Fatura eşleştirilemedi", str(exc), parent=self)
 
-    def _confirm_invoice_posting(self, customer, sales, payable, paid=0, operation="", taxes=None):
+    def _confirm_invoice_posting(self, customer, sales, payable, paid=0, operation="", taxes=None, lines=()):
         sale_debt = sum(cents(row[3]) for row in sales)
         delta = cents(payable) - sale_debt
         message = (f"{customer[1]}\n\n"
@@ -4672,6 +4672,14 @@ class HoytasApp(tk.Tk):
                    f"Fatura tahsil edilecek: {invoice_money(payable)} TL\n"
                    f"Faturaya kaydedilmiş tahsilat: {invoice_money(paid)} TL\n"
                    f"Cariye işlenecek fark: {'+' if delta > 0 else ''}{invoice_money(delta / 100)} TL")
+        if lines:
+            totals = {}
+            for line in lines:
+                label = "Hazır Beton" if line["birim"] == "m³" else line["ad"]
+                totals[label] = totals.get(label, 0) + line["tutar_kurus"]
+            message += "\n\nSatıştan aktarılan KDV hariç kalemler:"
+            for label, amount in totals.items():
+                message += f"\n{label}: {invoice_money(amount / 100)} TL"
         if taxes is not None:
             base, vat, withheld = taxes
             message += (f"\n\nMatrah: {invoice_money(base)} TL · KDV: {invoice_money(vat)} TL"
@@ -4714,26 +4722,33 @@ class HoytasApp(tk.Tk):
                     sales = selected_sales(db, cari_context[0], sale_ids, index_beton_movements(db)[0])
             except (ValueError, sqlite3.Error) as exc:
                 return messagebox.showerror("Satış seçimi", str(exc), parent=self)
-        initial = {"miktar": str(sum(Decimal(str(row[2])) for row in sales))} if sales else None
+        lines = concrete_invoice_lines(sales)
         d = self._prompt_for_cari(cari_context, "Yeni Satış Faturası Taslağı", [
             ("tarih", "Fatura tarihi (GG.AA.YYYY)", "entry", None),
             ("cari", "Faturanın kesileceği cari", "combo_search", names),
             ("belge", "Fatura / belge numarası", "entry", None),
             ("aciklama", "Mal/hizmet, şantiye ve teslim açıklaması", "entry", None),
-            ("miktar", "Teslim edilen beton (m³; ör. 30,5)", "entry", None),
-            ("fiyat", "KDV hariç birim fiyat (TL/m³, ücretler dahilse belirtin)", "entry", None),
+            *([] if lines else [
+                ("miktar", "Teslim edilen beton (m³; ör. 30,5)", "entry", None),
+                ("fiyat", "KDV hariç birim fiyat (TL/m³)", "entry", None),
+            ]),
             ("kdv", "KDV oranı (%)", "combo", ["20","10","1","0"]),
             ("tur", "Fatura türü", "combo", ["Normal", "Tevkifatlı"]),
             ("kod", "GİB işlem kodu · işlem adı · oran", "combo_edit", ["Seçiniz", *WITHHOLDING_LABELS]),
             ("tevkifat", "Kod seçilmediyse tevkifat oranı (eski taslak)", "combo_edit", ["0","4/10","5/10","7/10","9/10"])
-        ], initial)
+        ])
         if not d:
             return
         try:
             tarih = d["tarih"] or date.today().isoformat()
             tarih = normalize_fatura_tarihi(tarih)
-            miktar = parse_amount(d["miktar"])
-            fiyat = parse_amount(d["fiyat"])
+            if lines:
+                miktar = float(sum(Decimal(line["miktar"]) for line in lines if line["birim"] == "m³"))
+                beton_kurus = sum(line["tutar_kurus"] for line in lines if line["birim"] == "m³")
+                fiyat = (beton_kurus / 100) / miktar if miktar else 0
+            else:
+                miktar = parse_amount(d["miktar"])
+                fiyat = parse_amount(d["fiyat"])
             kdv_oran = parse_amount(d["kdv"])
             if miktar <= 0 or fiyat < 0 or not 0 <= kdv_oran <= 100:
                 raise ValueError("Miktar, fiyat veya KDV oranı geçersiz.")
@@ -4760,7 +4775,8 @@ class HoytasApp(tk.Tk):
             if d["cari"] not in names and cari_context is None:
                 raise ValueError("Listeden kayıtlı bir cari hesap seçin.")
             cari_id = cari_context[0] if cari_context is not None else int(d["cari"].split(" - ", 1)[0])
-            base_cents = cents(Decimal(str(miktar)) * Decimal(str(fiyat)))
+            base_cents = (sum(line["tutar_kurus"] for line in lines) if lines else
+                          cents(Decimal(str(miktar)) * Decimal(str(fiyat))))
             vat_cents = cents(Decimal(base_cents) * Decimal(str(kdv_oran)) / 10000)
             withholding_cents = cents(Decimal(vat_cents) * Decimal(str(tevkifat_oran)) / 100)
             ara, kdv_tutar, toplam, tevkifat_tutar, net = (
@@ -4773,11 +4789,13 @@ class HoytasApp(tk.Tk):
             operation_label = f"{d['kod']} · KDVGUT I/C-{operation[2]}" if operation else ""
             details = ({"cari_id": cari_id, "tevkifat_kodu": operation_label,
                         "tevkifat_islem_kodu": operation[0]} if operation else {})
+            if lines:
+                details["kalemler"] = lines
             if post:
                 if net <= 0:
                     raise ValueError("Cariye işlenecek faturanın tahsil edilecek tutarı pozitif olmalıdır.")
                 if not self._confirm_invoice_posting(cari_context, sales, net, operation=operation_label,
-                                                     taxes=(ara, kdv_tutar, tevkifat_tutar)):
+                                                     taxes=(ara, kdv_tutar, tevkifat_tutar), lines=lines):
                     return
             with connect() as c:
                 c.execute("BEGIN IMMEDIATE")
@@ -5640,6 +5658,15 @@ class HoytasApp(tk.Tk):
                 rows = [["Sıra", "Mal / Hizmet", "Miktar", "Birim fiyat (TL)", "KDV oranı", "Mal / hizmet tutarı (TL)"],
                         ["1", f"Hazır beton\n{description}" if description else "Hazır beton",
                          format_m3(quantity).translate(str.maketrans(",.", ".,")) + " m³", invoice_money(price), f"%{vat_rate:g}", invoice_money(base)]]
+                if info.get("kalemler"):
+                    rows[1:] = [
+                        [str(index), line["ad"], line["miktar"].replace(".", ",") + " " + line["birim"],
+                         invoice_money(Decimal(line["fiyat"])), f"%{vat_rate:g}",
+                         invoice_money(line["tutar_kurus"] / 100)]
+                        for index, line in enumerate(info["kalemler"], 1)
+                    ]
+                    if description:
+                        story.append(invoice_paragraph(description))
                 invoice_totals = [("Mal / hizmet toplamı", base), ("KDV matrahı", base),
                                   (f"Hesaplanan KDV (%{vat_rate:g})", vat), ("Vergiler dahil toplam", gross)]
                 if withholding_rate:

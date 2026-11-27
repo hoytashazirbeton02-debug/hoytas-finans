@@ -21,9 +21,10 @@ def verify():
             second = db.insert_shared("INSERT INTO cari(tur,unvan,created_at) VALUES(?,?,?)",
                                       ("Müşteri", "İkinci", "2026-11-01")).lastrowid
             sales = []
-            for buyer, quantity, total in ((first, 5, 5000), (first, 5, 5000), (second, 10, 13000)):
-                sale = db.insert_shared("""INSERT INTO beton_satis(tarih,cari_id,miktar_m3,birim_fiyat,toplam,odeme_durumu)
-                    VALUES(?,?,?,?,?,?)""", ("2026-11-02", buyer, quantity, total / quantity, total, "Vadeli")).lastrowid
+            for buyer, quantity, concrete, pump, transport in (
+                    (first,5,5000,500,300), (first,5,5000,0,0), (second,10,13000,0,0)):
+                sale = db.insert_shared("""INSERT INTO beton_satis(tarih,cari_id,miktar_m3,birim_fiyat,toplam,odeme_durumu,pompa_ucreti,mikser_nakliye_ucreti)
+                    VALUES(?,?,?,?,?,?,?,?)""", ("2026-11-02", buyer, quantity, concrete / quantity, concrete+pump+transport, "Vadeli",pump,transport)).lastrowid
                 h.sync_beton_sale_cari_movement(db, sale)
                 sales.append(sale)
             try:
@@ -54,17 +55,24 @@ def verify():
                 assert not db.execute("SELECT 1 FROM fatura").fetchone()
             h.HoytasApp.add_fatura(app, (first, "Birinci"), sale_ids=sales[:2], post=True)
             errors.assert_not_called()
-            assert "+1.200,00 TL" in approval.call_args.args[1]
+            assert "+1.296,00 TL" in approval.call_args.args[1]
+            assert "Pompa Hizmeti: 500,00 TL" in approval.call_args.args[1]
+            assert "Mikser Nakliye: 300,00 TL" in approval.call_args.args[1]
         with h.connect() as db:
             invoice_id, payable, stored = db.execute("SELECT id,tahsil_edilecek,belge_bilgileri FROM fatura").fetchone()
-            assert payable == 11200
+            assert payable == 12096
             assert stored_details(stored)["tevkifat_islem_kodu"] == "601"
-            assert db.execute("SELECT bakiye FROM cari_bakiye WHERE cari_id=?", (first,)).fetchone() == (11200,)
+            assert db.execute("SELECT bakiye FROM cari_bakiye WHERE cari_id=?", (first,)).fetchone() == (12096,)
             assert db.execute("SELECT fatura_id FROM beton_satis WHERE cari_id=? ORDER BY id", (first,)).fetchall() == [(invoice_id,)] * 2
             batch = pending_batches(db)[1]
+        from pypdf import PdfReader
+        output = source.with_name("fatura.pdf")
+        h.HoytasApp.generate_pdf(app, "Fatura Taslağı PDF", str(output), invoice_id)
+        report = "\n".join(page.extract_text() for page in PdfReader(output).pages)
+        assert all(label in report for label in ("Hazır Beton", "Pompa Hizmeti", "Mikser Nakliye", "12.096,00")), report
         assert apply_batch(lambda: h.connect(replica), *batch) == "applied"
         with h.connect(replica) as db:
-            assert db.execute("SELECT bakiye FROM cari_bakiye WHERE cari_id=?", (first,)).fetchone() == (11200,)
+            assert db.execute("SELECT bakiye FROM cari_bakiye WHERE cari_id=?", (first,)).fetchone() == (12096,)
         with h.connect(competing) as db:
             fid = db.execute("""INSERT INTO fatura(id,tarih,cari_id,belge_no,miktar_m3,tahsil_edilecek)
                 VALUES(999,'2026-11-02',?,'OTHER',5,5000)""", (first,)).lastrowid
