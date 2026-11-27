@@ -1,0 +1,6 @@
+HOYTAŞ v130
+
+- Cari kartında borç, alacak, bakiye ve metreküp tek özet satırında.
+- Beton Satışları sekmesinde şantiye seçimi, listelenen satış toplamları ve tek Çıktı Al menüsü.
+- Beton satışını cari kartı veya genel beton listesinde çift tıklayarak düzenleme.
+- Cari kartındaki Excel çıktıları için kaydetmeden önce önizleme.
