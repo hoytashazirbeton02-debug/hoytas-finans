@@ -27,11 +27,13 @@ import time
 from xml.sax.saxutils import escape
 
 from hybrid_branding import set_brand_logo
+from invoice_matching import (GIB_TEBLIG, WITHHOLDING_LABELS, cents, invoice_quote,
+                              post_invoice, record_is_posted, selected_sales, stored_details)
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_CURRENT_USER = "Sistem"
-TARGET_SCHEMA_VERSION = 61
-APP_VERSION = 131
+TARGET_SCHEMA_VERSION = 62
+APP_VERSION = 132
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 ISOLATED_PROFILE_DIR = os.environ.get("HOYTAS_PROFILE_DIR", "").strip()
 USER_DATA_DIR = ISOLATED_PROFILE_DIR or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
@@ -222,6 +224,7 @@ CREATE TABLE IF NOT EXISTS beton_satis (
  miktar_m3 REAL NOT NULL, birim_fiyat REAL NOT NULL, toplam REAL NOT NULL,
  pompa_ucreti REAL NOT NULL DEFAULT 0,
  mikser_nakliye_ucreti REAL NOT NULL DEFAULT 0,
+ fatura_id INTEGER REFERENCES fatura(id) ON DELETE RESTRICT,
  beton_cinsi TEXT NOT NULL DEFAULT '', odeme_durumu TEXT NOT NULL, aciklama TEXT,
  FOREIGN KEY(cari_id) REFERENCES cari(id), FOREIGN KEY(santiye_id) REFERENCES santiye(id)
 );
@@ -565,7 +568,7 @@ def connect(path=None):
     migrations = {
         "cari": [("arsivli", "INTEGER NOT NULL DEFAULT 0 CHECK(arsivli IN (0,1))")],
         "cek": [("banka_kodu", "TEXT"), ("cari_id", "INTEGER")],
-        "beton_satis": [("santiye_id", "INTEGER"), ("beton_cinsi", "TEXT NOT NULL DEFAULT ''"), ("pompa_ucreti", "REAL NOT NULL DEFAULT 0"), ("mikser_nakliye_ucreti", "REAL NOT NULL DEFAULT 0")],
+        "beton_satis": [("santiye_id", "INTEGER"), ("beton_cinsi", "TEXT NOT NULL DEFAULT ''"), ("pompa_ucreti", "REAL NOT NULL DEFAULT 0"), ("mikser_nakliye_ucreti", "REAL NOT NULL DEFAULT 0"), ("fatura_id", "INTEGER REFERENCES fatura(id) ON DELETE RESTRICT")],
         "kullanici": [("kurtarma_hash", "TEXT"), ("kurtarma_salt", "TEXT")],
         "banka_hareket": [("karsi_taraf", "TEXT NOT NULL DEFAULT ''")],
         "maas_odeme": [("islem_turu", "TEXT NOT NULL DEFAULT 'Maaş'")],
@@ -627,7 +630,8 @@ def connect(path=None):
     if current_version < 60:
         for action in ("insert", "update", "delete"):
             con.execute(f"DROP TRIGGER IF EXISTS audit_cari_{action}")
-    if current_version < 61:
+    con.execute("CREATE INDEX IF NOT EXISTS idx_beton_fatura ON beton_satis(fatura_id)")
+    if current_version < 62:
         for action in ("insert", "update", "delete"):
             con.execute(f"DROP TRIGGER IF EXISTS audit_beton_satis_{action}")
     _install_audit_triggers(con)
@@ -2367,7 +2371,7 @@ class HoytasApp(tk.Tk):
             previous_grab.grab_set()
         return confirmed
 
-    def _prompt_for_cari(self, cari_context, title, fields):
+    def _prompt_for_cari(self, cari_context, title, fields, initial=None):
         if cari_context is not None:
             cari_id, _ = cari_context
             with connect() as db:
@@ -2380,7 +2384,7 @@ class HoytasApp(tk.Tk):
                 return None
             fields = [(key, "Cari", "combo", [f"{cari_id} - {current[0]}"]) if key == "cari"
                       else (key, label, kind, options) for key, label, kind, options in fields]
-        return self.prompt(title, fields)
+        return self.prompt(title, fields, initial) if initial else self.prompt(title, fields)
 
     def _return_from_cari_card(self):
         self._open_module(self.cari_tab)
@@ -2420,7 +2424,7 @@ class HoytasApp(tk.Tk):
         with connect() as c:
             totals=c.execute("SELECT toplam_borc,toplam_alacak FROM cari_bakiye WHERE cari_id=?",(cari_id,)).fetchone() or (0,0)
             moves=c.execute("SELECT h.id,h.tarih,h.tur,h.kategori,COALESCE(h.aciklama,''),COALESCE(h.odeme_yontemi,''),h.tutar FROM hareket h WHERE h.cari_id=? ORDER BY h.tarih ASC,h.id ASC",(cari_id,)).fetchall()
-            sales=c.execute("SELECT b.id,b.tarih,COALESCE(b.beton_cinsi,''),b.miktar_m3,b.birim_fiyat,COALESCE(b.pompa_ucreti,0),b.toplam,COALESCE(b.odeme_durumu,''),COALESCE(b.aciklama,''),COALESCE(s.ad,''),b.mikser_nakliye_ucreti FROM beton_satis b LEFT JOIN santiye s ON s.id=b.santiye_id WHERE b.cari_id=? ORDER BY b.tarih ASC,b.id ASC",(cari_id,)).fetchall()
+            sales=c.execute("SELECT b.id,b.tarih,COALESCE(b.beton_cinsi,''),b.miktar_m3,b.birim_fiyat,COALESCE(b.pompa_ucreti,0),b.toplam,COALESCE(b.odeme_durumu,''),COALESCE(b.aciklama,''),COALESCE(s.ad,''),b.mikser_nakliye_ucreti,f.belge_no FROM beton_satis b LEFT JOIN santiye s ON s.id=b.santiye_id LEFT JOIN fatura f ON f.id=b.fatura_id WHERE b.cari_id=? ORDER BY b.tarih ASC,b.id ASC",(cari_id,)).fetchall()
             checks=c.execute("SELECT id,yon,COALESCE(banka,''),COALESCE(cek_no,''),vade,tutar,durum FROM cek WHERE cari_id=? ORDER BY vade ASC,id ASC",(cari_id,)).fetchall()
         balance=totals[0]-totals[1]
         total_m3 = sum(safe_float(r[3] or 0) for r in sales)
@@ -2516,6 +2520,8 @@ class HoytasApp(tk.Tk):
         sales_rows = []
         for r in sales:
             detail = format_beton_aciklama(r[2],r[3],r[4],r[5],r[6],r[9],r[8],r[7],r[10])
+            if r[11]:
+                detail = f"Fatura {r[11]} · {detail}"
             sales_rows.append((r[0],r[1],r[9] or "-",r[2],format_m3(r[3]),f"{r[4]:,.2f}",f"{r[5]:,.2f}" if r[5] else "Yok",f"{r[10]:,.2f}" if r[10] else "-",f"{r[6]:,.2f}",r[7],detail))
         self.fill_tree(st, sales_rows)
         cf = ttk.Frame(nb, padding=6)
@@ -2527,7 +2533,10 @@ class HoytasApp(tk.Tk):
                             for cid, direction, bank, number, due, amount, status in checks])
         with connect() as db:
             invoices = db.execute("""SELECT id, 'Satış', tarih, belge_no, genel_toplam,
-                odenen, tahsil_edilecek-odenen, durum, aciklama FROM fatura WHERE cari_id=?
+                odenen, tahsil_edilecek-odenen, durum,
+                CASE WHEN json_valid(belge_bilgileri) AND json_extract(belge_bilgileri,'$.cari_isleme') IS NOT NULL
+                     THEN 'Cariye işlendi · ' || COALESCE(aciklama,'') ELSE aciklama END
+                FROM fatura WHERE cari_id=?
                 UNION ALL
                 SELECT id, 'Alış', tarih, belge_no, genel_toplam, odenen,
                 genel_toplam-odenen, durum, aciklama FROM gelen_fatura WHERE cari_id=?
@@ -2536,6 +2545,10 @@ class HoytasApp(tk.Tk):
         nb.add(invoice_frame, text="Faturalar")
         invoice_actions = ttk.Frame(invoice_frame)
         invoice_actions.pack(fill="x", pady=(0, 6))
+        ttk.Button(invoice_actions, text="Beton Satışını Faturaya Bağla",
+                   command=lambda: refresh_card(self.match_concrete_invoice, 3)).pack(side="left", padx=(0, 8))
+        ttk.Button(invoice_actions, text="Fatura Türleri ve Mevzuat",
+                   command=self.show_invoice_tax_options).pack(side="left", padx=(0, 8))
         ttk.Button(invoice_actions, text="Cari Kontrolü",
                    command=lambda: self.selected_invoice_document(invoice_tree, review=True)).pack(side="left", padx=(0, 8))
         ttk.Button(invoice_actions, text="Satış Taslağı PDF",
@@ -2575,6 +2588,8 @@ class HoytasApp(tk.Tk):
         self._action_menu(header_actions, "Cari İşlemleri", [
             ("Çek Girişi", lambda: refresh_card(self.add_cek, 2)),
             ("Satış Faturası Taslağı", lambda: refresh_card(self.add_fatura, 3)),
+            ("Beton Satışını Faturaya Bağla", lambda: refresh_card(self.match_concrete_invoice, 3)),
+            ("Cariye Yeni Fatura Borcu İşle", lambda: refresh_card(lambda customer: self.add_fatura(customer, post=True), 3)),
             ("Alış Faturası", lambda: refresh_card(self.add_gelen_fatura, 3)),
             ("Cari Hareket Ekle", lambda: refresh_card(self.add_hareket, 0)),
             ("Beton-Cari Bağlantısını Kontrol Et", lambda: self.repair_cari_beton_links(cari_id, refreshed=refresh_card)),
@@ -2926,7 +2941,7 @@ class HoytasApp(tk.Tk):
                            else "Birim Fiyat (pompa ve nakliye hariç)")
             total_pump = sum(safe_float(row[4] or 0) for row in sales)
             total_sales_amount = sum(safe_float(r[5] or 0) for r in sales)
-            total_collected = sum(safe_float(r[5] or 0) for r in moves if r[1] == "Alacak" and ("tahsilat" in str(r[2]).casefold() or "tahsilat" in str(r[3]).casefold()))
+            total_collected = sum(safe_float(r[5] or 0) for r in moves if r[1] == "Alacak" and r[2] not in ("Fatura Farkı", "Fatura") and ("tahsilat" in str(r[2]).casefold() or "tahsilat" in str(r[3]).casefold()))
             summary.append(["Toplam Beton Satışı (m³)", total_m3])
             quantity_format = '#,##0' if '.' not in format_m3(total_m3) else '#,##0.###'
             summary.cell(summary.max_row, 2).number_format = quantity_format + ' "m³"'
@@ -4152,6 +4167,14 @@ class HoytasApp(tk.Tk):
         sel=tree.selection()
         if not sel: return messagebox.showinfo("Kayıt seçin","Düzenlemek için önce bir satır seçin.",parent=self)
         rid=int(tree.item(sel[0],"values")[0])
+        if table in ("fatura", "beton_satis", "hareket"):
+            with connect() as db:
+                protected = record_is_posted(db, table, rid)
+        else:
+            protected = False
+        if protected:
+            return messagebox.showinfo("Bağlı fatura kaydı", "Faturaya bağlanmış tutar doğrudan düzenlenemez. "
+                "Tahsilat yoksa eşleştirme işlemini İşlem Geri Al ile geri alabilirsiniz.", parent=self)
         if table == "fatura":
             with connect() as check_c:
                 invoice = check_c.execute("SELECT odenen,tevkifat_oran FROM fatura WHERE id=?", (rid,)).fetchone()
@@ -4235,6 +4258,10 @@ class HoytasApp(tk.Tk):
             for key in ("tutar","miktar","miktar_m3","birim_fiyat","maas"):
                 if key in data and data[key] is not None and data[key] < 0: raise ValueError("Tutar, miktar ve fiyat negatif olamaz.")
             with connect() as c:
+                if table in ("fatura", "beton_satis", "hareket"):
+                    c.execute("BEGIN IMMEDIATE")
+                    if record_is_posted(c, table, rid):
+                        raise ValueError("Kayıt bu sırada faturaya bağlandı. Ekranı yenileyin.")
                 if table=="stok_hareket":
                     old=c.execute("SELECT stok_id,yon,miktar FROM stok_hareket WHERE id=?",(rid,)).fetchone()
                     # Once the old movement is reversed, apply the edited movement to the new stock balance.
@@ -4494,6 +4521,8 @@ class HoytasApp(tk.Tk):
             ("tevkifat_kodu", "Tevkifat kodu ve işlem adı (varsa)", "entry", None),
         ]
         initial = invoice_document_details(stored, customer_id)
+        if initial.get("tevkifat_islem_kodu"):
+            fields = [field for field in fields if field[0] != "tevkifat_kodu"]
         initial.setdefault("satici_unvan", "HOYTAŞ Hazır Beton")
         values = self.prompt(f"Fatura Belge Bilgileri | {customer or 'Cari seçilmemiş'}", fields, initial)
         if not values:
@@ -4506,7 +4535,7 @@ class HoytasApp(tk.Tk):
                 raise ValueError("Satıcı VKN 10, TCKN 11 rakam olmalıdır.")
         except ValueError as exc:
             return messagebox.showerror("Belge bilgileri", str(exc), parent=tree)
-        values["cari_id"] = customer_id
+        values = {**initial, **values, "cari_id": customer_id}
         with connect() as db:
             result = db.execute("""UPDATE fatura SET belge_bilgileri=?
                 WHERE id=? AND cari_id IS ? AND belge_bilgileri=?""",
@@ -4558,24 +4587,146 @@ class HoytasApp(tk.Tk):
         ttk.Button(body, text="Kapat", command=window.destroy).grid(row=9, column=1, sticky="e", pady=(14, 0))
         return window
 
-    def add_fatura(self, cari_context=None):
+    def match_concrete_invoice(self, cari_context):
+        customer, name = cari_context
+        with connect() as db:
+            available = db.execute("""SELECT b.id,b.tarih,COALESCE(s.ad,'—'),b.miktar_m3,b.toplam
+                FROM beton_satis b LEFT JOIN santiye s ON s.id=b.santiye_id
+                WHERE b.cari_id=? AND b.fatura_id IS NULL ORDER BY b.tarih,b.id""", (customer,)).fetchall()
+            invoices = db.execute("""SELECT id,belge_no,tahsil_edilecek,belge_bilgileri FROM fatura
+                WHERE cari_id=? AND durum<>'İptal edildi' ORDER BY tarih,id""", (customer,)).fetchall()
+        if not available:
+            return messagebox.showinfo("Satış bulunamadı", "Bu caride eşleştirilebilir beton satışı yok.", parent=self)
+        window = tk.Toplevel(self)
+        window.title("Beton Satışını Faturaya Bağla")
+        window.geometry("980x480")
+        window.transient(self)
+        body = ttk.Frame(window, padding=14)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text=f"Cari: {name}", font=("Segoe UI", 15, "bold")).pack(anchor="w", pady=(0, 8))
+        options = ttk.LabelFrame(body, text="Fatura", padding=10)
+        options.pack(side="right", fill="y", padx=(10, 0))
+        mode = tk.StringVar(window, "new")
+        for label, option in (("Yeni Fatura Taslağı", "new"), ("Mevcut Faturayı Seç", "existing")):
+            ttk.Radiobutton(options, text=label, value=option, variable=mode).pack(anchor="w", pady=4)
+        invoice_choices = {f"{number} · {amount:,.2f} TL · #{fid}": fid
+                           for fid, number, amount, details in invoices
+                           if not stored_details(details).get("cari_isleme")}
+        picker = ttk.Combobox(options, values=list(invoice_choices), width=30, state="readonly")
+        picker.pack(fill="x", pady=6)
+        ttk.Label(options, text="Normal ve tevkifatlı satış faturaları.\nİşlem kodu ve dayanak yeni taslak formunda.",
+                  wraplength=240).pack(anchor="w", pady=6)
+        ttk.Label(body, text="Beton Satışları · Birden fazla satır için Ctrl tuşunu kullanın").pack(anchor="w")
+        table = self._tree(body, ("id", "tarih", "santiye", "m3", "borc"),
+                           ("ID", "Tarih", "Şantiye", "Miktar (m³)", "Satış Borcu"),
+                           (50, 90, 175, 100, 100), show_id=False, print_button=False)
+        table.unbind("<Double-1>")
+        table.unbind("<Button-3>")
+        table.unbind("<Control-Button-1>")
+        self.fill_tree(table, [(sid, day, site, format_m3(qty), f"{value:,.2f}")
+                               for sid, day, site, qty, value in available])
+        selection = None
+
+        def choose():
+            nonlocal selection
+            sales = tuple(int(table.set(item, "id")) for item in table.selection())
+            invoice = invoice_choices.get(picker.get())
+            if not sales or (mode.get() == "existing" and invoice is None):
+                return messagebox.showinfo("Seçim gerekli", "Satışları ve gerekiyorsa faturayı seçin.", parent=window)
+            selection = sales, invoice if mode.get() == "existing" else None
+            window.destroy()
+
+        ttk.Button(options, text="Devam Et", command=choose).pack(fill="x", pady=(12, 4))
+        ttk.Button(options, text="Vazgeç", command=window.destroy).pack(fill="x")
+        window.bind("<Escape>", lambda _event: window.destroy())
+        window.grab_set()
+        self.wait_window(window)
+        if selection is None:
+            return
+        sale_ids, invoice_id = selection
+        if invoice_id is None:
+            return self.add_fatura(cari_context, sale_ids=sale_ids, post=True)
+        try:
+            with connect() as db:
+                sales = selected_sales(db, customer, sale_ids, index_beton_movements(db)[0])
+                invoice = invoice_quote(db, customer, invoice_id)
+            if abs(invoice[5] - sum(row[2] for row in sales)) > 0.000001:
+                raise ValueError("Faturanın miktarı seçili beton satışlarının toplamına eşit olmalıdır.")
+            if not self._confirm_invoice_posting(cari_context, sales, invoice[2], invoice[3]):
+                return
+            with connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                if (invoice_quote(db, customer, invoice_id) != invoice or
+                        selected_sales(db, customer, sale_ids, index_beton_movements(db)[0]) != sales):
+                    raise ValueError("Satış veya fatura değişti. İşlemi yeniden açın.")
+                post_invoice(db, customer, invoice_id, invoice, sales)
+            messagebox.showinfo("Fatura eşleştirildi", "Fatura bağlantısı ve cari farkı kaydedildi.", parent=self)
+        except (ValueError, sqlite3.Error) as exc:
+            messagebox.showerror("Fatura eşleştirilemedi", str(exc), parent=self)
+
+    def _confirm_invoice_posting(self, customer, sales, payable, paid=0, operation="", taxes=None):
+        sale_debt = sum(cents(row[3]) for row in sales)
+        delta = cents(payable) - sale_debt
+        message = (f"{customer[1]}\n\n"
+                   f"Mevcut satış borcu: {invoice_money(sale_debt / 100)} TL\n"
+                   f"Fatura tahsil edilecek: {invoice_money(payable)} TL\n"
+                   f"Faturaya kaydedilmiş tahsilat: {invoice_money(paid)} TL\n"
+                   f"Cariye işlenecek fark: {'+' if delta > 0 else ''}{invoice_money(delta / 100)} TL")
+        if taxes is not None:
+            base, vat, withheld = taxes
+            message += (f"\n\nMatrah: {invoice_money(base)} TL · KDV: {invoice_money(vat)} TL"
+                        f"\nTevkifat: {invoice_money(withheld)} TL")
+        if operation:
+            message += f"\n{operation}"
+        message += "\n\nBu fatura için ayrıca borç kaydı girdiyseniz önce cari hareketleri kontrol edin."
+        return messagebox.askyesno("Fatura ve Cari Farkı Önizleme", message, parent=self)
+
+    def show_invoice_tax_options(self):
+        import webbrowser
+        window = tk.Toplevel(self)
+        window.title("Fatura Türleri ve GİB İşlem Kodları")
+        window.geometry("860x560")
+        window.transient(self)
+        body = ttk.Frame(window, padding=12)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text="Normal (SATIŞ) · Tevkifatlı (TEVKIFAT)",
+                  font=("Segoe UI", 12, "bold")).pack(anchor="w")
+        ttk.Label(body, text=("4/10 hesaplanan KDV'nin kesinti oranıdır. Tebliğ I/C-2.1.3.1/b, belirlenmiş alıcılar bölümüdür. "
+                              "İşlem ve alıcı koşullarını dayanak metinden kontrol edin."),
+                  wraplength=810).pack(anchor="w", pady=6)
+        table = self._tree(body, ("kod", "islem", "oran", "dayanak"),
+                           ("Kod", "İşlem", "Oran", "Tebliğ I/C"), (60, 480, 65, 120), print_button=False)
+        self.fill_tree(table, [(code, label.split(" · ")[1], f"{rate}/10", basis)
+                               for label, (code, rate, basis) in WITHHOLDING_LABELS.items()])
+        ttk.Button(body, text="GİB Tebliğini Aç", command=lambda: webbrowser.open(GIB_TEBLIG)).pack(anchor="e", pady=6)
+
+    def add_fatura(self, cari_context=None, *, sale_ids=(), post=False):
         """Yerel taslak: m³, KDV ve seçilen tevkifat oranından net tahsilatı hesapla."""
         with connect() as c:
             cariler = c.execute("SELECT id,unvan FROM cari ORDER BY unvan").fetchall()
         if not cariler:
             return messagebox.showinfo("Cari gerekli", "Önce cari hesap ekleyin.", parent=self)
         names = [f"{i} - {n}" for i,n in cariler]
+        sales = ()
+        if sale_ids:
+            try:
+                with connect() as db:
+                    sales = selected_sales(db, cari_context[0], sale_ids, index_beton_movements(db)[0])
+            except (ValueError, sqlite3.Error) as exc:
+                return messagebox.showerror("Satış seçimi", str(exc), parent=self)
+        initial = {"miktar": str(sum(Decimal(str(row[2])) for row in sales))} if sales else None
         d = self._prompt_for_cari(cari_context, "Yeni Satış Faturası Taslağı", [
             ("tarih", "Fatura tarihi (GG.AA.YYYY)", "entry", None),
             ("cari", "Faturanın kesileceği cari", "combo_search", names),
             ("belge", "Fatura / belge numarası", "entry", None),
-            ("aciklama", "Beton cinsi, şantiye ve teslim açıklaması", "entry", None),
+            ("aciklama", "Mal/hizmet, şantiye ve teslim açıklaması", "entry", None),
             ("miktar", "Teslim edilen beton (m³; ör. 30,5)", "entry", None),
-            ("fiyat", "KDV hariç birim fiyat (TL/m³)", "entry", None),
+            ("fiyat", "KDV hariç birim fiyat (TL/m³, ücretler dahilse belirtin)", "entry", None),
             ("kdv", "KDV oranı (%)", "combo", ["20","10","1","0"]),
             ("tur", "Fatura türü", "combo", ["Normal", "Tevkifatlı"]),
-            ("tevkifat", "KDV tevkifat oranı (ör. 4/10, 5/10; normalde 0)", "combo_edit", ["0","4/10","5/10","7/10","9/10"])
-        ])
+            ("kod", "GİB işlem kodu · işlem adı · oran", "combo_edit", ["Seçiniz", *WITHHOLDING_LABELS]),
+            ("tevkifat", "Kod seçilmediyse tevkifat oranı (eski taslak)", "combo_edit", ["0","4/10","5/10","7/10","9/10"])
+        ], initial)
         if not d:
             return
         try:
@@ -4588,7 +4739,16 @@ class HoytasApp(tk.Tk):
                 raise ValueError("Miktar, fiyat veya KDV oranı geçersiz.")
             tur = d["tur"]
             oran_metin = d["tevkifat"].strip()
-            if tur == "Tevkifatlı":
+            operation = WITHHOLDING_LABELS.get(d.get("kod", ""))
+            if d.get("kod") not in ("", "Seçiniz", None) and operation is None:
+                raise ValueError("GİB işlem kodunu açıklamalı listeden seçin.")
+            if tur == "Normal" and operation:
+                raise ValueError("GİB tevkifat kodu için fatura türünü Tevkifatlı seçin.")
+            if tur == "Tevkifatlı" and operation:
+                tevkifat_oran = operation[1] / 10
+            elif tur == "Tevkifatlı":
+                if post:
+                    raise ValueError("Cariye işlenecek tevkifatlı fatura için GİB işlem kodunu listeden seçin.")
                 if "/" not in oran_metin:
                     raise ValueError("Tevkifat oranını 4/10 gibi girin.")
                 pay, payda = [int(x.strip()) for x in oran_metin.split("/", 1)]
@@ -4600,32 +4760,50 @@ class HoytasApp(tk.Tk):
             if d["cari"] not in names and cari_context is None:
                 raise ValueError("Listeden kayıtlı bir cari hesap seçin.")
             cari_id = cari_context[0] if cari_context is not None else int(d["cari"].split(" - ", 1)[0])
-            ara = round(miktar * fiyat, 2)
-            kdv_tutar = round(ara * kdv_oran / 100, 2)
-            toplam = round(ara + kdv_tutar, 2)
-            tevkifat_tutar = round(kdv_tutar * tevkifat_oran, 2)
-            net = round(toplam - tevkifat_tutar, 2)
+            base_cents = cents(Decimal(str(miktar)) * Decimal(str(fiyat)))
+            vat_cents = cents(Decimal(base_cents) * Decimal(str(kdv_oran)) / 10000)
+            withholding_cents = cents(Decimal(vat_cents) * Decimal(str(tevkifat_oran)) / 100)
+            ara, kdv_tutar, toplam, tevkifat_tutar, net = (
+                value / 100 for value in (base_cents, vat_cents, base_cents + vat_cents,
+                                         withholding_cents, base_cents + vat_cents - withholding_cents))
+            if sales and abs(miktar - sum(row[2] for row in sales)) > 0.000001:
+                raise ValueError("Fatura miktarı seçili beton satışlarının toplamına eşit olmalıdır.")
             if not d["belge"].strip():
                 raise ValueError("Belge numarası boş bırakılamaz.")
+            operation_label = f"{d['kod']} · KDVGUT I/C-{operation[2]}" if operation else ""
+            details = ({"cari_id": cari_id, "tevkifat_kodu": operation_label,
+                        "tevkifat_islem_kodu": operation[0]} if operation else {})
+            if post:
+                if net <= 0:
+                    raise ValueError("Cariye işlenecek faturanın tahsil edilecek tutarı pozitif olmalıdır.")
+                if not self._confirm_invoice_posting(cari_context, sales, net, operation=operation_label,
+                                                     taxes=(ara, kdv_tutar, tevkifat_tutar)):
+                    return
             with connect() as c:
+                c.execute("BEGIN IMMEDIATE")
+                if sales and selected_sales(c, cari_id, sale_ids, index_beton_movements(c)[0]) != sales:
+                    raise ValueError("Satış değişti. İşlemi yeniden açın.")
                 if not c.execute("SELECT 1 FROM cari WHERE id=?", (cari_id,)).fetchone():
                     raise ValueError("Seçilen cari hesap bulunamadı.")
                 if c.execute("SELECT 1 FROM fatura WHERE cari_id=? AND belge_no=?",
                              (cari_id, d["belge"].strip())).fetchone():
                     raise ValueError("Bu cariye ait aynı belge numarası zaten kayıtlı.")
-                c.insert_shared("""INSERT INTO fatura
+                cur = c.insert_shared("""INSERT INTO fatura
                     (tarih,cari_id,belge_no,aciklama,miktar_m3,birim_fiyat,ara_toplam,kdv_oran,kdv_tutar,
-                     genel_toplam,durum,fatura_turu,tevkifat_oran,tevkifat_tutar,tahsil_edilecek,odenen)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)""",
+                     genel_toplam,durum,fatura_turu,tevkifat_oran,tevkifat_tutar,tahsil_edilecek,odenen,belge_bilgileri)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)""",
                     (tarih,cari_id,d["belge"].strip(),d["aciklama"],miktar,fiyat,ara,kdv_oran,
-                     kdv_tutar,toplam,"Taslak",tur,tevkifat_oran,tevkifat_tutar,net))
+                     kdv_tutar,toplam,"Taslak",tur,tevkifat_oran,tevkifat_tutar,net, json.dumps(details, ensure_ascii=False)))
+                if post:
+                    posted = invoice_quote(c, cari_id, cur.lastrowid)
+                    post_invoice(c, cari_id, cur.lastrowid, posted, sales)
             self._refresh_selected_module()
             messagebox.showinfo("Fatura taslağı kaydedildi",
                 f"Ara toplam: {ara:,.2f} TL\nKDV: {kdv_tutar:,.2f} TL\n"
                 f"Genel toplam: {toplam:,.2f} TL\nTevkifat: {tevkifat_tutar:,.2f} TL\n"
                 f"Tahsil edilecek: {net:,.2f} TL\n\nBu kayıt resmî e-Fatura gönderimi değildir.",
                 parent=self)
-        except (ValueError, TypeError) as exc:
+        except (ValueError, TypeError, sqlite3.Error) as exc:
             messagebox.showerror("Fatura kaydedilemedi", str(exc), parent=self)
 
     def tahsilat_fatura(self):
@@ -4906,6 +5084,14 @@ class HoytasApp(tk.Tk):
         sel = tree.selection()
         if not sel: return messagebox.showinfo("Kayıt seçin","Önce silmek istediğiniz satırı seçin.", parent=self)
         row_id = int(tree.item(sel[0],"values")[0])
+        if table in ("fatura", "beton_satis", "hareket"):
+            with connect() as db:
+                protected = record_is_posted(db, table, row_id)
+        else:
+            protected = False
+        if protected:
+            return messagebox.showinfo("Bağlı fatura kaydı", "Fatura, satış ve cari farkı birlikte korunur. "
+                "Tahsilat yoksa eşleştirme işlemini İşlem Geri Al ile geri alabilirsiniz.", parent=self)
         if table == "fatura":
             with connect() as check_c:
                 paid = check_c.execute("SELECT COUNT(*) FROM fatura_tahsilat WHERE fatura_id=?", (row_id,)).fetchone()[0]
@@ -4969,6 +5155,10 @@ class HoytasApp(tk.Tk):
             return
         if not messagebox.askyesno("Onay","Seçili kayıt silinsin mi?", parent=self): return
         with connect() as c:
+            if table in ("fatura", "beton_satis", "hareket"):
+                c.execute("BEGIN IMMEDIATE")
+                if record_is_posted(c, table, row_id):
+                    return messagebox.showinfo("Bağlı fatura kaydı", "Kayıt bu sırada faturaya bağlandı.", parent=self)
             if table == "stok_hareket":
                 movement=c.execute("SELECT stok_id,yon,miktar FROM stok_hareket WHERE id=?",(row_id,)).fetchone()
                 if movement:
@@ -5309,11 +5499,12 @@ class HoytasApp(tk.Tk):
                     rows.append([display_date(tarih),f"{move_id:07d}",kat,"",Paragraph(escape(acik),normal),f"{tutar:,.2f}" if tur=="Borç" else "",f"{tutar:,.2f}" if tur=="Alacak" else "",balance_label])
                 total_debit=sum(r[6] for r in moves if r[2]=='Borç'); total_credit=sum(r[6] for r in moves if r[2]=='Alacak')
                 rows.append(["","","","","Rapor Toplamı",f"{total_debit:,.2f}",f"{total_credit:,.2f}",f"{abs(bal):,.2f} ({'B' if bal>=0 else 'A'})"])
-                total_collected=c.execute("SELECT COALESCE(SUM(tutar),0) FROM hareket WHERE cari_id=? AND tur='Alacak' AND (kategori LIKE '%Tahsilat%' OR aciklama LIKE '%tahsilat%')",(cari_id,)).fetchone()[0]
+                total_collected=c.execute("SELECT COALESCE(SUM(tutar),0) FROM hareket WHERE cari_id=? AND tur='Alacak' AND kategori NOT IN ('Fatura Farkı','Fatura') AND (kategori LIKE '%Tahsilat%' OR aciklama LIKE '%tahsilat%')",(cari_id,)).fetchone()[0]
                 cari_summary_rows=[
                     ["CARİ HESAP ÖZETİ", "TOPLAM"],
                     ["Toplam Borç", f"{total_debit:,.2f} TL"],
-                    ["Toplam Alacak / Tahsilat", f"{total_credit:,.2f} TL"],
+                    ["Toplam Alacak", f"{total_credit:,.2f} TL"],
+                    ["Toplam Tahsilat", f"{total_collected:,.2f} TL"],
                     ["Kalan Cari Bakiye", f"{abs(bal):,.2f} TL ({'Borç' if bal>=0 else 'Alacak'})"],
                 ]
             elif report_type=="Cari Beton Satış Dökümü":

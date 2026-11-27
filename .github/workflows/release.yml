@@ -77,7 +77,7 @@ jobs:
           source = pathlib.Path("hoytas.py").read_text(encoding="utf-8")
           tree = ast.parse(source)
           assert re.search(r"^APP_VERSION = " + re.escape(os.environ["VERSION"].lstrip("v")) + r"$", source, re.M)
-          assert re.search(r"^TARGET_SCHEMA_VERSION = 61$", source, re.M)
+          assert re.search(r"^TARGET_SCHEMA_VERSION = 62$", source, re.M)
           for required in ("fatura_tahsilat", "tevkifat_tutar", "tahsil_edilecek", "def tahsilat_fatura", "def add_fatura"):
               assert required in source, required
           assert len([n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "add_fatura"]) == 1

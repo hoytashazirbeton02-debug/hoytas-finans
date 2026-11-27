@@ -40,11 +40,19 @@ def install_capture(db, batch_id=None):
                  CASE WHEN NEW.table_name='cari' AND json_extract(NEW.old_values,'$.arsivli')=0
                       THEN json_remove(NEW.old_values,'$.arsivli')
                       WHEN NEW.table_name='beton_satis' AND json_extract(NEW.old_values,'$.mikser_nakliye_ucreti')=0
-                      THEN json_remove(NEW.old_values,'$.mikser_nakliye_ucreti') ELSE NEW.old_values END,
+                      THEN CASE WHEN json_type(NEW.old_values,'$.fatura_id')='null'
+                                THEN json_remove(NEW.old_values,'$.mikser_nakliye_ucreti','$.fatura_id')
+                                ELSE json_remove(NEW.old_values,'$.mikser_nakliye_ucreti') END
+                      WHEN NEW.table_name='beton_satis' AND json_type(NEW.old_values,'$.fatura_id')='null'
+                      THEN json_remove(NEW.old_values,'$.fatura_id') ELSE NEW.old_values END,
                  CASE WHEN NEW.table_name='cari' AND json_extract(NEW.new_values,'$.arsivli')=0
                       THEN json_remove(NEW.new_values,'$.arsivli')
                       WHEN NEW.table_name='beton_satis' AND json_extract(NEW.new_values,'$.mikser_nakliye_ucreti')=0
-                      THEN json_remove(NEW.new_values,'$.mikser_nakliye_ucreti') ELSE NEW.new_values END);
+                      THEN CASE WHEN json_type(NEW.new_values,'$.fatura_id')='null'
+                                THEN json_remove(NEW.new_values,'$.mikser_nakliye_ucreti','$.fatura_id')
+                                ELSE json_remove(NEW.new_values,'$.mikser_nakliye_ucreti') END
+                      WHEN NEW.table_name='beton_satis' AND json_type(NEW.new_values,'$.fatura_id')='null'
+                      THEN json_remove(NEW.new_values,'$.fatura_id') ELSE NEW.new_values END);
             {capture_batch}
         END""")
 
