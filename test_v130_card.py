@@ -18,6 +18,8 @@ def double_click(app, tree, row):
     x, y, width, height = tree.bbox(row, "#1")
     for instant in (100, 200):
         tree.event_generate("<ButtonPress-1>", x=x + width // 2, y=y + height // 2, time=instant)
+        if not tree.winfo_exists():
+            break
         tree.event_generate("<ButtonRelease-1>", x=x + width // 2, y=y + height // 2, time=instant + 10)
     app.update()
 
