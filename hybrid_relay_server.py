@@ -98,12 +98,12 @@ def handler_for(relay, token, membership=None):
                 self.reply(404, {})
                 return
             supplied = self.headers.get("Authorization", "").encode()
-            account = None
+            account = role = None
             if not hmac.compare_digest(supplied, expected):
                 try:
                     if membership is None or membership.enrollment is None or not supplied.startswith(b"Bearer "):
                         raise PermissionError
-                    account, _ = membership.memberships.session_account(supplied[7:].decode())
+                    account, role = membership.memberships.session_account(supplied[7:].decode())
                 except (PermissionError, UnicodeError):
                     self.reply(401, {})
                     return
@@ -115,7 +115,11 @@ def handler_for(relay, token, membership=None):
                     payload = self.read_json(MAX_BATCH_BYTES)
                     claimed_actor = payload.pop("actor", None) if isinstance(payload, dict) else None
                     args = validate_batch(payload)
-                    actor = account if claimed_actor == account else None
+                    deletes_customer = any(event[1] == "cari" and event[3] == "DELETE" for event in args[1])
+                    if deletes_customer and role != "admin":
+                        self.reply(403, {"code": "administrator_required"})
+                        return
+                    actor = account if deletes_customer or claimed_actor == account else None
                 else:
                     query = parse_qs(uri.query, strict_parsing=True)
                     after, limit = (int(query[name][0]) for name in ("after", "limit"))
