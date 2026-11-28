@@ -40,7 +40,7 @@ CARI_STATEMENT_REPORTS = (
     "Faturasız Cari Ekstresi",
 )
 TARGET_SCHEMA_VERSION = 62
-APP_VERSION = 135
+APP_VERSION = 136
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 ISOLATED_PROFILE_DIR = os.environ.get("HOYTAS_PROFILE_DIR", "").strip()
 USER_DATA_DIR = ISOLATED_PROFILE_DIR or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
@@ -776,10 +776,13 @@ def normalize_search_text(value):
                    if not unicodedata.combining(ch))
 
 
+NO_CUSTOMER_SELECTION = "(Cari seçilmedi)"
+
+
 def filter_customer_options(options, typed):
     """Return matching suggestions without changing or selecting the user's text."""
     query = normalize_search_text(typed)
-    if not query:
+    if not query or typed == NO_CUSTOMER_SELECTION or typed in options:
         return list(options)
     return [item for item in options if query in normalize_search_text(item)]
 
@@ -787,7 +790,7 @@ def filter_customer_options(options, typed):
 def resolve_customer_id(connection, value, allowed_types=("Müşteri", "Diğer")):
     """Resolve a selected 'ID - title' or an exact manually typed customer title."""
     value = str(value or "").strip()
-    if not value or value == "(Cari seçilmedi)":
+    if not value or value == NO_CUSTOMER_SELECTION:
         return None
     match = re.match(r"^(\d+)\s+-\s+", value)
     if match:
@@ -973,16 +976,52 @@ def repairable_cari_movements(audit):
 
 
 def normalize_date(value):
-    """Accept DD.MM.YYYY or DD-MM-YYYY; store dates consistently as ISO."""
+    """Accept Turkish or ISO dates and store them consistently as ISO."""
     value = (value or "").strip()
     if not value:
         return value
+    if re.fullmatch(r"[0-9]{8}", value):
+        value = format_date_digits(value)
     for fmt in ("%d.%m.%Y", "%d-%m-%Y", "%Y-%m-%d"):
         try:
             return datetime.strptime(value, fmt).strftime("%Y-%m-%d")
         except ValueError:
             pass
     raise ValueError("Tarih GG.AA.YYYY biçiminde olmalıdır (ör. 26.10.2026).")
+
+
+def format_date_digits(digits):
+    return ".".join(part for part in (digits[:2], digits[2:4], digits[4:]) if part)
+
+
+class DateEntry(ttk.Entry):
+    """Add separators as the user types day, month and year."""
+
+    def __init__(self, master, **kwargs):
+        super().__init__(master, **kwargs)
+        self.bind("<KeyRelease>", self._format_input, add="+")
+        self.bind("<<Paste>>", self._format_after_paste, add="+")
+
+    def _format_after_paste(self, _event):
+        self.after_idle(self._format_input)
+
+    def _format_input(self, _event=None):
+        value = self.get()
+        if not re.fullmatch(r"[0-9.]+", value):
+            return
+        digits = value.replace(".", "")
+        if len(digits) > 8:
+            return
+        formatted = format_date_digits(digits)
+        # Keep deliberately entered separators and already valid short dates.
+        if value == formatted or re.fullmatch(r"[0-9]{1,2}\.[0-9]{0,2}(?:\.[0-9]{0,4})?", value):
+            return
+        position = self.index("insert")
+        digits_before_cursor = len(value[:position].replace(".", ""))
+        self.delete(0, "end")
+        self.insert(0, formatted)
+        self.icursor(len(format_date_digits(digits[:digits_before_cursor])))
+
 
 class DateTreeview(ttk.Treeview):
     """Format date columns for display without changing database values."""
@@ -4140,8 +4179,9 @@ class HoytasApp(tk.Tk):
         entries = {}
         withholding_widgets = None
         body = ttk.Frame(win, padding=16); body.pack(fill="both", expand=True)
-        ttk.Label(body, text="Bilgileri kontrol edin. Cari alanında serbestçe yazabilir, önerileri ok tuşuyla açabilirsiniz.",
-                  foreground="#315B46", wraplength=590).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
+        if title != "Yeni Beton Satışı":
+            ttk.Label(body, text="Bilgileri kontrol edin. Cari alanında serbestçe yazabilir, önerileri ok tuşuyla açabilirsiniz.",
+                      foreground="#315B46", wraplength=590).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
         for r, (key, label, kind, options) in enumerate(fields):
             r += 1
             field_label = ttk.Label(body, text=label)
@@ -4150,7 +4190,8 @@ class HoytasApp(tk.Tk):
                 # Tek alanda arama + seçim: kullanıcı cari ünvanını yazar, eşleşmeler açılır.
                 widget = ttk.Combobox(body, values=options, state="normal", width=38)
                 widget.grid(row=r, column=1, columnspan=2, pady=5, sticky="ew")
-                widget.set(options[0] if options else "")
+                first_option = options[0] if options else ""
+                widget.set("" if first_option == NO_CUSTOMER_SELECTION else first_option)
                 if key in initial and initial[key] is not None:
                     widget.set(str(initial[key]))
                 # Kullanıcı metni serbestçe yazar. Açılır pencereyi her tuşta
@@ -4164,14 +4205,13 @@ class HoytasApp(tk.Tk):
                     }:
                         return
                     typed = combo.get()
-                    matches = filter_customer_options(original, typed) if typed.strip() else original
+                    matches = filter_customer_options(original, typed)
                     combo.configure(values=matches)
                     # combo.set(), selection_set(), Post() çağrısı YOK:
                     # klavye odağı ve kullanıcının yazdığı harfler korunur.
                 widget.bind("<KeyRelease>", suggest_customer)
                 widget.configure(postcommand=lambda combo=widget, original=all_customer_options:
-                                 combo.configure(values=(filter_customer_options(original, combo.get())
-                                                         if combo.get().strip() else original)))
+                                 combo.configure(values=filter_customer_options(original, combo.get())))
                 entries[key] = widget
                 continue
             if kind in ("combo", "combo_edit", "withholding_code"):
@@ -4188,6 +4228,8 @@ class HoytasApp(tk.Tk):
                         matches = [item for item in original if query in item.casefold()]
                         combo.configure(values=matches if matches else original)
                     widget.bind("<KeyRelease>", suggest_values)
+            elif key.lower() in ("tarih", "vade") or "GG.AA.YYYY" in label:
+                widget = DateEntry(body, width=33)
             else:
                 widget = ttk.Entry(body, width=33, show="*" if kind == "secret" else "")
             if key in initial and initial[key] is not None:
@@ -4225,13 +4267,15 @@ class HoytasApp(tk.Tk):
 
         result = {}
         def save():
+            values = {}
             for key, widget in entries.items():
-                result[key] = ("" if withholding_widgets is not None and key == "kod"
+                values[key] = ("" if withholding_widgets is not None and key == "kod"
                                and entries["tur"].get() == "Normal" else widget.get().strip())
-                if key.lower() in ("tarih", "vade") and result[key]:
-                    try: result[key] = normalize_date(result[key])
+                if key.lower() in ("tarih", "vade") and values[key]:
+                    try: values[key] = normalize_date(values[key])
                     except ValueError:
                         return messagebox.showerror("Hatalı tarih", "Tarihi GG.AA.YYYY biçiminde yazın. Örnek: 26.10.2026", parent=win)
+            result.update(values)
             win.destroy()
         # Alanlar 1..len(fields) satırlarında; düğmeler ayrı SON satırda olmalı.
         # Önceki sürümde row=len(fields) son alanla çakışıyordu.
@@ -4323,7 +4367,7 @@ class HoytasApp(tk.Tk):
                 with connect() as c:
                     customers = c.execute("SELECT id,unvan FROM cari ORDER BY unvan COLLATE NOCASE,id").fetchall()
                 choices = {cid: f"{cid} - {name}" for cid, name in customers}
-                empty = "(Cari seçilmedi)"
+                empty = NO_CUSTOMER_SELECTION
                 opts = [empty, *choices.values()]
                 initial[key] = choices.get(val, empty)
             if table=="beton_satis" and key=="santiye_id":
@@ -4725,7 +4769,7 @@ class HoytasApp(tk.Tk):
         end = tk.StringVar(window)
         for label, variable in (("Başlangıç", start), ("Bitiş", end)):
             ttk.Label(dates, text=label).pack(side="left", padx=(0, 4))
-            entry = ttk.Entry(dates, width=12, textvariable=variable)
+            entry = DateEntry(dates, width=12, textvariable=variable)
             entry.pack(side="left", padx=(0, 8))
             entry.bind("<Return>", lambda _event: apply_period())
         ttk.Button(dates, text="Uygula", command=lambda: apply_period()).pack(side="left")
@@ -5095,7 +5139,7 @@ class HoytasApp(tk.Tk):
 
     def add_hareket(self, cari_context=None):
         with connect() as c: cariler = c.execute("SELECT id,unvan FROM cari ORDER BY unvan").fetchall()
-        names = ["(Cari seçilmedi)"] + [f"{i} - {n}" for i,n in cariler]
+        names = [NO_CUSTOMER_SELECTION] + [f"{i} - {n}" for i,n in cariler]
         d = self._prompt_for_cari(cari_context, "Yeni Gelir / Gider", [("tarih","Tarih (GG.AA.YYYY)","entry",None),
             ("tur","Tür","combo",["Gelir","Gider","Borç","Alacak"]),("kategori","Kategori","combo",["Satış","Alış","Tahsilat","Ödeme","Maaş","Yakıt","Kira","Diğer"]),
             ("cari","Cari","combo",names),("aciklama","Açıklama","entry",None),("tutar","Tutar (TL)","entry",None),
@@ -5116,7 +5160,7 @@ class HoytasApp(tk.Tk):
 
     def add_cek(self, cari_context=None):
         with connect() as c: cariler=c.execute("SELECT id,unvan FROM cari ORDER BY unvan").fetchall()
-        names=["(Cari seçilmedi)"]+[f"{i} - {n}" for i,n in cariler]
+        names=[NO_CUSTOMER_SELECTION]+[f"{i} - {n}" for i,n in cariler]
         banks=["010 - T.C. Ziraat Bankası","012 - Türkiye Halk Bankası","015 - Türkiye Vakıflar Bankası","032 - Türk Ekonomi Bankası","046 - Akbank","062 - Türkiye Garanti Bankası","064 - Türkiye İş Bankası","067 - Yapı ve Kredi Bankası","111 - QNB Bank","134 - DenizBank","203 - Albaraka Türk","206 - Türkiye Finans","208 - Kuveyt Türk","210 - Vakıf Katılım","211 - Türkiye Emlak Katılım","214 - Şekerbank","223 - Alternatif Bank","999 - Diğer / listede yok"]
         d=self._prompt_for_cari(cari_context, "Yeni Çek",[("yon","Yön","combo",["Alınan","Verilen"]),("banka","Banka adı ve kodu","combo",banks), ("cari","İlgili cari hesap","combo",names),
             ("cek_no","Çek No","entry",None),("taraf","Keşideci / Lehtar","entry",None),("vade","Vade (GG.AA.YYYY)","entry",None),("tutar","Tutar (TL)","entry",None),
@@ -5196,12 +5240,12 @@ class HoytasApp(tk.Tk):
 
     def add_beton(self, cari_context=None):
         with connect() as c: cariler = c.execute("SELECT id,unvan FROM cari WHERE tur='Müşteri' OR tur='Diğer' ORDER BY unvan").fetchall()
-        names = ["(Cari seçilmedi)"] + [f"{i} - {n}" for i,n in cariler]
+        names = [NO_CUSTOMER_SELECTION] + [f"{i} - {n}" for i,n in cariler]
         with connect() as c: sites=c.execute("SELECT id,ad FROM santiye ORDER BY ad").fetchall()
         site_names=[f"{i} - {n}" for i,n in sites]
         site_names += [n for n in ["Adıyaman", "Besni", "Tut", "Gölbaşı", "Erkenek", "Erkenek Köyü"] if n.casefold() not in [x.casefold() for x in site_names]]
         d = self._prompt_for_cari(cari_context, "Yeni Beton Satışı", [("tarih","Tarih (GG.AA.YYYY)","entry",None),
-            ("cari","Müşteri ara (ünvan yazın) / seçin","combo_search",names),("santiye","Gideceği şantiye (elle yazabilirsiniz)","combo_edit",site_names),("beton_cinsi","Beton Cinsi","combo",["C16","C20","C25","C30","C35","C40","Şap"]),("m3","Miktar (m³; ör. 30,5)","entry",None),
+            ("cari","Cari ara / seçin","combo_search",names),("santiye","Gideceği şantiye (elle yazabilirsiniz)","combo_edit",site_names),("beton_cinsi","Beton Cinsi","combo",["C16","C20","C25","C30","C35","C40","Şap"]),("m3","Miktar (m³; ör. 30,5)","entry",None),
             ("fiyat","Birim Fiyat (TL/m³)","entry",None),
             ("pompa_ucreti","Pompa Ücreti (TL, yoksa 0)","entry",None),
             ("mikser_nakliye_ucreti","Mikser Nakliye Ücreti (TL, isteğe bağlı)","entry",None),
@@ -5755,9 +5799,9 @@ class HoytasApp(tk.Tk):
                 balance=0.0
                 for tarih,tur,kategori,acik,odeme,tutar in moves:
                     balance += tutar if tur == "Borç" else -tutar
-                    rows.append([display_date(tarih),tur,kategori,Paragraph(escape(acik),normal),odeme,f"{tutar:,.2f}" if tur == "Borç" else "",f"{tutar:,.2f}" if tur == "Alacak" else "",f"{balance:,.2f}"])
+                    rows.append([display_date(tarih),tur,kategori,Paragraph(escape(acik),normal),odeme,invoice_money(tutar) if tur == "Borç" else "",invoice_money(tutar) if tur == "Alacak" else "",invoice_money(balance)])
                 debit=sum(r[5] for r in moves if r[1] == "Borç"); credit=sum(r[5] for r in moves if r[1] == "Alacak")
-                rows.append(["","","","TOPLAM","",f"{debit:,.2f}",f"{credit:,.2f}",f"{balance:,.2f}"])
+                rows.append(["","","","TOPLAM","",invoice_money(debit),invoice_money(credit),invoice_money(balance)])
             elif report_type=="Açık Borç Listesi":
                 rows=[["Cari Ünvanı", "Toplam Borç (TL)", "Toplam Alacak (TL)", "Kalan Borç (TL)", "Durum"]]
                 debt_rows=c.execute("""SELECT unvan,toplam_borc,toplam_alacak,bakiye
@@ -6275,6 +6319,8 @@ def normalize_fatura_tarihi(value):
     value = (value or "").strip()
     if not value:
         return date.today().isoformat()
+    if len(value) == 8 and value.isascii() and value.isdigit():
+        value = f"{value[:2]}.{value[2:4]}.{value[4:]}"
     for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
         try:
             return datetime.strptime(value, fmt).date().isoformat()

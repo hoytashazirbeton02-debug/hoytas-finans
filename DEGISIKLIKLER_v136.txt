@@ -1,0 +1,6 @@
+HOYTAŞ v136
+
+- Cari Hareket Dökümü sütunları Borç (TL), Alacak (TL), Bakiye (TL) olarak gösterilir. Tutarlar Türkçe sayı biçimindedir.
+- İşlem tarihleri ve çek vadesi yazılırken gün, ay ve yıl arasına otomatik nokta eklenir.
+- Beton satışı cari alanı boş açılır. Ok ile geçerli cari kayıtları listelenir ve ünvan yazıldığında seçenekler filtrelenir.
+- Beton satış formunun genel açıklama satırı kaldırıldı.
