@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Thread
+from tkinter import ttk
 from time import monotonic
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
@@ -36,6 +37,18 @@ def start_background_sync(app, connect, data_directory):
     token = session or os.environ.get("HOYTAS_SYNC_TOKEN", "")
     relay = production_relay(connect, endpoint, token)
     results = Queue()
+    status = ttk.Label(app, anchor="w", padding=(8, 3))
+    # Reserve space before the main layout distributes the remaining height.
+    packed = app.pack_slaves()
+    status.pack(side="bottom", fill="x", **({"before": packed[0]} if packed else {}))
+    last_sync = "—"
+    pending = None
+
+    def show_status(state):
+        count = "—" if pending is None else str(pending)
+        status.configure(text=f"{state}  |  Son eşitleme: {last_sync}  |  Gönderilmeyi bekleyen hareket: {count}")
+
+    show_status("Sunucuya bağlanıyor")
     client = getattr(app, "membership_client", None)
     with connect() as db:
         primary = replica_slot(db) == 1
@@ -66,13 +79,25 @@ def start_background_sync(app, connect, data_directory):
                 except (OSError, ValueError, RuntimeError) as error:
                     app._log_update_error(error)
                     publish_retry_at = monotonic() + 60
-            results.put((result, None, restored))
         except Exception as error:
-            results.put((None, error, restored))
+            result, sync_error = None, error
+        else:
+            sync_error = None
+
+        try:
+            with connect() as db:
+                count = db.execute("""
+                    SELECT COUNT(*) FROM hybrid_capture_batch b
+                    WHERE NOT EXISTS (SELECT 1 FROM hybrid_sent_batch s WHERE s.batch_id=b.batch_id)
+                """).fetchone()[0]
+        except Exception:
+            count = None
+        results.put((result, sync_error, restored, count))
 
     def poll():
+        nonlocal last_sync, pending
         try:
-            result, error, restored = results.get_nowait()
+            result, error, restored, pending = results.get_nowait()
         except Empty:
             app.after(250, poll)
             return
@@ -86,22 +111,25 @@ def start_background_sync(app, connect, data_directory):
             except OSError:
                 pass
             if isinstance(error, HTTPError) and error.code == 401 and getattr(app, "membership_session", None):
-                app.title("HOYTAŞ — Oturum sona erdi, yeniden giriş yapın")
+                show_status("Oturum sona erdi. Yeniden giriş yapın.")
+                return
+            if isinstance(error, HTTPError) and error.code == 403:
+                show_status("Eşitleme yetki onayı bekliyor")
                 return
             if isinstance(error, ReplicaConflict):
-                app.title("HOYTAŞ — Senkronizasyon çakışması")
+                show_status("Eşitleme çakışması")
                 return
-            app.title("HOYTAŞ — Sunucu bağlantısı bekleniyor")
+            show_status("Sunucu bağlantısı bekleniyor")
             app.after(30000, launch)
             return
 
         received, sent = result
-        app.title(original_title)
+        last_sync = datetime.now().strftime("%H:%M:%S")
+        show_status("Eşitleme sürüyor" if received == 5 or sent == 5 else "Bağlı")
         app.after(250 if received == 5 or sent == 5 else 5000, launch)
 
     def launch():
         Thread(target=run, name="HOYTAS-Sync", daemon=True).start()
         app.after(250, poll)
 
-    original_title = app.title()
     app.after(100, launch)

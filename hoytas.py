@@ -40,7 +40,7 @@ CARI_STATEMENT_REPORTS = (
     "Faturasız Cari Ekstresi",
 )
 TARGET_SCHEMA_VERSION = 62
-APP_VERSION = 136
+APP_VERSION = 137
 # Veritabanini uygulamanin acildigi konumdan bagimsiz, kalici kullanici klasorunde tut.
 ISOLATED_PROFILE_DIR = os.environ.get("HOYTAS_PROFILE_DIR", "").strip()
 USER_DATA_DIR = ISOLATED_PROFILE_DIR or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "HOYTASFinans")
@@ -4178,6 +4178,7 @@ class HoytasApp(tk.Tk):
         win.resizable(False, False)
         entries = {}
         withholding_widgets = None
+        payment_fields = {}
         body = ttk.Frame(win, padding=16); body.pack(fill="both", expand=True)
         if title != "Yeni Beton Satışı":
             ttk.Label(body, text="Bilgileri kontrol edin. Cari alanında serbestçe yazabilir, önerileri ok tuşuyla açabilirsiniz.",
@@ -4240,6 +4241,8 @@ class HoytasApp(tk.Tk):
                 except tk.TclError: pass
             widget.grid(row=r, column=1, pady=5)
             entries[key] = widget
+            if title == "Yeni Beton Satışı" and key in ("odeme_yontemi", "banka", "cek_no", "vade"):
+                payment_fields[key] = (field_label, widget)
             if kind == "withholding_code":
                 basis = ttk.Label(body, wraplength=430)
                 basis.grid(row=r + 1, column=1, sticky="w", pady=(0, 5))
@@ -4265,10 +4268,35 @@ class HoytasApp(tk.Tk):
             code_picker.bind("<KeyRelease>", update_code, add="+")
             update_invoice_type()
 
+        visible_payment_fields = set()
+        if payment_fields:
+            def update_payment_fields(_event=None):
+                visible_payment_fields.clear()
+                if entries["durum"].get() == "Tahsil Edildi":
+                    visible_payment_fields.add("odeme_yontemi")
+                    method = entries["odeme_yontemi"].get()
+                    if method in ("Banka Havalesi / EFT", "Çek"):
+                        visible_payment_fields.add("banka")
+                    if method == "Çek":
+                        visible_payment_fields.update(("cek_no", "vade"))
+                for key, controls in payment_fields.items():
+                    for control in controls:
+                        if key in visible_payment_fields:
+                            control.grid()
+                        else:
+                            control.grid_remove()
+
+            entries["durum"].bind("<<ComboboxSelected>>", update_payment_fields)
+            entries["odeme_yontemi"].bind("<<ComboboxSelected>>", update_payment_fields)
+            update_payment_fields()
+
         result = {}
         def save():
             values = {}
             for key, widget in entries.items():
+                if key in payment_fields and key not in visible_payment_fields:
+                    values[key] = ""
+                    continue
                 values[key] = ("" if withholding_widgets is not None and key == "kod"
                                and entries["tur"].get() == "Normal" else widget.get().strip())
                 if key.lower() in ("tarih", "vade") and values[key]:
@@ -4444,7 +4472,8 @@ class HoytasApp(tk.Tk):
                         c.execute("UPDATE hareket SET tarih=?,cari_id=?,tutar=? WHERE aciklama=? AND kategori IN ('Tahsilat','Satış')",(data["tarih"],data["cari_id"],data["toplam"],ref))
                         c.execute("UPDATE nakit_kasa SET tarih=?,tutar=? WHERE aciklama=?",(data["tarih"],data["toplam"],ref))
                         c.execute("UPDATE banka_hareket SET tarih=?,tutar=? WHERE aciklama=?",(data["tarih"],data["toplam"],ref))
-                        c.execute("UPDATE cek SET tutar=? WHERE notlar=?",(data["toplam"],ref))
+                        c.execute("UPDATE cek SET cari_id=?,tutar=? WHERE notlar=? AND yon='Alınan'",
+                                  (data["cari_id"],data["toplam"],ref))
                 if table=="fatura": c.execute("UPDATE fatura SET ara_toplam=?,kdv_tutar=?,genel_toplam=? WHERE id=?",(data["ara_toplam"],data["kdv_tutar"],data["genel_toplam"],rid))
             self._refresh_selected_module()
         except Exception as e: messagebox.showerror("Düzenleme başarısız",f"Kayıt güncellenemedi. Bilgileri kontrol edin.\n\n{e}",parent=self)
@@ -6237,16 +6266,22 @@ class HoytasApp(tk.Tk):
                 integrity = c.execute("PRAGMA integrity_check").fetchall()
                 fk_errors = c.execute("PRAGMA foreign_key_check").fetchall()
                 schema_version = c.execute("PRAGMA user_version").fetchone()[0]
+                cheque_mismatches = c.execute("""
+                    SELECT COUNT(*) FROM beton_satis b JOIN cek k
+                    ON k.notlar = 'Beton satış tahsilatı #' || b.id AND k.yon = 'Alınan'
+                    WHERE k.cari_id IS NOT b.cari_id
+                """).fetchone()[0]
                 record_counts = {}
                 for table in ("cari", "hareket", "cek", "beton_satis", "fatura", "gelen_fatura"):
                     record_counts[table] = c.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
             backup_path = self._create_backup_file()
             integrity_ok = len(integrity) == 1 and integrity[0][0] == "ok"
-            status = "BAŞARILI" if integrity_ok and not fk_errors else "İNCELEME GEREKİYOR"
+            status = "BAŞARILI" if integrity_ok and not fk_errors and not cheque_mismatches else "İNCELEME GEREKİYOR"
             details = "\n".join(f"• {k}: {v:,} kayıt" for k,v in record_counts.items())
             fk_text = "Yabancı anahtar kontrolü: Sorun bulunmadı." if not fk_errors else f"Yabancı anahtar uyarısı: {len(fk_errors)} ilişki kaydı incelenmeli."
             report = (f"Sonuç: {status}\nŞema sürümü: {schema_version}\n"
-                      f"SQLite bütünlük kontrolü: {'OK' if integrity_ok else integrity}\n{fk_text}\n\n"
+                      f"SQLite bütünlük kontrolü: {'OK' if integrity_ok else integrity}\n{fk_text}\n"
+                      f"Satışla carisi uyuşmayan bağlı çek: {cheque_mismatches}\n\n"
                       f"Kayıt özeti:\n{details}\n\nDoğrulanmış yedek:\n{backup_path}")
             messagebox.showinfo("Veritabanı Sağlık Kontrolü", report, parent=self)
         except Exception as exc:

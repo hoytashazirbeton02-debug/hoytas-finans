@@ -1,0 +1,5 @@
+HOYTAŞ v137
+- Çekle tahsil edilen beton satışında cari değişince bağlı çek ve tahsilat aynı işlemde güncellenir.
+- Veritabanı sağlık kontrolünde satış ve çek arasındaki cari uyuşmazlığı sayısı gösterilir.
+- Beton satışı formunda tahsilat, banka ve çek alanları seçimlere göre açılır.
+- Canlı profilde son eşitleme, gönderilmeyi bekleyen hareket sayısı ve bağlantı durumu görüntülenir.

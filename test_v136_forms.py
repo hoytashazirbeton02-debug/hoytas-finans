@@ -11,6 +11,11 @@ def verify():
     fields = [
         ("tarih", "Tarih (GG.AA.YYYY)", "entry", None),
         ("cari", "Cari ara / seçin", "combo_search", choices),
+        ("durum", "Ödeme Durumu", "combo", ("Vadeli / Tahsil Edilmedi", "Tahsil Edildi")),
+        ("odeme_yontemi", "Tahsilat yöntemi", "combo", ("Nakit", "Banka Havalesi / EFT", "Çek")),
+        ("banka", "Banka adı", "entry", None),
+        ("cek_no", "Çek numarası", "entry", None),
+        ("vade", "Çek vadesi", "entry", None),
     ]
     errors = []
     def interact():
@@ -33,6 +38,24 @@ def verify():
             buyer.set(choices[1])
             buyer.tk.call(post)
             assert tuple(buyer["values"]) == choices
+            _, payment, method = [child for child in body.winfo_children() if isinstance(child, ttk.Combobox)]
+            due = [child for child in body.winfo_children() if isinstance(child, h.DateEntry)][1]
+            bank, number = [child for child in body.winfo_children() if type(child) is ttk.Entry]
+            assert not any(w.winfo_manager() for w in (method, due, bank, number))
+            payment.current(1)
+            payment.event_generate("<<ComboboxSelected>>")
+            assert method.winfo_manager() == "grid" and not bank.winfo_manager()
+            window.update_idletasks()
+            method.current(1)
+            method.event_generate("<<ComboboxSelected>>")
+            assert bank.winfo_manager() == "grid" and not due.winfo_manager()
+            method.current(2)
+            method.event_generate("<<ComboboxSelected>>")
+            assert all(w.winfo_manager() == "grid" for w in (due, bank, number))
+            due.insert(0, "geçersiz")
+            payment.current(0)
+            payment.event_generate("<<ComboboxSelected>>")
+            assert not due.winfo_manager()
             buttons = body.winfo_children()[-1]
             buttons.winfo_children()[0].invoke()
         except Exception as error:
@@ -43,7 +66,8 @@ def verify():
         result = h.HoytasApp.prompt(root, "Yeni Beton Satışı", fields)
         if errors:
             raise errors[0]
-        assert result == {"tarih": "2026-11-28", "cari": choices[1]}
+        assert result == {"tarih": "2026-11-28", "cari": choices[1], "durum": "Vadeli / Tahsil Edilmedi",
+                          "odeme_yontemi": "", "banka": "", "cek_no": "", "vade": ""}
     finally:
         root.destroy()
 
